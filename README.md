@@ -78,7 +78,7 @@ Also add `"ProceduralMeshComponent"` to your `.uproject` plugin list if it isn't
 Pitch > +60°   → Top
 Pitch < -60°   → Bottom
                 ┌─────────────────────────────────────────────┐
-                │  -157.5  -112.5  -67.5  -22.5  22.5  67.5  │
+                │  -157.5  -112.5  -67.5  -22.5  22.5  67.5   │
                 │ BL      LP      3QL    Front  3QR   RP   BR │
                 │←── 45° zones ──────────────────────────────→│
                 └─────────────────────────────────────────────┘
@@ -456,34 +456,34 @@ The editor tool is built as an **Editor Utility Widget** (`.uasset` Blueprint) t
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│ [Preset: PA_MyCharacter]  [Save] [Save As] [New Preset]            │
+│ [Preset: PA_MyCharacter]  [Save] [Save As] [New Preset]             │
 ├─────────────────────────┬───────────────────────────────────────────┤
-│ VIEW CATEGORY TABS      │  3D PREVIEW (from Scene Capture)         │
+│ VIEW CATEGORY TABS      │  3D PREVIEW (from Scene Capture)          │
 │ [Front][3/4R][ProR][Bk] │                                           │
-│ [3/4L][ProL][Top][Bot]  │       ┌───────────────────────┐          │
-│                          │       │                       │          │
-│ ART PIECES BY LAYER     │       │   Character Preview   │          │
-│ ┌──────────────────┐    │       │                       │          │
-│ │ Foreground       │    │       └───────────────────────┘          │
-│ │ ☑ Eyes: [thumb] │    │                                           │
-│ │ ☑ Nose: [thumb] │    │  CONTROLS                                │
-│ │ ☑ Mouth:[thumb] │    │  ┌─Yaw:   ◄══════════► 45°──┐            │
-│ │──────────────────│    │  ├─Pitch: ◄══════════► 15°──┤            │
-│ │ Midground        │    │  ├─Zoom:  ◄═══►────────────┤            │
-│ │ ☑ Hair: [thumb] │    │  ├─☐ Auto-rotate           │            │
-│ │ ☑ Ears: [thumb] │    │  └──────────────────────────┘            │
-│ │──────────────────│    │                                           │
-│ │ Background       │    │  OVERLAYS                                │
-│ │ ☑ Outline:[thmb]│    │  ┌─☑ Show Textures                      │
-│ └──────────────────┘    │  ├─☐ Show Depth Mesh                    │
-│                          │  ├─☐ Wireframe                          │
-│ SLOT DETAILS             │  ├─☐ Color by Depth                     │
-│ Albedo: T_Front_Eyes    │  └──────────────────────────────────────┘│
+│ [3/4L][ProL][Top][Bot]  │       ┌───────────────────────┐           │
+│                         │       │                       │           │
+│ ART PIECES BY LAYER     │       │   Character Preview   │           │
+│ ┌──────────────────┐    │       │                       │           │
+│ │ Foreground       │    │       └───────────────────────┘           │
+│ │    Eyes: [thumb] │    │                                           │
+│ │    Nose: [thumb] │    │  CONTROLS                                 │
+│ │    Mouth:[thumb] │    │  ┌─Yaw:   ◄══════════► 45°──┐             │
+│ │──────────────────│    │  ├─Pitch: ◄══════════► 15°──┤             │
+│ │ Midground        │    │  ├─Zoom:  ◄═══►─────────────┤             │
+│ │    Hair: [thumb] │    │  ├─ Auto-rotate             │             │
+│ │    Ears: [thumb] │    │  └──────────────────────────┘             │
+│ │──────────────────│    │  OVERLAYS                                 │
+│ │ Background       │    │  ┌────────────────────────────────────────│
+│ │    Outline:[thmb]│    │  ├─☑ Show Textures                       │
+│ └──────────────────┘    │  ├─☐ Show Depth Mesh                     │
+│                         │  ├─☐ Wireframe                           │
+│ SLOT DETAILS            │  ├─☐ Color by Depth                      │
+│ Albedo: T_Front_Eyes    │  └────────────────────────────────────────│
 │ Normal: T_Front_Eyes_N  │                                           │
 │ Depth:  T_Front_Eyes_D  │                                           │
 │ [Assign...] [Clear]     │                                           │
 ├─────────────────────────┴───────────────────────────────────────────┤
-│ Status: 8/10 states assigned | 3/4 layers active | 24 total slots  │
+│ Status: 8/10 states assigned | 3/4 layers active | 24 total slots   │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -590,7 +590,7 @@ Create the EUW as described above to provide a visual editor for browsing and as
 ## Material Setup Example
 
 ```
-                            ┌──────────────────────┐
+                            ┌───────────────────────┐
                             │  Master Material      │
                             │  (Unlit or Lit)       │
                             │                       │
@@ -607,7 +607,7 @@ Create the EUW as described above to provide a visual editor for browsing and as
                                        │
                 ┌──────────────────────┼──────────────────────┐
                 │                      │                      │
-         ┌──────▼──────┐       ┌──────▼──────┐       ┌──────▼──────┐
+         ┌──────▼───────┐       ┌───────▼──────┐       ┌───────▼──────┐
          │  MI_Front    │       │  MI_Profile  │       │  MI_Top      │
          │  (textures   │       │  (textures   │       │  (textures   │
          │   come from  │       │   come from  │       │   come from  │
