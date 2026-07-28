@@ -86,14 +86,14 @@ Pitch < -60°   → Bottom
 
 | State | Yaw Range (degrees) |
 |---|---|
-| Front | (-22.5, 22.5] |
-| ThreeQuarterRight | (22.5, 67.5] |
-| RightProfile | (67.5, 112.5] |
-| BackRight | (112.5, 157.5] |
-| Back | (157.5, 180] ∪ (-180, -157.5] |
-| BackLeft | (-157.5, -112.5] |
-| LeftProfile | (-112.5, -67.5] |
-| ThreeQuarterLeft | (-67.5, -22.5] |
+| Front | (-22.5, 22.5) |
+| ThreeQuarterRight | (22.5, 67.5) |
+| RightProfile | (67.5, 112.5) |
+| BackRight | (112.5, 157.5) |
+| Back | (157.5, 180) ∪ (-180, -157.5) |
+| BackLeft | (-157.5, -112.5) |
+| LeftProfile | (-112.5, -67.5) |
+| ThreeQuarterLeft | (-67.5, -22.5) |
 | Top | Pitch > TopViewPitchThreshold |
 | Bottom | Pitch < BottomViewPitchThreshold |
 
