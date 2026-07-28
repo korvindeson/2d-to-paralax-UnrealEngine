@@ -39,7 +39,7 @@ This system lets you render a 2D character face that responds to camera angle â€
 ### Component Roles
 
 | Component | Purpose |
-|---|---|---|
+|---|---|
 | `UFaceParallaxComponent` | Core component. Computes camera-to-head angle, manages view state machine, calculates parallax offsets per layer, drives material parameters, applies preset textures. |
 | `UDepthDebugVisualizerComponent` | Optional debug tool. Reads the current depth map texture, builds a uniform-grid procedural mesh with Z = depth value, colorized by height. Toggleable in-game and in-editor. |
 | `UFaceParallaxPreset` | Data asset. Holds a `TMap<EFaceAngleState, FFaceViewStateLayerSet>` â€” one texture set per view state, with sub-keys per layer tag. |
