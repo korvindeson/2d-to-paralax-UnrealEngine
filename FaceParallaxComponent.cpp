@@ -28,6 +28,15 @@ UFaceParallaxComponent::UFaceParallaxComponent()
     VisemeFrameIndex = 0;
     VisemeFrameTimer = 0.0f;
 
+    SwooshPhase = ESwooshPhase::Inactive;
+    SwooshFrameIndex = 0;
+    SwooshFrameTimer = 0.0f;
+    SwooshBlendOutElapsed = 0.0f;
+    PreviousFrameYaw = 0.0f;
+    PreviousFramePitch = 0.0f;
+    SwooshSmearAngle = 0.0f;
+    SwooshProceduralTick = 0;
+
     FFaceLayerDef DefaultLayer;
     DefaultLayer.LayerTag = "FaceLayer";
     DefaultLayer.DepthScale = 1.0f;
@@ -113,11 +122,18 @@ void UFaceParallaxComponent::TickComponent(float DeltaTime, ELevelTick TickType,
     CurrentYaw = DeltaYaw;
     CurrentPitch = DeltaPitch;
 
-    UpdateStateMachine(DeltaYaw, DeltaPitch, DeltaTime);
+    // Compute angular velocity for swoosh detection
+    float AngularVelocity = (FMath::Abs(DeltaYaw - PreviousFrameYaw) + FMath::Abs(DeltaPitch - PreviousFramePitch))
+        / FMath::Max(DeltaTime, 0.0001f);
+    PreviousFrameYaw = DeltaYaw;
+    PreviousFramePitch = DeltaPitch;
+
+    UpdateStateMachine(DeltaYaw, DeltaPitch, DeltaTime, AngularVelocity);
     UpdateParallaxOffsets(DeltaTime);
     UpdateBlinkTick(DeltaTime);
     UpdateExpressionTick(DeltaTime);
     UpdateVisemeTick(DeltaTime);
+    UpdateSwooshTick(DeltaTime);
     UpdateMaterialParameters();
 }
 
@@ -195,7 +211,7 @@ float UFaceParallaxComponent::GetZoneCenterPitch(EFaceAngleState State) const
     }
 }
 
-void UFaceParallaxComponent::UpdateStateMachine(float Yaw, float Pitch, float DeltaTime)
+void UFaceParallaxComponent::UpdateStateMachine(float Yaw, float Pitch, float DeltaTime, float AngularVelocity)
 {
     EFaceAngleState RawState = DetermineStateFromAngles(Yaw, Pitch);
 
@@ -215,8 +231,6 @@ void UFaceParallaxComponent::UpdateStateMachine(float Yaw, float Pitch, float De
         {
             PreviousState = CurrentState;
             CurrentState = RawState;
-            BlendAlpha = 0.0f;
-            bIsInTransition = true;
 
             if (bAutoApplyPreset)
             {
@@ -225,8 +239,49 @@ void UFaceParallaxComponent::UpdateStateMachine(float Yaw, float Pitch, float De
                 SetPreviousStateTextures();
             }
 
-            StopAnimationsOnStateChange();
-            OnFaceStateChanged.Broadcast(CurrentState, PreviousState);
+            // Swoosh trigger: fast camera movement overrides smooth transition
+            if (bSwooshEnabled && AngularVelocity >= SwooshSpeedThreshold)
+            {
+                BlendAlpha = 0.0f;
+                bIsInTransition = true;
+                SwooshPhase = ESwooshPhase::Smearing;
+                SwooshFrameIndex = 0;
+                SwooshFrameTimer = 0.0f;
+                SwooshBlendOutElapsed = 0.0f;
+                SwooshProceduralTick = 0;
+
+                // Capture smear angle from camera movement direction
+                float Dyaw = Yaw - PreviousFrameYaw;
+                float Dpitch = Pitch - PreviousFramePitch;
+                SwooshSmearAngle = FMath::RadiansToDegrees(FMath::Atan2(Dpitch, Dyaw));
+
+                // Load art frames from preset if available (stored by target state)
+                SwooshFrames.Empty();
+                if (ActivePreset)
+                {
+                    for (const auto& LayerPair : FaceMaterialsByLayer)
+                    {
+                        const FFaceArtSlot& Slot = ActivePreset->GetSlot(CurrentState, LayerPair.Key);
+                        const FFaceSwooshArt* Art = Slot.SwooshToState.Find(CurrentState);
+                        if (Art && Art->Frames.Num() > 0)
+                        {
+                            SwooshFrames = Art->Frames;
+                            break;
+                        }
+                    }
+                }
+
+                OnFaceStateChanged.Broadcast(CurrentState, PreviousState);
+                OnSwooshStarted.Broadcast(CurrentState, PreviousState);
+            }
+            else
+            {
+                // Normal crossfade
+                BlendAlpha = 0.0f;
+                bIsInTransition = true;
+                StopAnimationsOnStateChange();
+                OnFaceStateChanged.Broadcast(CurrentState, PreviousState);
+            }
         }
     }
     else
@@ -234,7 +289,8 @@ void UFaceParallaxComponent::UpdateStateMachine(float Yaw, float Pitch, float De
         HysteresisFramesRemaining = 0;
     }
 
-    if (bIsInTransition)
+    // Normal transition blending (only used when swoosh is not active)
+    if (bIsInTransition && SwooshPhase == ESwooshPhase::Inactive)
     {
         if (bUseContinuousBlending)
         {
@@ -268,6 +324,10 @@ void UFaceParallaxComponent::UpdateStateMachine(float Yaw, float Pitch, float De
                 bIsInTransition = false;
             }
         }
+    }
+    else if (SwooshPhase != ESwooshPhase::Inactive)
+    {
+        // Swoosh manages its own blending; don't touch BlendAlpha here
     }
     else
     {
@@ -417,6 +477,42 @@ void UFaceParallaxComponent::UpdateMaterialParameters()
                 if (PrevTexSet->Depth)  Mat->SetTextureParameterValue(DepthPrevParamName, PrevTexSet->Depth);
             }
 
+            // Swoosh transition — overrides view textures during fast camera moves
+            if (SwooshPhase != ESwooshPhase::Inactive)
+            {
+                float SwooshBlend = (SwooshPhase == ESwooshPhase::BlendingOut) ? BlendAlpha : 1.0f;
+                Mat->SetScalarParameterValue(SwooshLayerBlendParamName, SwooshBlend);
+
+                if (SwooshPhase == ESwooshPhase::Smearing && SwooshFrames.Num() > 0)
+                {
+                    int32 SafeIdx = FMath::Clamp(SwooshFrameIndex, 0, SwooshFrames.Num() - 1);
+                    const FFaceTextureSet& Frame = SwooshFrames[SafeIdx];
+                    if (Frame.Albedo) Mat->SetTextureParameterValue(AlbedoParamName, Frame.Albedo);
+                    if (Frame.Normal) Mat->SetTextureParameterValue(NormalParamName, Frame.Normal);
+                    if (Frame.Depth)  Mat->SetTextureParameterValue(DepthParamName, Frame.Depth);
+                    if (Frame.Albedo) Mat->SetTextureParameterValue(SwooshTextureParamName, Frame.Albedo);
+                    Mat->SetScalarParameterValue(SwooshIntensityParamName, 0.0f);
+                }
+                else
+                {
+                    // Procedural smear: drive material parameters
+                    float TotalProcedural = FMath::Max(3.0f, 4.0f + SwooshBusyness * 8.0f);
+                    float Progress = (TotalProcedural > 0.0f)
+                        ? FMath::Min(1.0f, (float)SwooshProceduralTick / TotalProcedural)
+                        : 0.0f;
+                    float Intensity = FMath::Sin(Progress * PI * (1.0f + SwooshBusyness * 3.0f));
+                    Intensity = FMath::Abs(Intensity) * SwooshSize;
+                    Mat->SetScalarParameterValue(SwooshIntensityParamName, Intensity);
+                    Mat->SetScalarParameterValue(SwooshAngleParamName, SwooshSmearAngle);
+                    Mat->SetScalarParameterValue(SwooshSizeParamName, SwooshSize);
+                }
+            }
+            else
+            {
+                Mat->SetScalarParameterValue(SwooshLayerBlendParamName, 0.0f);
+                Mat->SetScalarParameterValue(SwooshIntensityParamName, 0.0f);
+            }
+
             // Blink animation — override current textures with blink frame if blinking.
             // Runs before viseme; viseme overrides blink on layers that have both.
             if (bIsBlinking && ActivePreset)
@@ -521,6 +617,44 @@ UTexture2D* UFaceParallaxComponent::GetCurrentDepthTexture() const
         }
     }
     return nullptr;
+}
+
+void UFaceParallaxComponent::ForceSwoosh(EFaceAngleState TargetState)
+{
+    if (!ActivePreset || SwooshPhase != ESwooshPhase::Inactive) return;
+
+    PreviousState = CurrentState;
+    CurrentState = TargetState;
+
+    if (bAutoApplyPreset)
+    {
+        CaptureCurrentTextures();
+        ApplyCurrentStateTextures();
+        SetPreviousStateTextures();
+    }
+
+    BlendAlpha = 0.0f;
+    bIsInTransition = true;
+    SwooshPhase = ESwooshPhase::Smearing;
+    SwooshFrameIndex = 0;
+    SwooshFrameTimer = 0.0f;
+    SwooshBlendOutElapsed = 0.0f;
+    SwooshProceduralTick = 0;
+
+    SwooshFrames.Empty();
+    for (const auto& LayerPair : FaceMaterialsByLayer)
+    {
+        const FFaceArtSlot& Slot = ActivePreset->GetSlot(TargetState, LayerPair.Key);
+        const FFaceSwooshArt* Art = Slot.SwooshToState.Find(TargetState);
+        if (Art && Art->Frames.Num() > 0)
+        {
+            SwooshFrames = Art->Frames;
+            break;
+        }
+    }
+
+    OnFaceStateChanged.Broadcast(CurrentState, PreviousState);
+    OnSwooshStarted.Broadcast(CurrentState, PreviousState);
 }
 
 void UFaceParallaxComponent::SetStateTextures(EFaceAngleState State)
@@ -669,6 +803,55 @@ void UFaceParallaxComponent::UpdateVisemeTick(float DeltaTime)
         VisemeFrameTimer = 0.0f;
 
         OnVisemeCompleted.Broadcast(CurrentState, PreviousState);
+    }
+}
+
+void UFaceParallaxComponent::UpdateSwooshTick(float DeltaTime)
+{
+    if (SwooshPhase == ESwooshPhase::Inactive) return;
+
+    if (SwooshPhase == ESwooshPhase::Smearing)
+    {
+        bool bHasArt = (SwooshFrames.Num() > 0);
+        if (bHasArt)
+        {
+            SwooshFrameTimer += DeltaTime;
+            if (SwooshFrameTimer >= SwooshFrameDuration)
+            {
+                SwooshFrameTimer = 0.0f;
+                SwooshFrameIndex++;
+                if (SwooshFrameIndex >= SwooshFrames.Num())
+                {
+                    SwooshPhase = ESwooshPhase::BlendingOut;
+                    SwooshBlendOutElapsed = 0.0f;
+                }
+            }
+        }
+        else
+        {
+            // Procedural smear: run through fake frames based on Busyness
+            SwooshProceduralTick++;
+            int32 ProceduralFrameCount = FMath::Max(3, FMath::RoundToInt(4.0f + SwooshBusyness * 8.0f));
+            if (SwooshProceduralTick >= ProceduralFrameCount)
+            {
+                SwooshPhase = ESwooshPhase::BlendingOut;
+                SwooshBlendOutElapsed = 0.0f;
+            }
+        }
+    }
+
+    if (SwooshPhase == ESwooshPhase::BlendingOut)
+    {
+        SwooshBlendOutElapsed += DeltaTime;
+        BlendAlpha = FMath::Min(1.0f, SwooshBlendOutElapsed / FMath::Max(0.001f, SwooshBlendOutDuration));
+        if (BlendAlpha >= 1.0f)
+        {
+            BlendAlpha = 1.0f;
+            SwooshPhase = ESwooshPhase::Inactive;
+            bIsInTransition = false;
+            SwooshFrames.Empty();
+            OnSwooshCompleted.Broadcast(CurrentState, PreviousState);
+        }
     }
 }
 

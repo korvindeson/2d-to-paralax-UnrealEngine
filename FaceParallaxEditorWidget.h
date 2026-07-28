@@ -403,6 +403,51 @@ public:
     void ClearAllVisemes(EFaceAngleState State, FName LayerTag, EExpression Expression);
 
     // ====================================================================
+    // SWOOSH TRANSITION
+    // ====================================================================
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Swoosh")
+    void SetSwooshEnabled(bool bEnabled);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Swoosh")
+    bool GetSwooshEnabled() const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Swoosh")
+    void SetSwooshSpeedThreshold(float Threshold);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Swoosh")
+    float GetSwooshSpeedThreshold() const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Swoosh")
+    void SetSwooshBusyness(float Busyness);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Swoosh")
+    float GetSwooshBusyness() const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Swoosh")
+    void SetSwooshSize(float Size);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Swoosh")
+    float GetSwooshSize() const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Swoosh")
+    void ForceSwoosh(EFaceAngleState TargetState);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Swoosh")
+    bool IsSwooshActive() const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Swoosh")
+    int32 GetSwooshFrameCount(EFaceAngleState State, FName LayerTag) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Swoosh")
+    void SetSwooshFrameTextures(EFaceAngleState State, FName LayerTag, int32 FrameIndex, const FFaceTextureSet& Textures);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Swoosh")
+    FFaceTextureSet GetSwooshFrameTextures(EFaceAngleState State, FName LayerTag, int32 FrameIndex) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Swoosh")
+    void ClearSwooshFrames(EFaceAngleState State, FName LayerTag);
+
+    // ====================================================================
     // PRESET QUERIES
     // ====================================================================
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Query")

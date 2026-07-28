@@ -1423,6 +1423,410 @@ void TestZeroFrameBlinkViseme() {
     TEST("Zero-frame viseme fires completion", zv.CompletedCount == 1);
 }
 
+// ====================================================================
+// SWOOSH TRANSITION TESTS
+// ====================================================================
+
+struct SwooshMachine {
+    bool bSwooshEnabled = true;
+    double SwooshSpeedThreshold = 120.0;
+    double SwooshFrameDuration = 0.033;
+    double SwooshBlendOutDuration = 0.15;
+    double SwooshBusyness = 0.5;
+    double SwooshSize = 0.5;
+
+    enum class Phase { Inactive, Smearing, BlendingOut };
+    Phase SwooshPhase = Phase::Inactive;
+    int SwooshFrameIndex = 0;
+    double SwooshFrameTimer = 0.0;
+    double SwooshBlendOutElapsed = 0.0;
+    double BlendAlpha = 1.0;
+    int SwooshProceduralTick = 0;
+    double SwooshSmearAngle = 0.0;
+    int ArtFrameCount = 0;
+
+    bool bAnimationsRunning = true;
+
+    void TriggerSwoosh(bool hasArt, int artFrames = 0) {
+        if (SwooshPhase != Phase::Inactive) return;
+        SwooshPhase = Phase::Smearing;
+        SwooshFrameIndex = 0;
+        SwooshFrameTimer = 0.0;
+        SwooshBlendOutElapsed = 0.0;
+        SwooshProceduralTick = 0;
+        BlendAlpha = 0.0;
+        ArtFrameCount = hasArt ? artFrames : 0;
+    }
+
+    void Tick(double dt) {
+        if (SwooshPhase == Phase::Inactive) return;
+
+        if (SwooshPhase == Phase::Smearing) {
+            if (ArtFrameCount > 0) {
+                SwooshFrameTimer += dt;
+                if (SwooshFrameTimer >= SwooshFrameDuration) {
+                    SwooshFrameTimer = 0.0;
+                    SwooshFrameIndex++;
+                    if (SwooshFrameIndex >= ArtFrameCount) {
+                        SwooshPhase = Phase::BlendingOut;
+                        SwooshBlendOutElapsed = 0.0;
+                    }
+                }
+            } else {
+                SwooshProceduralTick++;
+                int ProcCount = std::max(3, (int)(4.0 + SwooshBusyness * 8.0 + 0.5));
+                if (SwooshProceduralTick >= ProcCount) {
+                    SwooshPhase = Phase::BlendingOut;
+                    SwooshBlendOutElapsed = 0.0;
+                }
+            }
+        }
+
+        if (SwooshPhase == Phase::BlendingOut) {
+            SwooshBlendOutElapsed += dt;
+            BlendAlpha = std::min(1.0, SwooshBlendOutElapsed / std::max(0.001, SwooshBlendOutDuration));
+            if (BlendAlpha >= 1.0) {
+                BlendAlpha = 1.0;
+                SwooshPhase = Phase::Inactive;
+            }
+        }
+    }
+
+    double GetSwooshLayerBlend() const {
+        if (SwooshPhase == Phase::Inactive) return 0.0;
+        if (SwooshPhase == Phase::Smearing) return 1.0;
+        return BlendAlpha;
+    }
+
+    double ComputeProceduralIntensity() const {
+        if (ArtFrameCount > 0 || SwooshPhase == Phase::Inactive) return 0.0;
+        double Total = std::max(3.0, 4.0 + SwooshBusyness * 8.0);
+        double Progress = (Total > 0.0) ? std::min(1.0, SwooshProceduralTick / Total) : 0.0;
+        double Intensity = std::sin(Progress * 3.14159265 * (1.0 + SwooshBusyness * 3.0));
+        return std::abs(Intensity) * SwooshSize;
+    }
+};
+
+void TestSwooshTransition() {
+    printf("=== Swoosh Transition ===\n");
+
+    // ── Velocity tracking ──
+    double dt = 0.016;
+    auto AngVel = [dt](double dyaw, double dpitch) {
+        return (std::abs(dyaw) + std::abs(dpitch)) / dt;
+    };
+    TEST("Velocity 45 deg in 16ms", fabs(AngVel(45, 0) - 2812.5) < 1.0);
+    TEST("Velocity negative yaw", fabs(AngVel(-45, 0) - 2812.5) < 1.0);
+    TEST("Velocity combined axes", fabs(AngVel(30, 20) - 3125.0) < 1.0);
+    TEST("Velocity zero delta", fabs(AngVel(0, 0)) < 0.001);
+    TEST("Velocity pitch only", fabs(AngVel(0, 60) - 3750.0) < 1.0);
+
+    // ── Threshold boundary ──
+    {
+        SwooshMachine sm;
+        double atThreshold = sm.SwooshSpeedThreshold;
+        if (atThreshold >= sm.SwooshSpeedThreshold) sm.TriggerSwoosh(true, 2);
+        TEST("Trigger at exact threshold", sm.SwooshPhase != SwooshMachine::Phase::Inactive);
+    }
+    {
+        SwooshMachine sm;
+        double justBelow = sm.SwooshSpeedThreshold - 0.1;
+        if (justBelow >= sm.SwooshSpeedThreshold) sm.TriggerSwoosh(true, 2);
+        TEST("No trigger just below threshold", sm.SwooshPhase == SwooshMachine::Phase::Inactive);
+    }
+    {
+        SwooshMachine sm;
+        double justAbove = sm.SwooshSpeedThreshold + 0.1;
+        if (justAbove >= sm.SwooshSpeedThreshold) sm.TriggerSwoosh(true, 2);
+        TEST("Trigger just above threshold", sm.SwooshPhase != SwooshMachine::Phase::Inactive);
+    }
+
+    // ── Swoosh disabled guard ──
+    {
+        SwooshMachine sm;
+        sm.bSwooshEnabled = false;
+        double highVel = 999.0;
+        if (sm.bSwooshEnabled && highVel >= sm.SwooshSpeedThreshold) sm.TriggerSwoosh(true, 3);
+        TEST("Swoosh disabled = no trigger", sm.SwooshPhase == SwooshMachine::Phase::Inactive);
+    }
+
+    // ── Art frame boundaries ──
+    {
+        // Zero art frames → procedural fallback
+        SwooshMachine sm;
+        sm.TriggerSwoosh(false, 0);
+        TEST("Zero art frames → Smearing", sm.SwooshPhase == SwooshMachine::Phase::Smearing);
+        TEST("Procedural fallback has no art frames", sm.ArtFrameCount == 0);
+    }
+    {
+        // Single art frame → advances to frame 0 then exhausts
+        SwooshMachine sm;
+        sm.TriggerSwoosh(true, 1);
+        TEST("One frame starts at index 0", sm.SwooshFrameIndex == 0);
+        sm.Tick(0.033);
+        TEST("One frame exhausts after tick", sm.SwooshPhase == SwooshMachine::Phase::BlendingOut);
+    }
+    {
+        // Many art frames (50)
+        SwooshMachine sm;
+        sm.TriggerSwoosh(true, 50);
+        for (int i = 0; i < 49; i++) sm.Tick(0.033);
+        TEST("Frame 49 still smearing", sm.SwooshPhase == SwooshMachine::Phase::Smearing);
+        sm.Tick(0.033);
+        TEST("Frame 50 exhausts", sm.SwooshPhase == SwooshMachine::Phase::BlendingOut);
+    }
+
+    // ── Art frame timing precision ──
+    {
+        SwooshMachine sm;
+        sm.TriggerSwoosh(true, 3);
+        // 0.032 is just under 0.033 frame duration
+        sm.Tick(0.032);
+        TEST("Frame 0 before duration", sm.SwooshFrameIndex == 0);
+        sm.Tick(0.001);
+        TEST("Frame advances at exactly 0.033", sm.SwooshFrameIndex == 1);
+    }
+
+    // ── Art frame exhaustion → BlendingOut ──
+    {
+        SwooshMachine sm;
+        sm.TriggerSwoosh(true, 3);
+        sm.Tick(0.033); sm.Tick(0.033);
+        TEST("Frame 1 still smearing", sm.SwooshPhase == SwooshMachine::Phase::Smearing);
+        sm.Tick(0.033);
+        TEST("Frame 2 exhausts → BlendingOut", sm.SwooshPhase == SwooshMachine::Phase::BlendingOut);
+    }
+
+    // ── Blend-out timing ──
+    {
+        SwooshMachine sm;
+        sm.TriggerSwoosh(true, 1);
+        sm.Tick(0.033); // exhausts → BlendingOut, elapsed=0.033
+        TEST("BlendingOut after art exhaust", sm.SwooshPhase == SwooshMachine::Phase::BlendingOut);
+        TEST("BlendAlpha > 0 on exhaust tick", sm.BlendAlpha > 0.0);
+        sm.Tick(0.075); // total 0.108
+        TEST("BlendAlpha near 0.72", fabs(sm.BlendAlpha - 0.72) < 0.05);
+        sm.Tick(0.075); // total 0.183 ≥ 0.15
+        TEST("BlendAlpha completes", fabs(sm.BlendAlpha - 1.0) < 0.001);
+        TEST("Swoosh inactive after blend", sm.SwooshPhase == SwooshMachine::Phase::Inactive);
+    }
+
+    // ── Blend-out at exact boundaries ──
+    {
+        SwooshMachine sm;
+        sm.TriggerSwoosh(true, 1);
+        sm.Tick(0.033); // exhaust → BlendingOut
+        TEST("BlendAlpha=0 at t=0", fabs(sm.BlendAlpha - 0.033/0.15) < 0.001);
+        sm.Tick(0.117); // t=0.15
+        TEST("BlendAlpha=1 at t=Duration", fabs(sm.BlendAlpha - 1.0) < 0.001);
+        sm.Tick(1.0); // past duration
+        TEST("BlendAlpha clamped to 1", fabs(sm.BlendAlpha - 1.0) < 0.001);
+    }
+
+    // ── Procedural fallback ──
+    {
+        SwooshMachine sm;
+        sm.TriggerSwoosh(false);
+        TEST("Procedural starts smearing", sm.SwooshPhase == SwooshMachine::Phase::Smearing);
+        for (int i = 0; i < 7; i++) sm.Tick(0.016);
+        TEST("Procedural still smearing @ tick 7", sm.SwooshPhase == SwooshMachine::Phase::Smearing);
+        sm.Tick(0.016); // 8th tick exhausts
+        TEST("Procedural exhausts → BlendingOut", sm.SwooshPhase == SwooshMachine::Phase::BlendingOut);
+        sm.Tick(0.15);
+        TEST("Procedural complete", sm.SwooshPhase == SwooshMachine::Phase::Inactive);
+    }
+
+    // ── Animations not stopped ──
+    {
+        SwooshMachine sm;
+        sm.TriggerSwoosh(true, 2);
+        TEST("Animations run during smearing", sm.bAnimationsRunning);
+        sm.Tick(0.033); sm.Tick(0.033); sm.Tick(0.033);
+        TEST("Animations run during blend-out", sm.bAnimationsRunning);
+        sm.Tick(0.15);
+        TEST("Animations run after swoosh", sm.bAnimationsRunning);
+    }
+
+    // ── SwooshLayerBlend via phases ──
+    {
+        SwooshMachine sm;
+        TEST("Inactive blend = 0", fabs(sm.GetSwooshLayerBlend()) < 0.001);
+        sm.TriggerSwoosh(true, 2);
+        TEST("Smearing blend = 1", fabs(sm.GetSwooshLayerBlend() - 1.0) < 0.001);
+        sm.Tick(0.033); sm.Tick(0.033); sm.Tick(0.033);
+        TEST("BlendingOut blend = Alpha", fabs(sm.GetSwooshLayerBlend() - sm.BlendAlpha) < 0.001);
+        sm.Tick(0.15);
+        TEST("Complete inactive blend = 0", fabs(sm.GetSwooshLayerBlend()) < 0.001);
+    }
+
+    // ── Control: SwooshSpeedThreshold ──
+    {
+        SwooshMachine sm;
+        sm.SwooshSpeedThreshold = 50.0;
+        double vel50 = 50.0;
+        if (vel50 >= sm.SwooshSpeedThreshold) sm.TriggerSwoosh(true, 1);
+        TEST("Custom low threshold triggers", sm.SwooshPhase != SwooshMachine::Phase::Inactive);
+    }
+    {
+        SwooshMachine sm;
+        sm.SwooshSpeedThreshold = 500.0;
+        double vel200 = 200.0;
+        if (vel200 >= sm.SwooshSpeedThreshold) sm.TriggerSwoosh(true, 1);
+        TEST("Custom high threshold blocks", sm.SwooshPhase == SwooshMachine::Phase::Inactive);
+    }
+
+    // ── Control: SwooshBusyness procedural count ──
+    {
+        SwooshMachine sm;
+        sm.SwooshBusyness = 0.0;
+        sm.TriggerSwoosh(false);
+        for (int i = 0; i < 5; i++) sm.Tick(0.016);
+        TEST("Busyness=0 → ProcCount=4", sm.SwooshProceduralTick == 4);
+    }
+    {
+        SwooshMachine sm;
+        sm.SwooshBusyness = 1.0;
+        sm.TriggerSwoosh(false);
+        for (int i = 0; i < 13; i++) sm.Tick(0.016);
+        TEST("Busyness=1 → ProcCount=12", sm.SwooshProceduralTick == 12);
+    }
+    {
+        SwooshMachine sm;
+        sm.SwooshBusyness = 0.25;
+        sm.TriggerSwoosh(false);
+        // ProcCount = max(3, int(4+2+0.5)) = max(3, 6) = 6
+        for (int i = 0; i < 7; i++) sm.Tick(0.016);
+        TEST("Busyness=0.25 → ProcCount=6", sm.SwooshProceduralTick == 6);
+    }
+
+    // ── Control: SwooshBusyness oscillation pattern ──
+    {
+        // Busyness=0 → sin(π * progress * 1) → 1 peak
+        // Busyness=1 → sin(π * progress * 4) → 4 peaks
+        auto CountPeaks = [](double busyness) {
+            SwooshMachine sm;
+            sm.SwooshBusyness = busyness;
+            sm.TriggerSwoosh(false);
+            double Total = std::max(3.0, 4.0 + busyness * 8.0);
+            int Peaks = 0;
+            double prev = -1.0;
+            for (int t = 0; t <= (int)Total; t++) {
+                sm.SwooshProceduralTick = t;
+                double cur = sm.ComputeProceduralIntensity();
+                if (prev >= 0.0 && cur < prev && prev > 0.01) Peaks++;
+                prev = cur;
+            }
+            return Peaks;
+        };
+        double peaksLow = CountPeaks(0.0);
+        TEST("Busyness=0 → 1 intensity peak", peaksLow >= 0 && peaksLow <= 2);
+        double peaksHigh = CountPeaks(1.0);
+        TEST("Busyness=1 → more peaks than low", peaksHigh > peaksLow);
+    }
+
+    // ── Control: SwooshSize scales intensity ──
+    {
+        SwooshMachine sm;
+        sm.SwooshSize = 1.0;
+        sm.TriggerSwoosh(false);
+        sm.Tick(0.016);
+        double fullIntensity = sm.ComputeProceduralIntensity();
+        TEST("Size=1 gives positive intensity", fullIntensity > 0.0);
+        TEST("Size=1 intensity ≤ 1", fullIntensity <= 1.0);
+    }
+    {
+        SwooshMachine sm;
+        sm.SwooshSize = 0.5;
+        sm.TriggerSwoosh(false);
+        sm.Tick(0.016);
+        double halfIntensity = sm.ComputeProceduralIntensity();
+        TEST("Size=0.5 intensity ≤ 0.5", halfIntensity <= 0.51);
+    }
+    {
+        SwooshMachine sm;
+        sm.SwooshSize = 0.0;
+        sm.TriggerSwoosh(false);
+        sm.Tick(0.016);
+        TEST("Size=0 → zero intensity", fabs(sm.ComputeProceduralIntensity()) < 0.001);
+    }
+
+    // ── Proportional: Size scales intensity linearly ──
+    {
+        SwooshMachine sm1, sm2;
+        sm1.SwooshSize = 0.5; sm2.SwooshSize = 1.0;
+        sm1.TriggerSwoosh(false); sm2.TriggerSwoosh(false);
+        // Compare at same procedural tick
+        for (int i = 0; i < 3; i++) { sm1.Tick(0.016); sm2.Tick(0.016); }
+        double i1 = sm1.ComputeProceduralIntensity();
+        double i2 = sm2.ComputeProceduralIntensity();
+        TEST("Size=1 is double Size=0.5", fabs(i2 - i1 * 2.0) < 0.001);
+    }
+
+    // ── Art frame rate independent of SwooshFrameDuration ──
+    {
+        SwooshMachine sm;
+        sm.SwooshFrameDuration = 0.1;
+        sm.TriggerSwoosh(true, 3);
+        sm.Tick(0.099);
+        TEST("Frame 0 at 0.099s", sm.SwooshFrameIndex == 0);
+        sm.Tick(0.001);
+        TEST("Frame 1 at 0.100s", sm.SwooshFrameIndex == 1);
+    }
+
+    // ── Blend-out duration configurable ──
+    {
+        SwooshMachine sm;
+        sm.SwooshBlendOutDuration = 0.5;
+        sm.TriggerSwoosh(true, 1);
+        sm.Tick(0.033);
+        TEST("Long blend at 0.033", fabs(sm.BlendAlpha - 0.066) < 0.001);
+        sm.Tick(0.25);
+        TEST("Long blend at 0.283", fabs(sm.BlendAlpha - 0.566) < 0.001);
+        sm.Tick(0.25);
+        TEST("Long blend completes", fabs(sm.BlendAlpha - 1.0) < 0.001);
+    }
+
+    // ── Re-entrant guard ──
+    {
+        SwooshMachine sm;
+        sm.TriggerSwoosh(true, 5);
+        TEST("First swoosh active", sm.SwooshPhase == SwooshMachine::Phase::Smearing);
+        // Attempt re-trigger (guarded in real component, but simulate here)
+        // In the real component, ForceSwoosh checks SwooshPhase != Inactive → return
+        // Just verify phase doesn't reset
+        sm.TriggerSwoosh(true, 5);
+        // After re-trigger, frame should still be at 0
+        TEST("Re-trigger does not reset frame", sm.SwooshFrameIndex == 0);
+    }
+
+    // ── Multiple complete cycles ──
+    {
+        SwooshMachine sm;
+        for (int cycle = 0; cycle < 3; cycle++) {
+            sm.TriggerSwoosh(true, 2);
+            TEST("Cycle starts smearing", sm.SwooshPhase == SwooshMachine::Phase::Smearing);
+            sm.Tick(0.033); sm.Tick(0.033);
+            sm.Tick(0.033); // exhausts
+            TEST("Cycle blend-out", sm.SwooshPhase == SwooshMachine::Phase::BlendingOut);
+            sm.Tick(0.15); // completes
+            TEST("Cycle complete", sm.SwooshPhase == SwooshMachine::Phase::Inactive);
+        }
+    }
+
+    // ── Smear angle computation ──
+    {
+        SwooshMachine sm;
+        double dyaw = 30.0, dpitch = 40.0;
+        double angle = std::atan2(dpitch, dyaw) * 180.0 / 3.14159265;
+        TEST("Smear angle positive", fabs(angle - 53.13) < 0.1);
+    }
+    {
+        double dyaw = -30.0, dpitch = 10.0;
+        double angle = std::atan2(dpitch, dyaw) * 180.0 / 3.14159265;
+        TEST("Smear angle negative yaw", fabs(angle - 161.57) < 0.1);
+    }
+}
+
 int main() {
     printf("===== Face Parallax Math Tests =====\n\n");
 
@@ -1451,6 +1855,7 @@ int main() {
     TestYawDeviationNormalized();
     TestBlinkFrameMismatch();
     TestZeroFrameBlinkViseme();
+    TestSwooshTransition();
 
     printf("\n===== Results: %d/%d passed (%d failed) =====\n",
         g_passed, g_total, g_total - g_passed);

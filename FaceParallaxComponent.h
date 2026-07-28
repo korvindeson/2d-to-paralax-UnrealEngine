@@ -71,6 +71,60 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Transitions")
     float BlendWindowWidth = 5.0f;
 
+    // --- SWOOSH TRANSITION SETTINGS ---
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Swoosh")
+    bool bSwooshEnabled = true;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Swoosh",
+        meta = (ClampMin = "0.0"))
+    float SwooshSpeedThreshold = 120.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Swoosh",
+        meta = (ClampMin = "0.001", ClampMax = "1.0"))
+    float SwooshFrameDuration = 0.033f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Swoosh",
+        meta = (ClampMin = "0.0", ClampMax = "2.0"))
+    float SwooshBlendOutDuration = 0.15f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Swoosh",
+        meta = (ClampMin = "0.0", ClampMax = "1.0"))
+    float SwooshBusyness = 0.5f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Swoosh",
+        meta = (ClampMin = "0.0", ClampMax = "1.0"))
+    float SwooshSize = 0.5f;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Swoosh")
+    void ForceSwoosh(EFaceAngleState TargetState);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Swoosh")
+    bool IsSwooshActive() const { return SwooshPhase != ESwooshPhase::Inactive; }
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Swoosh")
+    void SetSwooshEnabled(bool bEnabled) { bSwooshEnabled = bEnabled; }
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Swoosh")
+    bool GetSwooshEnabled() const { return bSwooshEnabled; }
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Swoosh")
+    void SetSwooshSpeedThreshold(float Threshold) { SwooshSpeedThreshold = FMath::Max(0.0f, Threshold); }
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Swoosh")
+    float GetSwooshSpeedThreshold() const { return SwooshSpeedThreshold; }
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Swoosh")
+    void SetSwooshBusyness(float Busyness) { SwooshBusyness = FMath::Clamp(Busyness, 0.0f, 1.0f); }
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Swoosh")
+    float GetSwooshBusyness() const { return SwooshBusyness; }
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Swoosh")
+    void SetSwooshSize(float Size) { SwooshSize = FMath::Clamp(Size, 0.0f, 1.0f); }
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Swoosh")
+    float GetSwooshSize() const { return SwooshSize; }
+
     // --- PARALLAX SETTINGS ---
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Parallax")
     float MaxParallaxOffset = 5.0f;
@@ -233,6 +287,13 @@ public:
     UPROPERTY(BlueprintAssignable, Category = "Face Parallax|Events")
     FOnFaceStateChangedSignature OnVisemeCompleted;
 
+    // --- SWOOSH EVENTS ---
+    UPROPERTY(BlueprintAssignable, Category = "Face Parallax|Events")
+    FOnFaceStateChangedSignature OnSwooshStarted;
+
+    UPROPERTY(BlueprintAssignable, Category = "Face Parallax|Events")
+    FOnFaceStateChangedSignature OnSwooshCompleted;
+
     // --- EXPRESSION MATERIAL PARAMETERS ---
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Expression",
         meta = (DisplayName = "Expression Blend Alpha Param"))
@@ -249,6 +310,27 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Expression",
         meta = (DisplayName = "Expression Prev Depth Param"))
     FName ExpressionDepthPrevParamName = "ExpressionDepthPrev";
+
+    // --- SWOOSH MATERIAL PARAMETERS ---
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Swoosh",
+        meta = (DisplayName = "Swoosh Layer Blend Param"))
+    FName SwooshLayerBlendParamName = "SwooshLayerBlend";
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Swoosh",
+        meta = (DisplayName = "Swoosh Intensity Param"))
+    FName SwooshIntensityParamName = "SwooshIntensity";
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Swoosh",
+        meta = (DisplayName = "Swoosh Angle Param"))
+    FName SwooshAngleParamName = "SwooshAngle";
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Swoosh",
+        meta = (DisplayName = "Swoosh Size Param"))
+    FName SwooshSizeParamName = "SwooshSize";
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Swoosh",
+        meta = (DisplayName = "Swoosh Texture Param"))
+    FName SwooshTextureParamName = "SwooshTexture";
 
     // --- MATERIAL DEBUG ---
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Debug")
@@ -323,9 +405,21 @@ private:
     int32 VisemeFrameIndex = 0;
     float VisemeFrameTimer = 0.0f;
 
+    // --- Swoosh state ---
+    ESwooshPhase SwooshPhase = ESwooshPhase::Inactive;
+    int32 SwooshFrameIndex = 0;
+    float SwooshFrameTimer = 0.0f;
+    float SwooshBlendOutElapsed = 0.0f;
+    float PreviousFrameYaw = 0.0f;
+    float PreviousFramePitch = 0.0f;
+    float SwooshSmearAngle = 0.0f;
+    int32 SwooshProceduralTick = 0;
+    TArray<FFaceTextureSet> SwooshFrames;
+
     void UpdateBlinkTick(float DeltaTime);
     void UpdateExpressionTick(float DeltaTime);
     void UpdateVisemeTick(float DeltaTime);
+    void UpdateSwooshTick(float DeltaTime);
     void ApplyExpressionTextures(EFaceAngleState State);
 
     void InitializeMaterials();
@@ -339,7 +433,7 @@ private:
     float GetZoneCenterYaw(EFaceAngleState State) const;
     float GetZoneCenterPitch(EFaceAngleState State) const;
 
-    void UpdateStateMachine(float Yaw, float Pitch, float DeltaTime);
+    void UpdateStateMachine(float Yaw, float Pitch, float DeltaTime, float AngularVelocity = 0.0f);
     void UpdateParallaxOffsets(float DeltaTime);
     FVector2D ComputeOffsetForState(EFaceAngleState State, float Yaw, float Pitch, int32 LayerIndex) const;
 

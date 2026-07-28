@@ -195,6 +195,49 @@ void UFaceParallaxPreset::ClearState(EFaceAngleState State)
     ViewAssignments.Remove(State);
 }
 
+FFaceSwooshArt UFaceParallaxPreset::GetSwooshArt(EFaceAngleState State, FName LayerTag) const
+{
+    const FFaceViewStateLayerSet* StateSet = ViewAssignments.Find(State);
+    if (!StateSet) return FFaceSwooshArt();
+
+    const FFaceArtSlot* Slot = StateSet->Layers.Find(LayerTag);
+    if (!Slot) return FFaceSwooshArt();
+
+    const FFaceSwooshArt* Art = Slot->SwooshToState.Find(State);
+    if (!Art) return FFaceSwooshArt();
+
+    return *Art;
+}
+
+void UFaceParallaxPreset::SetSwooshArt(EFaceAngleState State, FName LayerTag, const FFaceSwooshArt& Art)
+{
+    FFaceViewStateLayerSet& StateSet = ViewAssignments.FindOrAdd(State);
+    FFaceArtSlot& Slot = StateSet.Layers.FindOrAdd(LayerTag);
+    Slot.SwooshToState.Add(State, Art);
+}
+
+bool UFaceParallaxPreset::HasSwooshArt(EFaceAngleState State, FName LayerTag) const
+{
+    const FFaceViewStateLayerSet* StateSet = ViewAssignments.Find(State);
+    if (!StateSet) return false;
+
+    const FFaceArtSlot* Slot = StateSet->Layers.Find(LayerTag);
+    if (!Slot) return false;
+
+    return Slot->SwooshToState.Contains(State);
+}
+
+void UFaceParallaxPreset::ClearSwooshArt(EFaceAngleState State, FName LayerTag)
+{
+    FFaceViewStateLayerSet* StateSet = ViewAssignments.Find(State);
+    if (!StateSet) return;
+
+    FFaceArtSlot* Slot = StateSet->Layers.Find(LayerTag);
+    if (!Slot) return;
+
+    Slot->SwooshToState.Remove(State);
+}
+
 void UFaceParallaxPreset::ClearAll()
 {
     ViewAssignments.Empty();

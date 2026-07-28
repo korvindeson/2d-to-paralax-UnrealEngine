@@ -60,6 +60,18 @@ struct FFaceTextureSet
 };
 
 USTRUCT(BlueprintType)
+struct FFaceSwooshArt
+{
+    GENERATED_BODY()
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Swoosh Art")
+    TArray<FFaceTextureSet> Frames;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Swoosh Art")
+    FFaceArtTransform OverrideTransform;
+};
+
+USTRUCT(BlueprintType)
 struct FFaceArtTransform
 {
     GENERATED_BODY()
@@ -91,6 +103,14 @@ struct FFaceArtTransform
             && FMath::IsNearlyEqual(Scale.Y, 1.0f)
             && FMath::IsNearlyEqual(Rotation, 0.0f);
     }
+};
+
+UENUM(BlueprintType)
+enum class ESwooshPhase : uint8
+{
+    Inactive        UMETA(DisplayName = "Inactive"),
+    Smearing        UMETA(DisplayName = "Smearing"),
+    BlendingOut     UMETA(DisplayName = "Blending Out")
 };
 
 UENUM(BlueprintType)
@@ -142,6 +162,10 @@ struct FFaceArtSlot
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Art Slot",
         meta = (DisplayName = "Viseme Frame Sets (Expression > Viseme > Frames)"))
     TMap<TEnumAsByte<EExpression>, TMap<TEnumAsByte<EViseme>, TArray<FFaceTextureSet>>> VisemeFrameSets;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Art Slot",
+        meta = (DisplayName = "Swoosh Frames (per-target-state)"))
+    TMap<TEnumAsByte<EFaceAngleState>, FFaceSwooshArt> SwooshToState;
 
     FFaceArtTransform GetEffectiveTransform(EFaceAngleState ForState) const
     {

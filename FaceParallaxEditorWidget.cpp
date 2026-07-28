@@ -1002,6 +1002,110 @@ void UFaceParallaxEditorWidget::ClearAllVisemes(EFaceAngleState State, FName Lay
 }
 
 // ====================================================================
+// SWOOSH TRANSITION
+// ====================================================================
+
+void UFaceParallaxEditorWidget::SetSwooshEnabled(bool bEnabled)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->SetSwooshEnabled(bEnabled);
+}
+
+bool UFaceParallaxEditorWidget::GetSwooshEnabled() const
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    return Comp ? Comp->GetSwooshEnabled() : false;
+}
+
+void UFaceParallaxEditorWidget::SetSwooshSpeedThreshold(float Threshold)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->SetSwooshSpeedThreshold(Threshold);
+}
+
+float UFaceParallaxEditorWidget::GetSwooshSpeedThreshold() const
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    return Comp ? Comp->GetSwooshSpeedThreshold() : 0.0f;
+}
+
+void UFaceParallaxEditorWidget::SetSwooshBusyness(float Busyness)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->SetSwooshBusyness(Busyness);
+}
+
+float UFaceParallaxEditorWidget::GetSwooshBusyness() const
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    return Comp ? Comp->GetSwooshBusyness() : 0.0f;
+}
+
+void UFaceParallaxEditorWidget::SetSwooshSize(float Size)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->SetSwooshSize(Size);
+}
+
+float UFaceParallaxEditorWidget::GetSwooshSize() const
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    return Comp ? Comp->GetSwooshSize() : 0.0f;
+}
+
+void UFaceParallaxEditorWidget::ForceSwoosh(EFaceAngleState TargetState)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->ForceSwoosh(TargetState);
+}
+
+bool UFaceParallaxEditorWidget::IsSwooshActive() const
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    return Comp ? Comp->IsSwooshActive() : false;
+}
+
+int32 UFaceParallaxEditorWidget::GetSwooshFrameCount(EFaceAngleState State, FName LayerTag) const
+{
+    if (!ValidatePreset()) return 0;
+    return ActivePreset->GetSwooshArt(State, LayerTag).Frames.Num();
+}
+
+void UFaceParallaxEditorWidget::SetSwooshFrameTextures(EFaceAngleState State, FName LayerTag,
+    int32 FrameIndex, const FFaceTextureSet& Textures)
+{
+    if (!ValidatePreset()) return;
+    FFaceSwooshArt Art = ActivePreset->GetSwooshArt(State, LayerTag);
+    if (FrameIndex >= 0)
+    {
+        if (FrameIndex >= Art.Frames.Num())
+        {
+            Art.Frames.SetNum(FrameIndex + 1);
+        }
+        Art.Frames[FrameIndex] = Textures;
+    }
+    ActivePreset->SetSwooshArt(State, LayerTag, Art);
+}
+
+FFaceTextureSet UFaceParallaxEditorWidget::GetSwooshFrameTextures(EFaceAngleState State,
+    FName LayerTag, int32 FrameIndex) const
+{
+    if (!ValidatePreset()) return FFaceTextureSet();
+    FFaceSwooshArt Art = ActivePreset->GetSwooshArt(State, LayerTag);
+    if (FrameIndex >= 0 && FrameIndex < Art.Frames.Num())
+    {
+        return Art.Frames[FrameIndex];
+    }
+    return FFaceTextureSet();
+}
+
+void UFaceParallaxEditorWidget::ClearSwooshFrames(EFaceAngleState State, FName LayerTag)
+{
+    if (!ValidatePreset()) return;
+    ActivePreset->ClearSwooshArt(State, LayerTag);
+}
+
+// ====================================================================
 // PRESET QUERIES
 // ====================================================================
 

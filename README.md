@@ -39,7 +39,7 @@ This system lets you render a 2D character face that responds to camera angle �
 ### Component Roles
 
 | Component | Purpose |
-|---|---|
+|---|---|---|
 | `UFaceParallaxComponent` | Core component. Computes camera-to-head angle, manages view state machine, calculates parallax offsets per layer, drives material parameters, applies preset textures. |
 | `UDepthDebugVisualizerComponent` | Optional debug tool. Reads the current depth map texture, builds a uniform-grid procedural mesh with Z = depth value, colorized by height. Toggleable in-game and in-editor. |
 | `UFaceParallaxPreset` | Data asset. Holds a `TMap<EFaceAngleState, FFaceViewStateLayerSet>` — one texture set per view state, with sub-keys per layer tag. |
@@ -78,7 +78,7 @@ Also add `"ProceduralMeshComponent"` to your `.uproject` plugin list if it isn't
 Pitch > +60°   → Top
 Pitch < -60°   → Bottom
                 ┌─────────────────────────────────────────────┐
-                │  -157.5  -112.5  -67.5  -22.5  22.5  67.5   │
+                │  -157.5  -112.5  -67.5  -22.5  22.5  67.5  │
                 │ BL      LP      3QL    Front  3QR   RP   BR │
                 │←── 45° zones ──────────────────────────────→│
                 └─────────────────────────────────────────────┘
@@ -86,14 +86,14 @@ Pitch < -60°   → Bottom
 
 | State | Yaw Range (degrees) |
 |---|---|
-| Front | (-22.5, 22.5) |
-| ThreeQuarterRight | (22.5, 67.5) |
-| RightProfile | (67.5, 112.5) |
-| BackRight | (112.5, 157.5) |
-| Back | (157.5, 180) ∪ (-180, -157.5) |
-| BackLeft | (-157.5, -112.5) |
-| LeftProfile | (-112.5, -67.5) |
-| ThreeQuarterLeft | (-67.5, -22.5) |
+| Front | (-22.5, 22.5] |
+| ThreeQuarterRight | (22.5, 67.5] |
+| RightProfile | (67.5, 112.5] |
+| BackRight | (112.5, 157.5] |
+| Back | (157.5, 180] ∪ (-180, -157.5] |
+| BackLeft | (-157.5, -112.5] |
+| LeftProfile | (-112.5, -67.5] |
+| ThreeQuarterLeft | (-67.5, -22.5] |
 | Top | Pitch > TopViewPitchThreshold |
 | Bottom | Pitch < BottomViewPitchThreshold |
 
@@ -143,7 +143,7 @@ OffsetY = (PitchDeviation / (90° - Threshold)) × DepthScale × MaxVerticalPara
 When `bUseMaterialDrivenDepth` is enabled, the component sets these parameters on all dynamic material instances:
 
 | Parameter | Type | Description |
-|---|---|---|
+|---|---|---|---|
 | `StateBlendAlpha` | Scalar | 0→1 crossfade between previous and current state. Material should lerp between `AlbedoTexturePrev/NormalTexturePrev/DepthTexturePrev` (previous state) and the non-prev counterparts (current state). |
 | `ParallaxOffset` | Vector4 | (OffsetX, OffsetY, 0, 0) — per-layer parallax shift |
 | `DepthIntensity` | Scalar | Global depth map intensity multiplier |
@@ -456,34 +456,34 @@ The editor tool is built as an **Editor Utility Widget** (`.uasset` Blueprint) t
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│ [Preset: PA_MyCharacter]  [Save] [Save As] [New Preset]             │
+│ [Preset: PA_MyCharacter]  [Save] [Save As] [New Preset]            │
 ├─────────────────────────┬───────────────────────────────────────────┤
-│ VIEW CATEGORY TABS      │  3D PREVIEW (from Scene Capture)          │
+│ VIEW CATEGORY TABS      │  3D PREVIEW (from Scene Capture)         │
 │ [Front][3/4R][ProR][Bk] │                                           │
-│ [3/4L][ProL][Top][Bot]  │       ┌───────────────────────┐           │
-│                         │       │                       │           │
-│ ART PIECES BY LAYER     │       │   Character Preview   │           │
-│ ┌──────────────────┐    │       │                       │           │
-│ │ Foreground       │    │       └───────────────────────┘           │
-│ │    Eyes: [thumb] │    │                                           │
-│ │    Nose: [thumb] │    │  CONTROLS                                 │
-│ │    Mouth:[thumb] │    │  ┌─Yaw:   ◄══════════► 45°──┐             │
-│ │──────────────────│    │  ├─Pitch: ◄══════════► 15°──┤             │
-│ │ Midground        │    │  ├─Zoom:  ◄═══►─────────────┤             │
-│ │    Hair: [thumb] │    │  ├─ Auto-rotate             │             │
-│ │    Ears: [thumb] │    │  └──────────────────────────┘             │
-│ │──────────────────│    │  OVERLAYS                                 │
-│ │ Background       │    │  ┌────────────────────────────────────────│
-│ │    Outline:[thmb]│    │  ├─☑ Show Textures                       │
-│ └──────────────────┘    │  ├─☐ Show Depth Mesh                     │
-│                         │  ├─☐ Wireframe                           │
-│ SLOT DETAILS            │  ├─☐ Color by Depth                      │
-│ Albedo: T_Front_Eyes    │  └────────────────────────────────────────│
+│ [3/4L][ProL][Top][Bot]  │       ┌───────────────────────┐          │
+│                          │       │                       │          │
+│ ART PIECES BY LAYER     │       │   Character Preview   │          │
+│ ┌──────────────────┐    │       │                       │          │
+│ │ Foreground       │    │       └───────────────────────┘          │
+│ │ ☑ Eyes: [thumb] │    │                                           │
+│ │ ☑ Nose: [thumb] │    │  CONTROLS                                │
+│ │ ☑ Mouth:[thumb] │    │  ┌─Yaw:   ◄══════════► 45°──┐            │
+│ │──────────────────│    │  ├─Pitch: ◄══════════► 15°──┤            │
+│ │ Midground        │    │  ├─Zoom:  ◄═══►────────────┤            │
+│ │ ☑ Hair: [thumb] │    │  ├─☐ Auto-rotate           │            │
+│ │ ☑ Ears: [thumb] │    │  └──────────────────────────┘            │
+│ │──────────────────│    │                                           │
+│ │ Background       │    │  OVERLAYS                                │
+│ │ ☑ Outline:[thmb]│    │  ┌─☑ Show Textures                      │
+│ └──────────────────┘    │  ├─☐ Show Depth Mesh                    │
+│                          │  ├─☐ Wireframe                          │
+│ SLOT DETAILS             │  ├─☐ Color by Depth                     │
+│ Albedo: T_Front_Eyes    │  └──────────────────────────────────────┘│
 │ Normal: T_Front_Eyes_N  │                                           │
 │ Depth:  T_Front_Eyes_D  │                                           │
 │ [Assign...] [Clear]     │                                           │
 ├─────────────────────────┴───────────────────────────────────────────┤
-│ Status: 8/10 states assigned | 3/4 layers active | 24 total slots   │
+│ Status: 8/10 states assigned | 3/4 layers active | 24 total slots  │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -590,7 +590,7 @@ Create the EUW as described above to provide a visual editor for browsing and as
 ## Material Setup Example
 
 ```
-                            ┌───────────────────────┐
+                            ┌──────────────────────┐
                             │  Master Material      │
                             │  (Unlit or Lit)       │
                             │                       │
@@ -607,7 +607,7 @@ Create the EUW as described above to provide a visual editor for browsing and as
                                        │
                 ┌──────────────────────┼──────────────────────┐
                 │                      │                      │
-         ┌──────▼───────┐       ┌───────▼──────┐       ┌───────▼──────┐
+         ┌──────▼──────┐       ┌──────▼──────┐       ┌──────▼──────┐
          │  MI_Front    │       │  MI_Profile  │       │  MI_Top      │
          │  (textures   │       │  (textures   │       │  (textures   │
          │   come from  │       │   come from  │       │   come from  │

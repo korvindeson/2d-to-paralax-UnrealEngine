@@ -70,6 +70,19 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Face Preset|Transform")
     void SyncCanonicalToAllViews(EFaceAngleState State, FName LayerTag);
 
+    // --- SWOOSH ART ---
+    UFUNCTION(BlueprintCallable, Category = "Face Preset|Swoosh")
+    FFaceSwooshArt GetSwooshArt(EFaceAngleState State, FName LayerTag) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Preset|Swoosh")
+    void SetSwooshArt(EFaceAngleState State, FName LayerTag, const FFaceSwooshArt& Art);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Preset|Swoosh")
+    bool HasSwooshArt(EFaceAngleState State, FName LayerTag) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Preset|Swoosh")
+    void ClearSwooshArt(EFaceAngleState State, FName LayerTag);
+
     // --- QUERIES ---
     UFUNCTION(BlueprintCallable, Category = "Face Preset")
     bool HasState(EFaceAngleState State) const;
