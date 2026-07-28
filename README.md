@@ -143,7 +143,7 @@ OffsetY = (PitchDeviation / (90° - Threshold)) × DepthScale × MaxVerticalPara
 When `bUseMaterialDrivenDepth` is enabled, the component sets these parameters on all dynamic material instances:
 
 | Parameter | Type | Description |
-|---|---|---|---|
+|---|---|---|
 | `StateBlendAlpha` | Scalar | 0→1 crossfade between previous and current state. Material should lerp between `AlbedoTexturePrev/NormalTexturePrev/DepthTexturePrev` (previous state) and the non-prev counterparts (current state). |
 | `ParallaxOffset` | Vector4 | (OffsetX, OffsetY, 0, 0) — per-layer parallax shift |
 | `DepthIntensity` | Scalar | Global depth map intensity multiplier |
