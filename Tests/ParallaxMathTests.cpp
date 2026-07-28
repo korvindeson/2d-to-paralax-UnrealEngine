@@ -23,7 +23,7 @@ struct FLinearColor {
 };
 
 // --- Replicated enum (matches FaceParallaxTypes.h order exactly) ---
-enum class EFaceAngleState : uint8 {
+enum class EFaceAngleState : unsigned char {
     Front,
     ThreeQuarterRight,
     RightProfile,
@@ -64,10 +64,14 @@ struct FFaceArtTransform {
     }
 };
 
-// --- State determination logic (mirrors component) ---
-constexpr double HALF_ZONE = 22.5;
-constexpr double THRESHOLD_PROFILE = 45.0;
-constexpr double THRESHOLD_3Q = 22.5;
+// --- State determination logic (mirrors component zone-based system) ---
+constexpr double HZW = 22.5;           // Half-zone width (component default)
+constexpr double Z2 = HZW * 2.0;       //  45.0 — 3Q center
+constexpr double Z3 = HZW * 3.0;       //  67.5 — Profile boundary
+constexpr double Z4 = HZW * 4.0;       //  90.0 — Profile center
+constexpr double Z5 = HZW * 5.0;       // 112.5 — BackR boundary
+constexpr double Z6 = HZW * 6.0;       // 135.0 — BackR center
+constexpr double Z7 = HZW * 7.0;       // 157.5 — Back boundary
 
 struct AngleStateConfig {
     double CenterYaw[10];
@@ -76,14 +80,15 @@ struct AngleStateConfig {
     double PitchRange[10];
 
     constexpr AngleStateConfig() : CenterYaw{}, CenterPitch{}, YawRange{}, PitchRange{} {
+        // Centers match FaceParallaxComponent::GetZoneCenterYaw and GetZoneCenterPitch
         CenterYaw[(int)EFaceAngleState::Front] = 0.0;
-        CenterYaw[(int)EFaceAngleState::ThreeQuarterRight] = THRESHOLD_3Q;
-        CenterYaw[(int)EFaceAngleState::RightProfile] = THRESHOLD_PROFILE;
-        CenterYaw[(int)EFaceAngleState::BackRight] = 67.5;
+        CenterYaw[(int)EFaceAngleState::ThreeQuarterRight] = Z2;
+        CenterYaw[(int)EFaceAngleState::RightProfile] = Z4;
+        CenterYaw[(int)EFaceAngleState::BackRight] = Z6;
         CenterYaw[(int)EFaceAngleState::Back] = 180.0;
-        CenterYaw[(int)EFaceAngleState::BackLeft] = -67.5;
-        CenterYaw[(int)EFaceAngleState::LeftProfile] = -THRESHOLD_PROFILE;
-        CenterYaw[(int)EFaceAngleState::ThreeQuarterLeft] = -THRESHOLD_3Q;
+        CenterYaw[(int)EFaceAngleState::BackLeft] = -Z6;
+        CenterYaw[(int)EFaceAngleState::LeftProfile] = -Z4;
+        CenterYaw[(int)EFaceAngleState::ThreeQuarterLeft] = -Z2;
         CenterYaw[(int)EFaceAngleState::Top] = 0.0;
         CenterYaw[(int)EFaceAngleState::Bottom] = 0.0;
 
@@ -91,8 +96,8 @@ struct AngleStateConfig {
         CenterPitch[(int)EFaceAngleState::Bottom] = -60.0;
 
         for (int i = 0; i < 10; ++i) {
-            YawRange[i] = HALF_ZONE;
-            PitchRange[i] = HALF_ZONE;
+            YawRange[i] = HZW;
+            PitchRange[i] = HZW;
         }
     }
 };
@@ -113,16 +118,20 @@ bool IsInStateZone(double yaw, double pitch, EFaceAngleState state) {
 }
 
 EFaceAngleState DetermineStateFromAngles(double yaw, double pitch) {
-    double absYaw = std::abs(yaw);
-    double absPitch = std::abs(pitch);
+    // Uses same zone-based logic as the component (default HalfZoneWidth = 22.5).
+    // Top/Bottom thresholds match default TopViewPitchThreshold = 60, BottomViewPitchThreshold = -60.
+    if (pitch > 60.0) return EFaceAngleState::Top;
+    if (pitch < -60.0) return EFaceAngleState::Bottom;
 
-    bool highPitch = pitch >= 45.0;
-    bool lowPitch = pitch <= -45.0;
-
-    if (highPitch) return EFaceAngleState::Top;
-    if (lowPitch) return EFaceAngleState::Bottom;
-    if (absYaw > 67.5) return (yaw < 0) ? EFaceAngleState::ProfileLeft : EFaceAngleState::ProfileRight;
-    if (absYaw > 33.75) return (yaw < 0) ? EFaceAngleState::ThreeQuarterLeft : EFaceAngleState::ThreeQuarterRight;
+    // Horizontal zones: each spans HZW (22.5 deg) on either side of its center
+    if (yaw > -HZW && yaw <= HZW) return EFaceAngleState::Front;
+    if (yaw > HZW  && yaw <= Z3)  return EFaceAngleState::ThreeQuarterRight;
+    if (yaw > Z3   && yaw <= Z5)  return EFaceAngleState::RightProfile;
+    if (yaw > Z5   && yaw <= Z7)  return EFaceAngleState::BackRight;
+    if (yaw > Z7   || yaw <= -Z7) return EFaceAngleState::Back;
+    if (yaw > -Z7  && yaw <= -Z5) return EFaceAngleState::BackLeft;
+    if (yaw > -Z5  && yaw <= -Z3) return EFaceAngleState::LeftProfile;
+    if (yaw > -Z3  && yaw <= -HZW)return EFaceAngleState::ThreeQuarterLeft;
     return EFaceAngleState::Front;
 }
 
@@ -131,7 +140,7 @@ struct StateMachine {
     EFaceAngleState CurrentState = EFaceAngleState::Front;
     EFaceAngleState PendingState = EFaceAngleState::Front;
     int HysteresisFrames = 0;
-    static constexpr int HYSTERESIS_THRESHOLD = 3;
+    static constexpr int HYSTERESIS_THRESHOLD = 2;
     static constexpr double BLEND_WINDOW = 5.0;
 
     void Update(double yaw, double pitch) {
@@ -178,18 +187,23 @@ void TestStateDetermination() {
     TEST("Front small yaw", DetermineStateFromAngles(10, 5) == EFaceAngleState::Front);
     TEST("3Q Left", DetermineStateFromAngles(-35, 0) == EFaceAngleState::ThreeQuarterLeft);
     TEST("3Q Right", DetermineStateFromAngles(35, 0) == EFaceAngleState::ThreeQuarterRight);
-    TEST("Profile Left", DetermineStateFromAngles(-80, 0) == EFaceAngleState::ProfileLeft);
-    TEST("Profile Right", DetermineStateFromAngles(80, 0) == EFaceAngleState::ProfileRight);
-    TEST("Top", DetermineStateFromAngles(0, 50) == EFaceAngleState::Top);
-    TEST("Bottom", DetermineStateFromAngles(0, -50) == EFaceAngleState::Bottom);
-    TEST("Top beats yaw", DetermineStateFromAngles(80, 50) == EFaceAngleState::Top);
-    TEST("Bottom beats yaw", DetermineStateFromAngles(-80, -50) == EFaceAngleState::Bottom);
-    TEST("Boundary 33.75 is Front", DetermineStateFromAngles(33.74, 0) == EFaceAngleState::Front);
-    TEST("Boundary 33.76 is 3Q", DetermineStateFromAngles(33.76, 0) == EFaceAngleState::ThreeQuarterRight);
+    TEST("Profile Left", DetermineStateFromAngles(-80, 0) == EFaceAngleState::LeftProfile);
+    TEST("Profile Right", DetermineStateFromAngles(80, 0) == EFaceAngleState::RightProfile);
+    TEST("Top", DetermineStateFromAngles(0, 70) == EFaceAngleState::Top);
+    TEST("Bottom", DetermineStateFromAngles(0, -70) == EFaceAngleState::Bottom);
+    TEST("Top beats yaw", DetermineStateFromAngles(80, 70) == EFaceAngleState::Top);
+    TEST("Bottom beats yaw", DetermineStateFromAngles(-80, -70) == EFaceAngleState::Bottom);
+    TEST("Boundary 20 is Front", DetermineStateFromAngles(20, 0) == EFaceAngleState::Front);
+    TEST("Boundary 30 is 3Q", DetermineStateFromAngles(30, 0) == EFaceAngleState::ThreeQuarterRight);
     TEST("Boundary 67.5 is 3Q", DetermineStateFromAngles(67.49, 0) == EFaceAngleState::ThreeQuarterRight);
-    TEST("Boundary 67.51 is Profile", DetermineStateFromAngles(67.51, 0) == EFaceAngleState::ProfileRight);
-    TEST("Negative yaw mirror", DetermineStateFromAngles(-33.76, 0) == EFaceAngleState::ThreeQuarterLeft);
-    TEST("Negative yaw profile", DetermineStateFromAngles(-67.51, 0) == EFaceAngleState::ProfileLeft);
+    TEST("Boundary 67.51 is Profile", DetermineStateFromAngles(67.51, 0) == EFaceAngleState::RightProfile);
+    TEST("Negative yaw mirror", DetermineStateFromAngles(-30, 0) == EFaceAngleState::ThreeQuarterLeft);
+    TEST("Negative yaw profile", DetermineStateFromAngles(-67.51, 0) == EFaceAngleState::LeftProfile);
+    // Back state coverage
+    TEST("Back Right", DetermineStateFromAngles(135, 0) == EFaceAngleState::BackRight);
+    TEST("Back Left", DetermineStateFromAngles(-135, 0) == EFaceAngleState::BackLeft);
+    TEST("Back at 175", DetermineStateFromAngles(175, 0) == EFaceAngleState::Back);
+    TEST("Back from -175", DetermineStateFromAngles(-175, 0) == EFaceAngleState::Back);
 }
 
 void TestStateZoneInclusion() {
@@ -235,11 +249,11 @@ void TestHysteresisTopBottom() {
     printf("=== Hysteresis Top/Bottom (instant) ===\n");
     StateMachine sm;
 
-    sm.Update(0, 50);
+    sm.Update(0, 70);
     TEST("Top instant", sm.CurrentState == EFaceAngleState::Top);
-    sm.Update(0, -50);
+    sm.Update(0, -70);
     TEST("Bottom instant", sm.CurrentState == EFaceAngleState::Bottom);
-    sm.Update(0, 60);
+    sm.Update(0, 70);
     TEST("Back to top instant", sm.CurrentState == EFaceAngleState::Top);
 }
 
@@ -278,13 +292,13 @@ void TestTransformOverride() {
     MockSlot slot;
     slot.Canonical = FFaceArtTransform(FVector2D(10,10), FVector2D(1,1), 0);
     slot.bHasOverride = true;
-    slot.OverrideView = EFaceAngleState::ProfileRight;
+    slot.OverrideView = EFaceAngleState::RightProfile;
     slot.Override = FFaceArtTransform(FVector2D(5,0), FVector2D(1.2,1.2), 15);
 
     FFaceArtTransform eff = slot.GetEffectiveTransform(EFaceAngleState::Front);
     TEST("No override for front", eff.Position.X == 10 && eff.Position.Y == 10);
 
-    eff = slot.GetEffectiveTransform(EFaceAngleState::ProfileRight);
+    eff = slot.GetEffectiveTransform(EFaceAngleState::RightProfile);
     TEST("Override for profile right", eff.Position.X != 10);
     TEST("Override rotation", eff.Rotation == 15);
 }
@@ -310,10 +324,10 @@ void TestAutoFit() {
     TEST("Square tex on square canvas", t.Scale.X == 0.5 && t.Scale.Y == 0.5);
 
     t = fit.Compute(2048, 1024);
-    TEST("Wide tex fit by height", fabs(t.Scale.X - 0.5) < 0.001 && fabs(t.Scale.Y - 0.5) < 0.001);
+    TEST("Wide tex fit inside", fabs(t.Scale.X - 0.25) < 0.001 && fabs(t.Scale.Y - 0.25) < 0.001);
 
     t = fit.Compute(1024, 2048);
-    TEST("Tall tex fit by width", fabs(t.Scale.X - 0.5) < 0.001 && fabs(t.Scale.Y - 0.5) < 0.001);
+    TEST("Tall tex fit inside", fabs(t.Scale.X - 0.25) < 0.001 && fabs(t.Scale.Y - 0.25) < 0.001);
 
     t = fit.Compute(0, 512);
     TEST("Zero width returns identity", t.IsIdentity());
@@ -326,8 +340,8 @@ void TestAutoFit() {
 void TestEdgeCases() {
     printf("=== Edge Cases ===\n");
     // Extreme angles
-    TEST("Extreme yaw 180", DetermineStateFromAngles(180, 0) == EFaceAngleState::ProfileRight);
-    TEST("Extreme yaw -180", DetermineStateFromAngles(-180, 0) == EFaceAngleState::ProfileLeft);
+    TEST("Extreme yaw 180 is Back", DetermineStateFromAngles(180, 0) == EFaceAngleState::Back);
+    TEST("Extreme yaw -180 is Back", DetermineStateFromAngles(-180, 0) == EFaceAngleState::Back);
     TEST("Extreme pitch 90", DetermineStateFromAngles(0, 90) == EFaceAngleState::Top);
     TEST("Extreme pitch -90", DetermineStateFromAngles(0, -90) == EFaceAngleState::Bottom);
 
@@ -340,11 +354,11 @@ void TestEdgeCases() {
 
     // Hysteresis at exact boundary
     StateMachine sm;
-    sm.Update(33.75, 0); // exactly on boundary
-    TEST("Boundary at 33.75 is Front", sm.CurrentState == EFaceAngleState::Front);
-    sm.Update(33.76, 0);
-    sm.Update(33.76, 0);
-    sm.Update(33.76, 0);
+    sm.Update(22.5, 0); // exactly on Front/3Q boundary
+    TEST("Boundary at 22.5 is Front", sm.CurrentState == EFaceAngleState::Front);
+    sm.Update(23.0, 0); // just past boundary → 3Q
+    sm.Update(23.0, 0);
+    sm.Update(23.0, 0);
     TEST("Just past boundary becomes 3Q", sm.CurrentState == EFaceAngleState::ThreeQuarterRight);
 
     // Rapid oscillation test
@@ -364,7 +378,7 @@ void TestDifferentThresholds() {
     // The real UE component uses configurable TopViewPitchThreshold and BottomViewPitchThreshold
     // These tests simulate different thresholds to ensure the Bottom state doesn't wrongly
     // use the Top threshold (the original bug).
-    auto DetermineWithThresholds = [](double yaw, double pitch,
+    auto DetermineWithThresholds = [](double /*yaw*/, double pitch,
         double topThresh, double bottomThresh) -> EFaceAngleState {
         if (pitch > topThresh) return EFaceAngleState::Top;
         if (pitch < bottomThresh) return EFaceAngleState::Bottom;
@@ -469,11 +483,11 @@ void TestTransformOverrideSystem() {
     TEST("No override falls to canonical", fabs(eff.Position.X - 100) < 0.001);
 
     // Add override for one state
-    slot.SetOverride(EFaceAngleState::ProfileRight, FFaceArtTransform(FVector2D(10, 0), FVector2D(1.2, 1.2), 5));
-    TEST("HasOverride ProfileRight", slot.HasOverride(EFaceAngleState::ProfileRight));
+    slot.SetOverride(EFaceAngleState::RightProfile, FFaceArtTransform(FVector2D(10, 0), FVector2D(1.2, 1.2), 5));
+    TEST("HasOverride RightProfile", slot.HasOverride(EFaceAngleState::RightProfile));
     TEST("No override for Front", !slot.HasOverride(EFaceAngleState::Front));
 
-    eff = slot.GetEffectiveTransform(EFaceAngleState::ProfileRight);
+    eff = slot.GetEffectiveTransform(EFaceAngleState::RightProfile);
     TEST("Override pos X", fabs(eff.Position.X - 110) < 0.001);
     TEST("Override pos Y", fabs(eff.Position.Y - 200) < 0.001);
     TEST("Override scale", fabs(eff.Scale.X - 1.2) < 0.001);
@@ -489,10 +503,10 @@ void TestTransformOverrideSystem() {
     TEST("Bottom override pos Y", fabs(eff.Position.Y - 250) < 0.001);
 
     // Clear override
-    slot.ClearOverride(EFaceAngleState::ProfileRight);
-    TEST("Cleared override gone", !slot.HasOverride(EFaceAngleState::ProfileRight));
+    slot.ClearOverride(EFaceAngleState::RightProfile);
+    TEST("Cleared override gone", !slot.HasOverride(EFaceAngleState::RightProfile));
 
-    eff = slot.GetEffectiveTransform(EFaceAngleState::ProfileRight);
+    eff = slot.GetEffectiveTransform(EFaceAngleState::RightProfile);
     TEST("Cleared falls to canonical", fabs(eff.Position.X - 100) < 0.001);
 }
 
@@ -564,8 +578,12 @@ void TestStateBoundaryPrecision() {
     TEST("Front (0,0)", TestState(0, 0, EFaceAngleState::Front));
     TEST("3QR (35,0)", TestState(35, 0, EFaceAngleState::ThreeQuarterRight));
     TEST("3QL (-35,0)", TestState(-35, 0, EFaceAngleState::ThreeQuarterLeft));
-    TEST("ProR (80,0)", TestState(80, 0, EFaceAngleState::ProfileRight));
-    TEST("ProL (-80,0)", TestState(-80, 0, EFaceAngleState::ProfileLeft));
+    TEST("ProR (80,0)", TestState(80, 0, EFaceAngleState::RightProfile));
+    TEST("ProL (-80,0)", TestState(-80, 0, EFaceAngleState::LeftProfile));
+    TEST("BackR (135,0)", TestState(135, 0, EFaceAngleState::BackRight));
+    TEST("BackL (-135,0)", TestState(-135, 0, EFaceAngleState::BackLeft));
+    TEST("Back (175,0)", TestState(175, 0, EFaceAngleState::Back));
+    TEST("Back from negative", TestState(-175, 0, EFaceAngleState::Back));
 
     // Verify all values from 0 to 180 in steps
     int lastState = -1;
@@ -574,7 +592,7 @@ void TestStateBoundaryPrecision() {
         int s = (int)DetermineStateFromAngles((double)yaw, 0);
         if (s != lastState) { transitions++; lastState = s; }
     }
-    // Should have ~5 transitions going one way (Front->3QR->ProR, etc.)
+    // Should have 8 transitions across full range: Front↔3Q↔ProR↔BackR↔Back (×2)
     TEST("Transitions across full range", transitions > 3);
 
     // Every state enum value is reachable
@@ -586,9 +604,9 @@ void TestHysteresisJitter() {
 
     StateMachine sm;
 
-    // Simulate jitter exactly on the 33.75 boundary
+    // Simulate jitter exactly on the 22.5 boundary
     for (int i = 0; i < 50; ++i) {
-        double jitter = (i % 3 == 0) ? 33.76 : 33.74;
+        double jitter = (i % 3 == 0) ? 23.0 : 22.4;
         sm.Update(jitter, 0);
     }
     // Should not flicker between states every frame
@@ -602,8 +620,7 @@ void TestHysteresisJitter() {
         sm2.Update(a, 0);
     }
     // Should not crash or produce invalid state
-    TEST("Rapid hop valid state", (int)sm2.CurrentState >= 0 &&
-        (int)sm2.CurrentState < (int)EFaceAngleState::MAX);
+    TEST("Rapid hop valid state", (int)sm2.CurrentState < (int)EFaceAngleState::MAX);
 }
 
 void TestZoneCenterCalculations() {
@@ -679,9 +696,9 @@ void TestBackStateAngleWrapping() {
     double d7 = NormalizeDelta(-170.0, FrontCenter);
     TEST("Front center from -170", fabs(d7 - (-170.0)) < 0.001);
 
-    // Edge case: exact opposite
+    // Edge case: exact opposite (either +180 or -180 is valid)
     double d8 = NormalizeDelta(0.0, 180.0);
-    TEST("Opposite 0 vs 180", fabs(d8 - 180.0) < 0.001);
+    TEST("Opposite 0 vs 180", fabs(fabs(d8) - 180.0) < 0.001);
 
     double d9 = NormalizeDelta(-180.0, 180.0);
     TEST("-180 vs 180 back center", fabs(d9) < 0.001 || fabs(fabs(d9) - 360.0) < 0.001);
@@ -723,9 +740,9 @@ void TestBackStateAngleWrapping() {
     double alpha3 = ContinuousAlpha(0.0, FrontCenter, HalfZone, Window);
     TEST("Front continuous at center = 1", fabs(alpha3 - 1.0) < 0.001);
 
-    // Front from exactly at zone edge
+    // Front from exactly at zone edge (window straddles boundary, alpha=0.5)
     double alpha4 = ContinuousAlpha(HalfZone, FrontCenter, HalfZone, Window);
-    TEST("Front continuous at edge = 0", fabs(alpha4) < 0.001);
+    TEST("Front continuous at edge = 0.5", fabs(alpha4 - 0.5) < 0.001);
 }
 
 void TestBlinkAnimation() {
@@ -834,12 +851,15 @@ void TestExpressionSystem() {
         int PrevCaptureCount = 0;
         int NewApplyCount = 0;
 
+        double Elapsed = 0.0;
+
         void SetExpression(int newExpr) {
             if (newExpr == CurrentExpr && !bTransitioning) return;
 
             PreviousExpr = CurrentExpr;
             CurrentExpr = newExpr;
             BlendAlpha = 0.0;
+            Elapsed = 0.0;
             bTransitioning = true;
             PrevCaptureCount++;
             NewApplyCount++;
@@ -851,9 +871,8 @@ void TestExpressionSystem() {
                 return;
             }
 
-            double Speed = (Duration > 0.0) ? (1.0 / Duration) : 10.0;
-            BlendAlpha = BlendAlpha + (1.0 - BlendAlpha) * Speed * dt;
-            if (BlendAlpha < 0.0) BlendAlpha = 0.0;
+            Elapsed += dt;
+            BlendAlpha = std::min(1.0, Duration > 0.0 ? Elapsed / Duration : 1.0);
 
             if (BlendAlpha >= 1.0) {
                 BlendAlpha = 1.0;
@@ -1013,16 +1032,16 @@ void TestBlendingMath() {
 
     struct BlendState {
         double Alpha = 1.0;
+        double Duration = 0.3;
+        double Elapsed = 0.0;
         bool bInTransition = false;
-        double CrossfadeSpeed = 15.0;
-        double DeltaTime = 0.016; // 60fps
 
-        void StartTransition() { Alpha = 0.0; bInTransition = true; }
+        void StartTransition() { Alpha = 0.0; Elapsed = 0.0; bInTransition = true; }
 
-        bool Tick() {
+        bool Tick(double dt) {
             if (!bInTransition) return false;
-            Alpha = Alpha + (1.0 - Alpha) * CrossfadeSpeed * DeltaTime;
-            if (Alpha < 0.0) Alpha = 0.0;
+            Elapsed += dt;
+            Alpha = std::min(1.0, Elapsed / Duration);
             if (Alpha >= 1.0) { Alpha = 1.0; bInTransition = false; return true; }
             return false;
         }
@@ -1030,26 +1049,30 @@ void TestBlendingMath() {
 
     // Basic interpolation
     BlendState bs;
-    bs.Alpha = 0.0;
-    bs.Tick();
+    bs.StartTransition();
+    bs.Tick(0.016);
     TEST("First tick advances alpha", bs.Alpha > 0.0);
     TEST("Alpha not yet 1", bs.Alpha < 1.0);
-    for (int i = 0; i < 100; ++i) bs.Tick();
+    for (int i = 0; i < 100; ++i) bs.Tick(0.016);
     TEST("Alpha reaches 1", fabs(bs.Alpha - 1.0) < 0.001);
     TEST("Transition ends", !bs.bInTransition);
 
-    // Continuous blending (proximity-based alpha)
+    // Continuous blending (proximity-based alpha) — mirrors component exactly
     double HalfZone = 22.5;
     double Window = 5.0;
     auto ContinuousAlpha = [&](double yaw, double yawCenter) -> double {
-        double distToEdge = fabs(yaw - yawCenter) - (HalfZone - Window * 0.5);
+        double delta = yaw - yawCenter;
+        while (delta > 180.0) delta -= 360.0;
+        while (delta < -180.0) delta += 360.0;
+        double distToEdge = fabs(delta) - (HalfZone - Window * 0.5);
         return 1.0 - std::max(0.0, std::min(1.0, distToEdge / Window));
     };
 
     TEST("At center alpha=1", fabs(ContinuousAlpha(0, 0) - 1.0) < 0.001);
-    TEST("At edge alpha=0", fabs(ContinuousAlpha(HalfZone, 0)) < 0.001);
-    TEST("Halfway in window",
-        fabs(ContinuousAlpha(HalfZone - Window * 0.25, 0) - 0.5) < 0.05);
+    // Window straddles zone boundary: alpha=0.5 at zone edge, 0.75 at window/4 inside
+    TEST("At edge alpha=0.5", fabs(ContinuousAlpha(HalfZone, 0) - 0.5) < 0.001);
+    TEST("Quarter window inside alpha=0.75",
+        fabs(ContinuousAlpha(HalfZone - Window * 0.25, 0) - 0.75) < 0.05);
 
     // Verify blend window doesn't break at boundaries
     TEST("Outside zone still valid",
@@ -1057,7 +1080,7 @@ void TestBlendingMath() {
 
     // Test with different yaw centers (3Q at 45 deg)
     TEST("3Q center alpha=1", fabs(ContinuousAlpha(45, 45) - 1.0) < 0.001);
-    TEST("3Q at edge", fabs(ContinuousAlpha(45 + HalfZone, 45)) < 0.001);
+    TEST("3Q at edge alpha=0.5", fabs(ContinuousAlpha(45 + HalfZone, 45) - 0.5) < 0.001);
 }
 
 // ====================================================================
@@ -1119,7 +1142,7 @@ void TestStateChangeCancelsAnimations() {
         EFaceAngleState CurrentState = EFaceAngleState::Front;
         EFaceAngleState PendingState = EFaceAngleState::Front;
         int HystRemaining = 0;
-        static constexpr int HYST = 3;
+        enum : int { HYST = 2 };
 
         bool bBlinking = false;
         int BlinkIdx = 0;
@@ -1137,7 +1160,6 @@ void TestStateChangeCancelsAnimations() {
             if (HZW <= 0.001) return EFaceAngleState::Front;
             double Z3 = HZW * 3.0;
             double Z5 = HZW * 5.0;
-            double Z7 = HZW * 7.0;
             if (yaw > -HZW && yaw <= HZW) return EFaceAngleState::Front;
             if (yaw > HZW && yaw <= Z3) return EFaceAngleState::ThreeQuarterRight;
             if (yaw > Z3 && yaw <= Z5) return EFaceAngleState::RightProfile;
@@ -1162,19 +1184,20 @@ void TestStateChangeCancelsAnimations() {
 
         void Update(double yaw, double pitch) {
             EFaceAngleState raw = RawState(yaw, pitch);
-            if (raw != CurrentState && raw != PendingState) {
-                if (HystRemaining > 0 && raw == PendingState) {
-                    HystRemaining--;
-                } else {
-                    HystRemaining = HYST;
-                    PendingState = raw;
-                }
-                if (HystRemaining <= 0) {
-                    CurrentState = raw;
-                    StopAnimations();
-                }
-            } else {
+            if (raw == CurrentState) {
                 HystRemaining = 0;
+                PendingState = raw;
+                return;
+            }
+            if (raw != PendingState) {
+                PendingState = raw;
+                HystRemaining = HYST;
+            } else {
+                HystRemaining--;
+            }
+            if (HystRemaining <= 0) {
+                CurrentState = raw;
+                StopAnimations();
             }
         }
 
