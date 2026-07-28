@@ -73,37 +73,80 @@ void UFaceParallaxComponent::BeginPlay()
 
 void UFaceParallaxComponent::InitializeMaterials()
 {
-    if (!bUseMaterialDrivenDepth) return;
-
     AActor* Owner = GetOwner();
     if (!Owner) return;
 
     TArray<UPrimitiveComponent*> PrimitiveComponents;
     Owner->GetComponents<UPrimitiveComponent>(PrimitiveComponents);
 
+    // Layer material discovery (only if depth-driven is enabled)
     int32 TotalTagged = 0;
-    for (const FFaceLayerDef& LayerDef : LayerDefinitions)
+    if (bUseMaterialDrivenDepth)
     {
-        FName Tag = LayerDef.LayerTag;
-        for (UPrimitiveComponent* PrimComp : PrimitiveComponents)
+        for (const FFaceLayerDef& LayerDef : LayerDefinitions)
         {
-            if (PrimComp && PrimComp->ComponentHasTag(Tag))
+            FName Tag = LayerDef.LayerTag;
+            for (UPrimitiveComponent* PrimComp : PrimitiveComponents)
             {
-                TArray<UMaterialInstanceDynamic*>& LayerMats = FaceMaterialsByLayer.FindOrAdd(Tag);
-                for (int32 i = 0; i < PrimComp->GetNumMaterials(); ++i)
+                if (PrimComp && PrimComp->ComponentHasTag(Tag))
                 {
-                    UMaterialInstanceDynamic* DynMat = PrimComp->CreateAndSetMaterialInstanceDynamic(i);
-                    if (DynMat)
+                    TArray<UMaterialInstanceDynamic*>& LayerMats = FaceMaterialsByLayer.FindOrAdd(Tag);
+                    for (int32 i = 0; i < PrimComp->GetNumMaterials(); ++i)
                     {
-                        LayerMats.Add(DynMat);
-                        ++TotalTagged;
+                        UMaterialInstanceDynamic* DynMat = PrimComp->CreateAndSetMaterialInstanceDynamic(i);
+                        if (DynMat)
+                        {
+                            LayerMats.Add(DynMat);
+                            ++TotalTagged;
+                        }
                     }
                 }
             }
         }
     }
 
-    if (TotalTagged == 0)
+    // Discover nested art element primitives tagged LayerTag_ElementName (or LayerTag_Parent_Child for recursion)
+    // Always runs, independent of bUseMaterialDrivenDepth
+    NestedMaterialsByElement.Empty();
+    for (UPrimitiveComponent* PrimComp : PrimitiveComponents)
+    {
+        if (!PrimComp) continue;
+
+        TArray<FName> Tags = PrimComp->ComponentTags;
+        for (const FName& Tag : Tags)
+        {
+            FString TagStr = Tag.ToString();
+            // Use last underscore to find the layer prefix — supports multi-segment names like "FaceLayer_Parent_Child"
+            int32 UnderscoreIdx = TagStr.FindLastChar('_');
+            if (UnderscoreIdx > 0 && UnderscoreIdx < TagStr.Len() - 1)
+            {
+                FName LayerPrefix = FName(TagStr.Left(UnderscoreIdx));
+                // Check if the prefix (the part before the last underscore) is itself a known nested element or layer
+                // The first segment before the first underscore is the layer tag
+                int32 FirstUnderscore = INDEX_NONE;
+                TagStr.FindChar('_', FirstUnderscore);
+                if (FirstUnderscore > 0)
+                {
+                    FName RootLayer = FName(TagStr.Left(FirstUnderscore));
+                    if (FaceMaterialsByLayer.Contains(RootLayer))
+                    {
+                        FName ElementFullTag = Tag;
+                        TArray<UMaterialInstanceDynamic*>& ElemMats = NestedMaterialsByElement.FindOrAdd(ElementFullTag);
+                        for (int32 i = 0; i < PrimComp->GetNumMaterials(); ++i)
+                        {
+                            UMaterialInstanceDynamic* DynMat = PrimComp->CreateAndSetMaterialInstanceDynamic(i);
+                            if (DynMat)
+                            {
+                                ElemMats.Add(DynMat);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (TotalTagged == 0 && bUseMaterialDrivenDepth)
     {
         LogWarning("No primitive components found with any LayerTag. Depth map material parameters will not be driven.");
     }
@@ -125,6 +168,10 @@ void UFaceParallaxComponent::TickComponent(float DeltaTime, ELevelTick TickType,
     // Compute angular velocity for swoosh detection
     float AngularVelocity = (FMath::Abs(DeltaYaw - PreviousFrameYaw) + FMath::Abs(DeltaPitch - PreviousFramePitch))
         / FMath::Max(DeltaTime, 0.0001f);
+
+    // Save frame delta before overwriting — needed by jiggle impulse
+    FrameDyaw = DeltaYaw - PreviousFrameYaw;
+    FrameDpitch = DeltaPitch - PreviousFramePitch;
     PreviousFrameYaw = DeltaYaw;
     PreviousFramePitch = DeltaPitch;
 
@@ -133,8 +180,107 @@ void UFaceParallaxComponent::TickComponent(float DeltaTime, ELevelTick TickType,
     UpdateBlinkTick(DeltaTime);
     UpdateExpressionTick(DeltaTime);
     UpdateVisemeTick(DeltaTime);
+    UpdateParametersTick(DeltaTime);
     UpdateSwooshTick(DeltaTime);
+
+    if (bNestedArtEnabled)
+    {
+        UpdateNestedArtTick(DeltaTime);
+        PushNestedArtParams();
+    }
+
     UpdateMaterialParameters();
+}
+
+// ====================================================================
+// PARAMETER SYSTEM
+// ====================================================================
+
+void UFaceParallaxComponent::DefineParameter(FName ParamName, float DefaultValue, float Min, float Max, float SmoothingSpeed)
+{
+    FFaceParamDef& Def = ParamDefinitions.FindOrAdd(ParamName);
+    Def.DefaultValue = FMath::Clamp(DefaultValue, Min, Max);
+    Def.CurrentValue = Def.DefaultValue;
+    Def.TargetValue = Def.DefaultValue;
+    Def.Min = Min;
+    Def.Max = Max;
+    Def.SmoothingSpeed = FMath::Max(0.1f, SmoothingSpeed);
+}
+
+void UFaceParallaxComponent::SetParameterValue(FName ParamName, float Value)
+{
+    FFaceParamDef* Def = ParamDefinitions.Find(ParamName);
+    if (!Def) return;
+
+    float Clamped = FMath::Clamp(Value, Def->Min, Def->Max);
+    float OldValue = Def->TargetValue;
+    Def->TargetValue = Clamped;
+
+    if (!FMath::IsNearlyEqual(OldValue, Clamped))
+    {
+        OnParamValueChanged.Broadcast(ParamName, OldValue, Clamped);
+    }
+}
+
+float UFaceParallaxComponent::GetParameterValue(FName ParamName) const
+{
+    const FFaceParamDef* Def = ParamDefinitions.Find(ParamName);
+    return Def ? Def->CurrentValue : 0.0f;
+}
+
+TArray<FName> UFaceParallaxComponent::GetParameterNames() const
+{
+    TArray<FName> Result;
+    ParamDefinitions.GetKeys(Result);
+    return Result;
+}
+
+void UFaceParallaxComponent::ResetAllParameters()
+{
+    for (auto& Pair : ParamDefinitions)
+    {
+        FFaceParamDef& Def = Pair.Value;
+        float OldValue = Def.TargetValue;
+        Def.TargetValue = Def.DefaultValue;
+        if (!FMath::IsNearlyEqual(OldValue, Def.DefaultValue))
+        {
+            OnParamValueChanged.Broadcast(Pair.Key, OldValue, Def.DefaultValue);
+        }
+    }
+}
+
+void UFaceParallaxComponent::SetParamSmoothingSpeed(FName ParamName, float Speed)
+{
+    FFaceParamDef* Def = ParamDefinitions.Find(ParamName);
+    if (Def) Def->SmoothingSpeed = FMath::Max(0.1f, Speed);
+}
+
+float UFaceParallaxComponent::GetParamSmoothingSpeed(FName ParamName) const
+{
+    const FFaceParamDef* Def = ParamDefinitions.Find(ParamName);
+    return Def ? Def->SmoothingSpeed : ParamSmoothingSpeed;
+}
+
+void UFaceParallaxComponent::UpdateParametersTick(float DeltaTime)
+{
+    if (!bParamsEnabled) return;
+
+    for (auto& Pair : ParamDefinitions)
+    {
+        FFaceParamDef& Def = Pair.Value;
+        if (!FMath::IsNearlyEqual(Def.CurrentValue, Def.TargetValue))
+        {
+            float Speed = Def.SmoothingSpeed;
+            float InterpFactor = FMath::Clamp(Speed * DeltaTime, 0.0f, 1.0f);
+            float OldCurrent = Def.CurrentValue;
+            Def.CurrentValue = FMath::Lerp(Def.CurrentValue, Def.TargetValue, InterpFactor);
+
+            if (!FMath::IsNearlyEqual(OldCurrent, Def.CurrentValue))
+            {
+                OnParamValueChanged.Broadcast(Pair.Key, OldCurrent, Def.CurrentValue);
+            }
+        }
+    }
 }
 
 void UFaceParallaxComponent::CalculateLookDelta(float& OutYaw, float& OutPitch)
@@ -562,7 +708,44 @@ void UFaceParallaxComponent::UpdateMaterialParameters()
 
             if (bHasTransform)
             {
-                FVector2D FinalArtPos = EffectiveTransform.Position;
+                FFaceArtTransform ParamDrivenTransform = EffectiveTransform;
+                float TextureBlendValue = 0.0f;
+
+                // Apply parameter bindings from the slot
+                const FFaceArtSlot& ParamSlot = ActivePreset ? ActivePreset->GetSlot(CurrentState, LayerTag) : FFaceArtSlot();
+                if (bParamsEnabled && ActivePreset)
+                {
+                    for (const FFaceParamBinding& Binding : ParamSlot.ParamBindings)
+                    {
+                        float ParamVal = GetParameterValue(Binding.ParamName);
+                        float EffectiveVal = Binding.bInvert ? (1.0f - ParamVal) : ParamVal;
+                        float Modifier = EffectiveVal * Binding.Scale + Binding.Offset;
+
+                        switch (Binding.Target)
+                        {
+                        case EFaceParamTarget::PositionX:
+                            ParamDrivenTransform.Position.X += Modifier;
+                            break;
+                        case EFaceParamTarget::PositionY:
+                            ParamDrivenTransform.Position.Y += Modifier;
+                            break;
+                        case EFaceParamTarget::ScaleX:
+                            ParamDrivenTransform.Scale.X *= FMath::Max(0.01f, 1.0f + Modifier);
+                            break;
+                        case EFaceParamTarget::ScaleY:
+                            ParamDrivenTransform.Scale.Y *= FMath::Max(0.01f, 1.0f + Modifier);
+                            break;
+                        case EFaceParamTarget::Rotation:
+                            ParamDrivenTransform.Rotation += Modifier;
+                            break;
+                        case EFaceParamTarget::TextureBlend:
+                            TextureBlendValue = FMath::Max(TextureBlendValue, FMath::Clamp(EffectiveVal * Binding.Scale + Binding.Offset, 0.0f, 1.0f));
+                            break;
+                        }
+                    }
+                }
+
+                FVector2D FinalArtPos = ParamDrivenTransform.Position;
 
             // Dynamic art offset — drives ArtPosition from yaw/pitch deviation
             // so eye textures appear to track the camera within the view zone
@@ -585,8 +768,22 @@ void UFaceParallaxComponent::UpdateMaterialParameters()
                 Mat->SetVectorParameterValue(ArtPositionParamName,
                     FLinearColor(FinalArtPos.X, FinalArtPos.Y, 0.0f, 0.0f));
                 Mat->SetVectorParameterValue(ArtScaleParamName,
-                    FLinearColor(EffectiveTransform.Scale.X, EffectiveTransform.Scale.Y, 0.0f, 0.0f));
-                Mat->SetScalarParameterValue(ArtRotationParamName, EffectiveTransform.Rotation);
+                    FLinearColor(ParamDrivenTransform.Scale.X, ParamDrivenTransform.Scale.Y, 0.0f, 0.0f));
+                Mat->SetScalarParameterValue(ArtRotationParamName, ParamDrivenTransform.Rotation);
+
+                // TextureBlend — push alt textures + blend alpha
+                if (TextureBlendValue > 0.0f && ActivePreset)
+                {
+                    const FFaceTextureSet& AltTex = ParamSlot.AltTextures;
+                    if (AltTex.Albedo) Mat->SetTextureParameterValue(ParamAltAlbedoParamName, AltTex.Albedo);
+                    if (AltTex.Normal) Mat->SetTextureParameterValue(ParamAltNormalParamName, AltTex.Normal);
+                    if (AltTex.Depth)  Mat->SetTextureParameterValue(ParamAltDepthParamName, AltTex.Depth);
+                    Mat->SetScalarParameterValue(ParamBlendParamName, TextureBlendValue);
+                }
+                else
+                {
+                    Mat->SetScalarParameterValue(ParamBlendParamName, 0.0f);
+                }
             }
         }
         ++GlobalLayerIdx;
@@ -876,6 +1073,10 @@ void UFaceParallaxComponent::StopAnimationsOnStateChange()
         ExpressionBlendAlpha = 1.0f;
         ExpressionPreviousTextureSets.Empty();
     }
+
+    // Reset jiggle + idle animation states on state change
+    JiggleStates.Empty();
+    AnimStates.Empty();
 }
 
 void UFaceParallaxComponent::LogWarning(const FString& Message) const
@@ -1023,6 +1224,413 @@ void UFaceParallaxComponent::ApplyExpressionTextures(EFaceAngleState State)
                 Mat->SetTextureParameterValue(NormalParamName, TexSet.Normal);
             if (TexSet.Depth)
                 Mat->SetTextureParameterValue(DepthParamName, TexSet.Depth);
+        }
+    }
+}
+
+// ====================================================================
+// NESTED ART + JIGGLE
+// ====================================================================
+
+void UFaceParallaxComponent::UpdateNestedArtTick(float DeltaTime)
+{
+    if (!ActivePreset) return;
+
+    // Cap delta-time to prevent numerical blowup on hitches
+    DeltaTime = FMath::Min(DeltaTime, 0.05f);
+
+    // Jiggle simulation: spring-damper driven by camera angular velocity
+    // Use saved frame delta (FrameDyaw/FrameDpitch capture pre-overwrite values)
+    float AngularVel = FMath::Sqrt(FrameDyaw * FrameDyaw + FrameDpitch * FrameDpitch) / FMath::Max(DeltaTime, 0.0001f);
+
+    FVector2D Impulse(FrameDyaw, FrameDpitch);
+    Impulse *= AngularVel * 0.001f; // Normalize to reasonable scale
+
+    // Process all nested elements from all layers
+    for (const auto& LayerPair : FaceMaterialsByLayer)
+    {
+        FName LayerTag = LayerPair.Key;
+        const FFaceArtSlot& Slot = ActivePreset->GetSlot(CurrentState, LayerTag);
+
+        for (const FFaceNestedArt& Element : Slot.NestedElements)
+        {
+            if (!Element.bJiggleEnabled) continue;
+
+            FName StateKey = FName(*FString::Printf(TEXT("%s_%s"), *LayerTag.ToString(), *Element.ElementName.ToString()));
+            FNestedJiggleState& State = JiggleStates.FindOrAdd(StateKey);
+
+            // Apply impulse
+            State.Velocity += Impulse * Element.JiggleSettings.JiggleAxis * Element.JiggleSettings.ImpulseScale;
+
+            // Spring-damper integration (semi-implicit Euler)
+            const float Stiffness = Element.JiggleSettings.Stiffness;
+            const float Damping = Element.JiggleSettings.Damping;
+            FVector2D SpringForce = -State.Position * Stiffness;
+            FVector2D DampingForce = -State.Velocity * Damping;
+            FVector2D Acceleration = SpringForce + DampingForce;
+
+            State.Velocity += Acceleration * DeltaTime;
+            State.Position += State.Velocity * DeltaTime;
+        }
+    }
+
+    // Idle animation: advance frame timers
+    for (const auto& LayerPair : FaceMaterialsByLayer)
+    {
+        FName LayerTag = LayerPair.Key;
+        const FFaceArtSlot& Slot = ActivePreset->GetSlot(CurrentState, LayerTag);
+
+        for (const FFaceNestedArt& Element : Slot.NestedElements)
+        {
+            if (Element.IdleFrames.Num() == 0) continue;
+
+            FName StateKey = FName(*FString::Printf(TEXT("%s_%s"), *LayerTag.ToString(), *Element.ElementName.ToString()));
+            FNestedAnimState& Anim = AnimStates.FindOrAdd(StateKey);
+
+            float EffectiveDuration = Element.IdleFrameDuration / FMath::Max(0.001f, Element.IdleSpeedMultiplier);
+            Anim.FrameTimer += DeltaTime;
+
+            while (Anim.FrameTimer >= EffectiveDuration && Element.IdleFrames.Num() > 0)
+            {
+                Anim.FrameTimer -= EffectiveDuration;
+                Anim.FrameIndex = (Anim.FrameIndex + 1) % Element.IdleFrames.Num();
+            }
+        }
+    }
+}
+
+void UFaceParallaxComponent::PushNestedArtParams()
+{
+    if (!ActivePreset || NestedMaterialsByElement.Num() == 0) return;
+
+    for (const auto& LayerPair : FaceMaterialsByLayer)
+    {
+        FName LayerTag = LayerPair.Key;
+        const FFaceArtSlot& Slot = ActivePreset->GetSlot(CurrentState, LayerTag);
+
+        // Compute parent effective transform (canonical + param bindings + parallax)
+        FFaceArtTransform ParentTransform = Slot.GetEffectiveTransform(CurrentState);
+
+        // Apply param bindings from the slot to parent transform
+        if (bParamsEnabled)
+        {
+            for (const FFaceParamBinding& Binding : Slot.ParamBindings)
+            {
+                float ParamVal = GetParameterValue(Binding.ParamName);
+                float EffectiveVal = Binding.bInvert ? (1.0f - ParamVal) : ParamVal;
+                float Modifier = EffectiveVal * Binding.Scale + Binding.Offset;
+
+                switch (Binding.Target)
+                {
+                case EFaceParamTarget::PositionX: ParentTransform.Position.X += Modifier; break;
+                case EFaceParamTarget::PositionY: ParentTransform.Position.Y += Modifier; break;
+                case EFaceParamTarget::ScaleX:    ParentTransform.Scale.X *= FMath::Max(0.01f, 1.0f + Modifier); break;
+                case EFaceParamTarget::ScaleY:    ParentTransform.Scale.Y *= FMath::Max(0.01f, 1.0f + Modifier); break;
+                case EFaceParamTarget::Rotation:  ParentTransform.Rotation += Modifier; break;
+                default: break;
+                }
+            }
+        }
+
+        for (const FFaceNestedArt& Element : Slot.NestedElements)
+        {
+            FName StateKey = FName(*FString::Printf(TEXT("%s_%s"), *LayerTag.ToString(), *Element.ElementName.ToString()));
+            TArray<UMaterialInstanceDynamic*>* ElemMats = NestedMaterialsByElement.Find(StateKey);
+            if (!ElemMats || ElemMats->Num() == 0) continue;
+
+            // Check per-view visibility
+            const bool* bVisibleOverride = Element.ViewVisibility.Find(CurrentState);
+            if (bVisibleOverride && !(*bVisibleOverride)) continue;
+
+            // Get jiggle offset
+            FVector2D JiggleOffset = FVector2D::ZeroVector;
+            if (Element.bJiggleEnabled)
+            {
+                const FNestedJiggleState* JiggleState = JiggleStates.Find(StateKey);
+                if (JiggleState)
+                {
+                    JiggleOffset = JiggleState->Position;
+                }
+            }
+
+            // Compute effective transform for this nested element
+            FFaceArtTransform NestedTransform = ComputeNestedEffectiveTransform(Element, ParentTransform, JiggleOffset);
+
+            // Determine which texture set to use (idle animation or static)
+            FFaceTextureSet FinalTex = Element.Textures;
+            if (Element.IdleFrames.Num() > 0)
+            {
+                const FNestedAnimState* Anim = AnimStates.Find(StateKey);
+                if (Anim && Anim->FrameIndex >= 0 && Anim->FrameIndex < Element.IdleFrames.Num())
+                {
+                    FinalTex = Element.IdleFrames[Anim->FrameIndex];
+                }
+            }
+
+            // Apply param bindings on nested element itself
+            float NestedTextureBlend = 0.0f;
+            if (bParamsEnabled)
+            {
+                for (const FFaceParamBinding& Binding : Element.ParamBindings)
+                {
+                    float ParamVal = GetParameterValue(Binding.ParamName);
+                    float EffectiveVal = Binding.bInvert ? (1.0f - ParamVal) : ParamVal;
+                    float Modifier = EffectiveVal * Binding.Scale + Binding.Offset;
+
+                    switch (Binding.Target)
+                    {
+                    case EFaceParamTarget::PositionX: NestedTransform.Position.X += Modifier; break;
+                    case EFaceParamTarget::PositionY: NestedTransform.Position.Y += Modifier; break;
+                    case EFaceParamTarget::ScaleX:    NestedTransform.Scale.X *= FMath::Max(0.01f, 1.0f + Modifier); break;
+                    case EFaceParamTarget::ScaleY:    NestedTransform.Scale.Y *= FMath::Max(0.01f, 1.0f + Modifier); break;
+                    case EFaceParamTarget::Rotation:  NestedTransform.Rotation += Modifier; break;
+                    case EFaceParamTarget::TextureBlend: NestedTextureBlend = FMath::Max(NestedTextureBlend, FMath::Clamp(EffectiveVal * Binding.Scale + Binding.Offset, 0.0f, 1.0f)); break;
+                    }
+                }
+            }
+
+            // Push to all materials on this nested primitive
+            for (UMaterialInstanceDynamic* Mat : *ElemMats)
+            {
+                if (!Mat) continue;
+
+                // Textures
+                if (FinalTex.Albedo) Mat->SetTextureParameterValue(AlbedoParamName, FinalTex.Albedo);
+                if (FinalTex.Normal) Mat->SetTextureParameterValue(NormalParamName, FinalTex.Normal);
+                if (FinalTex.Depth)  Mat->SetTextureParameterValue(DepthParamName, FinalTex.Depth);
+
+                // Transform
+                Mat->SetVectorParameterValue(ArtPositionParamName,
+                    FLinearColor(NestedTransform.Position.X, NestedTransform.Position.Y, 0.0f, 0.0f));
+                Mat->SetVectorParameterValue(ArtScaleParamName,
+                    FLinearColor(NestedTransform.Scale.X, NestedTransform.Scale.Y, 0.0f, 0.0f));
+                Mat->SetScalarParameterValue(ArtRotationParamName, NestedTransform.Rotation);
+
+                // Pivot point
+                Mat->SetVectorParameterValue(ArtPivotParamName,
+                    FLinearColor(Element.PivotPoint.X, Element.PivotPoint.Y, 0.0f, 0.0f));
+
+                // TextureBlend — push alt textures + blend alpha
+                if (NestedTextureBlend > 0.0f)
+                {
+                    const FFaceTextureSet& AltTex = Element.AltTextures;
+                    if (AltTex.Albedo) Mat->SetTextureParameterValue(ParamAltAlbedoParamName, AltTex.Albedo);
+                    if (AltTex.Normal) Mat->SetTextureParameterValue(ParamAltNormalParamName, AltTex.Normal);
+                    if (AltTex.Depth)  Mat->SetTextureParameterValue(ParamAltDepthParamName, AltTex.Depth);
+                    Mat->SetScalarParameterValue(ParamBlendParamName, NestedTextureBlend);
+                }
+                else
+                {
+                    Mat->SetScalarParameterValue(ParamBlendParamName, 0.0f);
+                }
+
+                // Idle animation frame (for shader-based flipbook, optional)
+                if (Element.IdleFrames.Num() > 0)
+                {
+                    const FNestedAnimState* Anim = AnimStates.Find(StateKey);
+                    float FrameF = Anim ? (float)Anim->FrameIndex : 0.0f;
+                    Mat->SetScalarParameterValue(NestedAnimParamName, FrameF);
+                }
+            }
+
+            // Push state blend on nested materials for crossfade, swoosh, etc.
+            // Use same material params as parent layers
+            for (UMaterialInstanceDynamic* Mat : *ElemMats)
+            {
+                if (!Mat) continue;
+                Mat->SetScalarParameterValue(FName("StateBlendAlpha"), BlendAlpha);
+                Mat->SetScalarParameterValue(FName("IsTopDown"), (CurrentState == EFaceAngleState::Top || CurrentState == EFaceAngleState::Bottom) ? 1.0f : 0.0f);
+                Mat->SetScalarParameterValue(FName("IsTopView"), (CurrentState == EFaceAngleState::Top) ? 1.0f : 0.0f);
+            }
+
+            // Recurse into static children (non-jiggle)
+            if (!Element.bJiggleEnabled && Element.Children.Num() > 0)
+            {
+                for (const FFaceNestedArt& Child : Element.Children)
+                {
+                    PushNestedChildArt(Child, NestedTransform, LayerTag, Element.ElementName);
+                }
+            }
+        }
+    }
+}
+
+void UFaceParallaxComponent::PushNestedChildArt(const FFaceNestedArt& Element, const FFaceArtTransform& ParentTransform, FName LayerTag, FName ParentElementName)
+{
+    FName StateKey = FName(*FString::Printf(TEXT("%s_%s_%s"), *LayerTag.ToString(), *ParentElementName.ToString(), *Element.ElementName.ToString()));
+    TArray<UMaterialInstanceDynamic*>* ElemMats = NestedMaterialsByElement.Find(StateKey);
+    if (!ElemMats || ElemMats->Num() == 0) return;
+
+    const bool* bVisibleOverride = Element.ViewVisibility.Find(CurrentState);
+    if (bVisibleOverride && !(*bVisibleOverride)) return;
+
+    FVector2D JiggleOffset = FVector2D::ZeroVector;
+    if (Element.bJiggleEnabled)
+    {
+        const FNestedJiggleState* JiggleState = JiggleStates.Find(StateKey);
+        if (JiggleState) JiggleOffset = JiggleState->Position;
+    }
+
+    FFaceArtTransform NestedTransform = ComputeNestedEffectiveTransform(Element, ParentTransform, JiggleOffset);
+
+    // Determine texture set
+    FFaceTextureSet FinalTex = Element.Textures;
+    if (Element.IdleFrames.Num() > 0)
+    {
+        const FNestedAnimState* Anim = AnimStates.Find(StateKey);
+        if (Anim && Anim->FrameIndex >= 0 && Anim->FrameIndex < Element.IdleFrames.Num())
+        {
+            FinalTex = Element.IdleFrames[Anim->FrameIndex];
+        }
+    }
+
+    // Apply param bindings on this child element
+    float ChildTextureBlend = 0.0f;
+    if (bParamsEnabled)
+    {
+        for (const FFaceParamBinding& Binding : Element.ParamBindings)
+        {
+            float ParamVal = GetParameterValue(Binding.ParamName);
+            float EffectiveVal = Binding.bInvert ? (1.0f - ParamVal) : ParamVal;
+            float Modifier = EffectiveVal * Binding.Scale + Binding.Offset;
+
+            switch (Binding.Target)
+            {
+            case EFaceParamTarget::PositionX: NestedTransform.Position.X += Modifier; break;
+            case EFaceParamTarget::PositionY: NestedTransform.Position.Y += Modifier; break;
+            case EFaceParamTarget::ScaleX:    NestedTransform.Scale.X *= FMath::Max(0.01f, 1.0f + Modifier); break;
+            case EFaceParamTarget::ScaleY:    NestedTransform.Scale.Y *= FMath::Max(0.01f, 1.0f + Modifier); break;
+            case EFaceParamTarget::Rotation:  NestedTransform.Rotation += Modifier; break;
+            case EFaceParamTarget::TextureBlend: ChildTextureBlend = FMath::Max(ChildTextureBlend, FMath::Clamp(EffectiveVal * Binding.Scale + Binding.Offset, 0.0f, 1.0f)); break;
+            }
+        }
+    }
+
+    for (UMaterialInstanceDynamic* Mat : *ElemMats)
+    {
+        if (!Mat) continue;
+        if (FinalTex.Albedo) Mat->SetTextureParameterValue(AlbedoParamName, FinalTex.Albedo);
+        if (FinalTex.Normal) Mat->SetTextureParameterValue(NormalParamName, FinalTex.Normal);
+        if (FinalTex.Depth)  Mat->SetTextureParameterValue(DepthParamName, FinalTex.Depth);
+        Mat->SetVectorParameterValue(ArtPositionParamName, FLinearColor(NestedTransform.Position.X, NestedTransform.Position.Y, 0.0f, 0.0f));
+        Mat->SetVectorParameterValue(ArtScaleParamName, FLinearColor(NestedTransform.Scale.X, NestedTransform.Scale.Y, 0.0f, 0.0f));
+        Mat->SetScalarParameterValue(ArtRotationParamName, NestedTransform.Rotation);
+        Mat->SetVectorParameterValue(ArtPivotParamName, FLinearColor(Element.PivotPoint.X, Element.PivotPoint.Y, 0.0f, 0.0f));
+
+        // TextureBlend
+        if (ChildTextureBlend > 0.0f)
+        {
+            const FFaceTextureSet& AltTex = Element.AltTextures;
+            if (AltTex.Albedo) Mat->SetTextureParameterValue(ParamAltAlbedoParamName, AltTex.Albedo);
+            if (AltTex.Normal) Mat->SetTextureParameterValue(ParamAltNormalParamName, AltTex.Normal);
+            if (AltTex.Depth)  Mat->SetTextureParameterValue(ParamAltDepthParamName, AltTex.Depth);
+            Mat->SetScalarParameterValue(ParamBlendParamName, ChildTextureBlend);
+        }
+
+        if (Element.IdleFrames.Num() > 0)
+        {
+            const FNestedAnimState* Anim = AnimStates.Find(StateKey);
+            Mat->SetScalarParameterValue(NestedAnimParamName, Anim ? (float)Anim->FrameIndex : 0.0f);
+        }
+        Mat->SetScalarParameterValue(FName("StateBlendAlpha"), BlendAlpha);
+        Mat->SetScalarParameterValue(FName("IsTopDown"), (CurrentState == EFaceAngleState::Top || CurrentState == EFaceAngleState::Bottom) ? 1.0f : 0.0f);
+        Mat->SetScalarParameterValue(FName("IsTopView"), (CurrentState == EFaceAngleState::Top) ? 1.0f : 0.0f);
+    }
+
+    if (!Element.bJiggleEnabled && Element.Children.Num() > 0)
+    {
+        FName ChildTag = FName(*FString::Printf(TEXT("%s_%s"), *ParentElementName.ToString(), *Element.ElementName.ToString()));
+        for (const FFaceNestedArt& Child : Element.Children)
+        {
+            PushNestedChildArt(Child, NestedTransform, LayerTag, ChildTag);
+        }
+    }
+}
+
+FFaceArtTransform UFaceParallaxComponent::ComputeNestedEffectiveTransform(
+    const FFaceNestedArt& Element, const FFaceArtTransform& ParentTransform, const FVector2D& JiggleOffset) const
+{
+    FFaceArtTransform Result;
+    Result.Position = ParentTransform.Position + Element.RelativeTransform.Position + JiggleOffset;
+    Result.Scale = ParentTransform.Scale * Element.RelativeTransform.Scale;
+    Result.Rotation = ParentTransform.Rotation + Element.RelativeTransform.Rotation;
+    return Result;
+}
+
+// --- NESTED ART BP FUNCTIONS ---
+
+int32 UFaceParallaxComponent::GetNestedElementCount(EFaceAngleState State, FName LayerTag) const
+{
+    if (!ActivePreset) return 0;
+    const FFaceArtSlot& Slot = ActivePreset->GetSlot(State, LayerTag);
+    return Slot.NestedElements.Num();
+}
+
+FFaceNestedArt UFaceParallaxComponent::GetNestedElement(EFaceAngleState State, FName LayerTag, int32 Index) const
+{
+    if (!ActivePreset) return FFaceNestedArt();
+    const FFaceArtSlot& Slot = ActivePreset->GetSlot(State, LayerTag);
+    if (Index < 0 || Index >= Slot.NestedElements.Num()) return FFaceNestedArt();
+    return Slot.NestedElements[Index];
+}
+
+void UFaceParallaxComponent::SetNestedElement(EFaceAngleState State, FName LayerTag, int32 Index, const FFaceNestedArt& Element)
+{
+    if (!ActivePreset) return;
+    FFaceArtSlot& Slot = ActivePreset->GetSlotMutable(State, LayerTag);
+    if (Index < 0 || Index >= Slot.NestedElements.Num()) return;
+    Slot.NestedElements[Index] = Element;
+}
+
+void UFaceParallaxComponent::AddNestedElement(EFaceAngleState State, FName LayerTag, const FFaceNestedArt& Element)
+{
+    if (!ActivePreset) return;
+    FFaceArtSlot& Slot = ActivePreset->GetSlotMutable(State, LayerTag);
+    Slot.NestedElements.Add(Element);
+}
+
+void UFaceParallaxComponent::RemoveNestedElement(EFaceAngleState State, FName LayerTag, int32 Index)
+{
+    if (!ActivePreset) return;
+    FFaceArtSlot& Slot = ActivePreset->GetSlotMutable(State, LayerTag);
+    if (Index < 0 || Index >= Slot.NestedElements.Num()) return;
+    Slot.NestedElements.RemoveAt(Index);
+}
+
+void UFaceParallaxComponent::SetNestedTextures(EFaceAngleState State, FName LayerTag, int32 Index, const FFaceTextureSet& Textures)
+{
+    if (!ActivePreset) return;
+    FFaceArtSlot& Slot = ActivePreset->GetSlotMutable(State, LayerTag);
+    if (Index < 0 || Index >= Slot.NestedElements.Num()) return;
+    Slot.NestedElements[Index].Textures = Textures;
+}
+
+void UFaceParallaxComponent::SetNestedTransform(EFaceAngleState State, FName LayerTag, int32 Index, const FFaceArtTransform& Transform)
+{
+    if (!ActivePreset) return;
+    FFaceArtSlot& Slot = ActivePreset->GetSlotMutable(State, LayerTag);
+    if (Index < 0 || Index >= Slot.NestedElements.Num()) return;
+    Slot.NestedElements[Index].RelativeTransform = Transform;
+}
+
+void UFaceParallaxComponent::SetNestedPivot(EFaceAngleState State, FName LayerTag, int32 Index, FVector2D Pivot)
+{
+    if (!ActivePreset) return;
+    FFaceArtSlot& Slot = ActivePreset->GetSlotMutable(State, LayerTag);
+    if (Index < 0 || Index >= Slot.NestedElements.Num()) return;
+    Slot.NestedElements[Index].PivotPoint = Pivot;
+}
+
+void UFaceParallaxComponent::SetNestedVisibility(EFaceAngleState State, FName LayerTag, FName ElementName, EFaceAngleState ViewState, bool bVisible)
+{
+    if (!ActivePreset) return;
+    FFaceArtSlot& Slot = ActivePreset->GetSlotMutable(State, LayerTag);
+    for (FFaceNestedArt& Element : Slot.NestedElements)
+    {
+        if (Element.ElementName == ElementName)
+        {
+            Element.ViewVisibility.Add(ViewState, bVisible);
+            return;
         }
     }
 }

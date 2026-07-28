@@ -28,6 +28,8 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Face Preset")
     FFaceArtSlot GetSlot(EFaceAngleState State, FName LayerTag) const;
 
+    FFaceArtSlot& GetSlotMutable(EFaceAngleState State, FName LayerTag);
+
     UFUNCTION(BlueprintCallable, Category = "Face Preset")
     void SetSlot(EFaceAngleState State, FName LayerTag, const FFaceArtSlot& Slot);
 
@@ -70,6 +72,19 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Face Preset|Transform")
     void SyncCanonicalToAllViews(EFaceAngleState State, FName LayerTag);
 
+    // --- PARAMETER BINDINGS ---
+    UFUNCTION(BlueprintCallable, Category = "Face Preset|Parameter")
+    TArray<FFaceParamBinding> GetParamBindings(EFaceAngleState State, FName LayerTag) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Preset|Parameter")
+    void SetParamBindings(EFaceAngleState State, FName LayerTag, const TArray<FFaceParamBinding>& Bindings);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Preset|Parameter")
+    FFaceTextureSet GetAltTextures(EFaceAngleState State, FName LayerTag) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Preset|Parameter")
+    void SetAltTextures(EFaceAngleState State, FName LayerTag, const FFaceTextureSet& Textures);
+
     // --- SWOOSH ART ---
     UFUNCTION(BlueprintCallable, Category = "Face Preset|Swoosh")
     FFaceSwooshArt GetSwooshArt(EFaceAngleState State, FName LayerTag) const;
@@ -82,6 +97,25 @@ public:
 
     UFUNCTION(BlueprintCallable, Category = "Face Preset|Swoosh")
     void ClearSwooshArt(EFaceAngleState State, FName LayerTag);
+
+    // --- NESTED ELEMENTS ---
+    UFUNCTION(BlueprintCallable, Category = "Face Preset|Nested")
+    int32 GetNestedElementCount(EFaceAngleState State, FName LayerTag) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Preset|Nested")
+    FFaceNestedArt GetNestedElement(EFaceAngleState State, FName LayerTag, int32 Index) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Preset|Nested")
+    void SetNestedElement(EFaceAngleState State, FName LayerTag, int32 Index, const FFaceNestedArt& Element);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Preset|Nested")
+    void AddNestedElement(EFaceAngleState State, FName LayerTag, const FFaceNestedArt& Element);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Preset|Nested")
+    void RemoveNestedElement(EFaceAngleState State, FName LayerTag, int32 Index);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Preset|Nested")
+    void ClearNestedElements(EFaceAngleState State, FName LayerTag);
 
     // --- QUERIES ---
     UFUNCTION(BlueprintCallable, Category = "Face Preset")

@@ -8,13 +8,13 @@
 
 | File | Purpose |
 |---|---|---|
-| `FaceParallaxTypes.h` | Shared types: `EFaceAngleState`, `FFaceTextureSet`, `FFaceArtTransform`, `FFaceArtSlot`, `FFaceViewStateLayerSet` |
-| `FaceParallaxComponent.h/.cpp` | Core component — state machine, parallax offsets, material parameter push, preset application |
+| `FaceParallaxTypes.h` | Shared types: `EFaceAngleState`, `FFaceTextureSet`, `FFaceArtTransform`, `FFaceArtSlot`, `FFaceViewStateLayerSet`, `FFaceJiggleSettings`, `FFaceNestedArt`, `FFaceParamBinding` |
+| `FaceParallaxComponent.h/.cpp` | Core component — state machine, parallax offsets, material parameter push, preset application, jiggle physics, idle animation, nested art transforms |
 | `FaceParallaxPreset.h/.cpp` | DataAsset — stores per-state × per-layer texture + transform assignments |
 | `DepthDebugVisualizerComponent.h/.cpp` | Procedural depth mesh from depth map texture |
 | `FaceParallaxPreviewActor.h/.cpp` | Preview actor with scene capture, orbit camera, part transform access |
-| `FaceParallaxEditorWidget.h/.cpp` | Editor widget — 13 categories of bindable Blueprint functions for every setting |
-| `Tests/ParallaxMathTests.cpp` | Standalone C++17 tests (no UE) — state determination, transforms, edge cases |
+| `FaceParallaxEditorWidget.h/.cpp` | Editor widget — 14 categories of bindable Blueprint functions for every setting (incl. Nested Art) |
+| `Tests/ParallaxMathTests.cpp` | Standalone C++17 tests (no UE) — state machine, transforms, blink/expression/viseme, swoosh, parameters, nested art + jiggle (460 tests) |
 | `Tests/SyntaxValidator.py` | Python syntax validator — brace/macro balance, include guards |
 | `Tests/run_tests.ps1` | Test runner — Python validator + C++ compilation/execution |
 
@@ -27,6 +27,8 @@
 5. **No UE compiler available** — verify logic with the standalone tests; don't try to compile the UE project.
 6. **Keep README.md in sync** with any API changes.
 7. **Do not create new files unless necessary** — prefer editing existing ones.
+8. **`FrameDyaw`/`FrameDpitch` are set before `PreviousFrameYaw`/`PreviousFramePitch` in TickComponent** — jiggle impulse reads frame delta, not stale previous values. Never reorder the delta-save before the overwrite.
+9. **Nested material init runs independently of `bUseMaterialDrivenDepth`** — nested elements must always be discoverable.
 
 ## Verify Your Changes
 
@@ -37,9 +39,9 @@ Before completing any task, run:
 python Tests\SyntaxValidator.py --path .
 
 # C++ math tests (requires clang++/g++/MSVC)
-cd Tests
-clang++ -std=c++17 -o ParallaxMathTests.exe ParallaxMathTests.cpp -Werror -Wall -Wextra
-.\ParallaxMathTests.exe
+$env:PATH = "C:\msys64\ucrt64\bin;$env:PATH"
+g++ -std=c++17 -o ParallaxMathTests.exe Tests\ParallaxMathTests.cpp -Werror -Wall -Wextra
+./ParallaxMathTests.exe
 ```
 
 Both must pass (exit code 0).

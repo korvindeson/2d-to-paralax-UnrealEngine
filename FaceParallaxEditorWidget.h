@@ -403,6 +403,51 @@ public:
     void ClearAllVisemes(EFaceAngleState State, FName LayerTag, EExpression Expression);
 
     // ====================================================================
+    // PARAMETER SYSTEM
+    // ====================================================================
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Parameter")
+    void SetParamsEnabled(bool bEnabled);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Parameter")
+    bool GetParamsEnabled() const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Parameter")
+    void DefineParameter(FName ParamName, float DefaultValue, float Min, float Max, float SmoothingSpeed);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Parameter")
+    void SetParameterValue(FName ParamName, float Value);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Parameter")
+    float GetParameterValue(FName ParamName) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Parameter")
+    TArray<FName> GetParameterNames() const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Parameter")
+    void ResetAllParameters();
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Parameter")
+    void SetParamSmoothingSpeed(FName ParamName, float Speed);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Parameter")
+    float GetParamSmoothingSpeed(FName ParamName) const;
+
+    // ====================================================================
+    // PARAM BINDINGS (per-slot)
+    // ====================================================================
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Param Binding")
+    TArray<FFaceParamBinding> GetParamBindings(EFaceAngleState State, FName LayerTag) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Param Binding")
+    void SetParamBindings(EFaceAngleState State, FName LayerTag, const TArray<FFaceParamBinding>& Bindings);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Param Binding")
+    FFaceTextureSet GetAltTextures(EFaceAngleState State, FName LayerTag) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Param Binding")
+    void SetAltTextures(EFaceAngleState State, FName LayerTag, const FFaceTextureSet& Textures);
+
+    // ====================================================================
     // SWOOSH TRANSITION
     // ====================================================================
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Swoosh")
@@ -446,6 +491,72 @@ public:
 
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Swoosh")
     void ClearSwooshFrames(EFaceAngleState State, FName LayerTag);
+
+    // ====================================================================
+    // NESTED ART
+    // ====================================================================
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    void SetNestedArtEnabled(bool bEnabled);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    bool GetNestedArtEnabled() const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    int32 GetNestedElementCount(EFaceAngleState State, FName LayerTag) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    FFaceNestedArt GetNestedElement(EFaceAngleState State, FName LayerTag, int32 Index) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    void SetNestedElement(EFaceAngleState State, FName LayerTag, int32 Index, const FFaceNestedArt& Element);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    void AddNestedElement(EFaceAngleState State, FName LayerTag, const FFaceNestedArt& Element);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    void RemoveNestedElement(EFaceAngleState State, FName LayerTag, int32 Index);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    void SetNestedTextures(EFaceAngleState State, FName LayerTag, int32 Index, const FFaceTextureSet& Textures);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    FFaceTextureSet GetNestedTextures(EFaceAngleState State, FName LayerTag, int32 Index) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    void SetNestedTransform(EFaceAngleState State, FName LayerTag, int32 Index, const FFaceArtTransform& Transform);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    FFaceArtTransform GetNestedTransform(EFaceAngleState State, FName LayerTag, int32 Index) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    void SetNestedPivot(EFaceAngleState State, FName LayerTag, int32 Index, FVector2D Pivot);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    FVector2D GetNestedPivot(EFaceAngleState State, FName LayerTag, int32 Index) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    void SetNestedJiggleEnabled(EFaceAngleState State, FName LayerTag, int32 Index, bool bEnabled);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    void SetNestedJiggleSettings(EFaceAngleState State, FName LayerTag, int32 Index, const FFaceJiggleSettings& Settings);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    FFaceJiggleSettings GetNestedJiggleSettings(EFaceAngleState State, FName LayerTag, int32 Index) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    void SetNestedVisibility(EFaceAngleState State, FName LayerTag, FName ElementName, EFaceAngleState ViewState, bool bVisible);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    bool GetNestedVisibility(EFaceAngleState State, FName LayerTag, FName ElementName, EFaceAngleState ViewState) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    void SetNestedIdleFrames(EFaceAngleState State, FName LayerTag, int32 Index, const TArray<FFaceTextureSet>& Frames);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    TArray<FFaceTextureSet> GetNestedIdleFrames(EFaceAngleState State, FName LayerTag, int32 Index) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    void ClearNestedIdleFrames(EFaceAngleState State, FName LayerTag, int32 Index);
 
     // ====================================================================
     // PRESET QUERIES

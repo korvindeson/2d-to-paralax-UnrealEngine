@@ -195,6 +195,46 @@ void UFaceParallaxPreset::ClearState(EFaceAngleState State)
     ViewAssignments.Remove(State);
 }
 
+// ====================================================================
+// PARAMETER BINDINGS
+// ====================================================================
+
+TArray<FFaceParamBinding> UFaceParallaxPreset::GetParamBindings(EFaceAngleState State, FName LayerTag) const
+{
+    const FFaceViewStateLayerSet* StateSet = ViewAssignments.Find(State);
+    if (!StateSet) return TArray<FFaceParamBinding>();
+
+    const FFaceArtSlot* Slot = StateSet->Layers.Find(LayerTag);
+    if (!Slot) return TArray<FFaceParamBinding>();
+
+    return Slot->ParamBindings;
+}
+
+void UFaceParallaxPreset::SetParamBindings(EFaceAngleState State, FName LayerTag, const TArray<FFaceParamBinding>& Bindings)
+{
+    FFaceViewStateLayerSet& StateSet = ViewAssignments.FindOrAdd(State);
+    FFaceArtSlot& Slot = StateSet.Layers.FindOrAdd(LayerTag);
+    Slot.ParamBindings = Bindings;
+}
+
+FFaceTextureSet UFaceParallaxPreset::GetAltTextures(EFaceAngleState State, FName LayerTag) const
+{
+    const FFaceViewStateLayerSet* StateSet = ViewAssignments.Find(State);
+    if (!StateSet) return FFaceTextureSet();
+
+    const FFaceArtSlot* Slot = StateSet->Layers.Find(LayerTag);
+    if (!Slot) return FFaceTextureSet();
+
+    return Slot->AltTextures;
+}
+
+void UFaceParallaxPreset::SetAltTextures(EFaceAngleState State, FName LayerTag, const FFaceTextureSet& Textures)
+{
+    FFaceViewStateLayerSet& StateSet = ViewAssignments.FindOrAdd(State);
+    FFaceArtSlot& Slot = StateSet.Layers.FindOrAdd(LayerTag);
+    Slot.AltTextures = Textures;
+}
+
 FFaceSwooshArt UFaceParallaxPreset::GetSwooshArt(EFaceAngleState State, FName LayerTag) const
 {
     const FFaceViewStateLayerSet* StateSet = ViewAssignments.Find(State);
@@ -241,4 +281,65 @@ void UFaceParallaxPreset::ClearSwooshArt(EFaceAngleState State, FName LayerTag)
 void UFaceParallaxPreset::ClearAll()
 {
     ViewAssignments.Empty();
+}
+
+FFaceArtSlot& UFaceParallaxPreset::GetSlotMutable(EFaceAngleState State, FName LayerTag)
+{
+    FFaceViewStateLayerSet& StateSet = ViewAssignments.FindOrAdd(State);
+    return StateSet.Layers.FindOrAdd(LayerTag);
+}
+
+// --- NESTED ELEMENTS ---
+
+int32 UFaceParallaxPreset::GetNestedElementCount(EFaceAngleState State, FName LayerTag) const
+{
+    const FFaceViewStateLayerSet* StateSet = ViewAssignments.Find(State);
+    if (!StateSet) return 0;
+    const FFaceArtSlot* Slot = StateSet->Layers.Find(LayerTag);
+    if (!Slot) return 0;
+    return Slot->NestedElements.Num();
+}
+
+FFaceNestedArt UFaceParallaxPreset::GetNestedElement(EFaceAngleState State, FName LayerTag, int32 Index) const
+{
+    const FFaceViewStateLayerSet* StateSet = ViewAssignments.Find(State);
+    if (!StateSet) return FFaceNestedArt();
+    const FFaceArtSlot* Slot = StateSet->Layers.Find(LayerTag);
+    if (!Slot) return FFaceNestedArt();
+    if (Index < 0 || Index >= Slot->NestedElements.Num()) return FFaceNestedArt();
+    return Slot->NestedElements[Index];
+}
+
+void UFaceParallaxPreset::SetNestedElement(EFaceAngleState State, FName LayerTag, int32 Index, const FFaceNestedArt& Element)
+{
+    FFaceViewStateLayerSet& StateSet = ViewAssignments.FindOrAdd(State);
+    FFaceArtSlot& Slot = StateSet.Layers.FindOrAdd(LayerTag);
+    if (Index < 0 || Index >= Slot.NestedElements.Num()) return;
+    Slot.NestedElements[Index] = Element;
+}
+
+void UFaceParallaxPreset::AddNestedElement(EFaceAngleState State, FName LayerTag, const FFaceNestedArt& Element)
+{
+    FFaceViewStateLayerSet& StateSet = ViewAssignments.FindOrAdd(State);
+    FFaceArtSlot& Slot = StateSet.Layers.FindOrAdd(LayerTag);
+    Slot.NestedElements.Add(Element);
+}
+
+void UFaceParallaxPreset::RemoveNestedElement(EFaceAngleState State, FName LayerTag, int32 Index)
+{
+    FFaceViewStateLayerSet* StateSet = ViewAssignments.Find(State);
+    if (!StateSet) return;
+    FFaceArtSlot* Slot = StateSet->Layers.Find(LayerTag);
+    if (!Slot) return;
+    if (Index < 0 || Index >= Slot->NestedElements.Num()) return;
+    Slot->NestedElements.RemoveAt(Index);
+}
+
+void UFaceParallaxPreset::ClearNestedElements(EFaceAngleState State, FName LayerTag)
+{
+    FFaceViewStateLayerSet* StateSet = ViewAssignments.Find(State);
+    if (!StateSet) return;
+    FFaceArtSlot* Slot = StateSet->Layers.Find(LayerTag);
+    if (!Slot) return;
+    Slot->NestedElements.Empty();
 }

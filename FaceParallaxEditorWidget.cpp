@@ -1002,6 +1002,102 @@ void UFaceParallaxEditorWidget::ClearAllVisemes(EFaceAngleState State, FName Lay
 }
 
 // ====================================================================
+// PARAMETER SYSTEM
+// ====================================================================
+
+void UFaceParallaxEditorWidget::SetParamsEnabled(bool bEnabled)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->SetParamsEnabled(bEnabled);
+}
+
+bool UFaceParallaxEditorWidget::GetParamsEnabled() const
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    return Comp && Comp->GetParamsEnabled();
+}
+
+void UFaceParallaxEditorWidget::DefineParameter(FName ParamName, float DefaultValue, float Min, float Max, float SmoothingSpeed)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->DefineParameter(ParamName, DefaultValue, Min, Max, SmoothingSpeed);
+}
+
+void UFaceParallaxEditorWidget::SetParameterValue(FName ParamName, float Value)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->SetParameterValue(ParamName, Value);
+}
+
+float UFaceParallaxEditorWidget::GetParameterValue(FName ParamName) const
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    return Comp ? Comp->GetParameterValue(ParamName) : 0.0f;
+}
+
+TArray<FName> UFaceParallaxEditorWidget::GetParameterNames() const
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    return Comp ? Comp->GetParameterNames() : TArray<FName>();
+}
+
+void UFaceParallaxEditorWidget::ResetAllParameters()
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->ResetAllParameters();
+}
+
+void UFaceParallaxEditorWidget::SetParamSmoothingSpeed(FName ParamName, float Speed)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->SetParamSmoothingSpeed(ParamName, Speed);
+}
+
+float UFaceParallaxEditorWidget::GetParamSmoothingSpeed(FName ParamName) const
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    return Comp ? Comp->GetParamSmoothingSpeed(ParamName) : 8.0f;
+}
+
+// ====================================================================
+// PARAM BINDINGS (per-slot)
+// ====================================================================
+
+TArray<FFaceParamBinding> UFaceParallaxEditorWidget::GetParamBindings(EFaceAngleState State, FName LayerTag) const
+{
+    if (!ValidatePreset()) return TArray<FFaceParamBinding>();
+    return ActivePreset->GetParamBindings(State, LayerTag);
+}
+
+void UFaceParallaxEditorWidget::SetParamBindings(EFaceAngleState State, FName LayerTag, const TArray<FFaceParamBinding>& Bindings)
+{
+    if (!ValidatePreset()) return;
+    ActivePreset->SetParamBindings(State, LayerTag, Bindings);
+
+    if (PreviewActor && PreviewActor->FaceParallax)
+    {
+        PreviewActor->FaceParallax->ApplyCurrentStateTextures();
+    }
+}
+
+FFaceTextureSet UFaceParallaxEditorWidget::GetAltTextures(EFaceAngleState State, FName LayerTag) const
+{
+    if (!ValidatePreset()) return FFaceTextureSet();
+    return ActivePreset->GetAltTextures(State, LayerTag);
+}
+
+void UFaceParallaxEditorWidget::SetAltTextures(EFaceAngleState State, FName LayerTag, const FFaceTextureSet& Textures)
+{
+    if (!ValidatePreset()) return;
+    ActivePreset->SetAltTextures(State, LayerTag, Textures);
+
+    if (PreviewActor && PreviewActor->FaceParallax)
+    {
+        PreviewActor->FaceParallax->ApplyCurrentStateTextures();
+    }
+}
+
+// ====================================================================
 // SWOOSH TRANSITION
 // ====================================================================
 
@@ -1103,6 +1199,168 @@ void UFaceParallaxEditorWidget::ClearSwooshFrames(EFaceAngleState State, FName L
 {
     if (!ValidatePreset()) return;
     ActivePreset->ClearSwooshArt(State, LayerTag);
+}
+
+// ====================================================================
+// NESTED ART
+// ====================================================================
+
+void UFaceParallaxEditorWidget::SetNestedArtEnabled(bool bEnabled)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->SetNestedArtEnabled(bEnabled);
+}
+
+bool UFaceParallaxEditorWidget::GetNestedArtEnabled() const
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    return Comp ? Comp->GetNestedArtEnabled() : false;
+}
+
+int32 UFaceParallaxEditorWidget::GetNestedElementCount(EFaceAngleState State, FName LayerTag) const
+{
+    if (!ValidatePreset()) return 0;
+    return ActivePreset->GetNestedElementCount(State, LayerTag);
+}
+
+FFaceNestedArt UFaceParallaxEditorWidget::GetNestedElement(EFaceAngleState State, FName LayerTag, int32 Index) const
+{
+    if (!ValidatePreset()) return FFaceNestedArt();
+    return ActivePreset->GetNestedElement(State, LayerTag, Index);
+}
+
+void UFaceParallaxEditorWidget::SetNestedElement(EFaceAngleState State, FName LayerTag, int32 Index, const FFaceNestedArt& Element)
+{
+    if (!ValidatePreset()) return;
+    ActivePreset->SetNestedElement(State, LayerTag, Index, Element);
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->ApplyCurrentStateTextures();
+}
+
+void UFaceParallaxEditorWidget::AddNestedElement(EFaceAngleState State, FName LayerTag, const FFaceNestedArt& Element)
+{
+    if (!ValidatePreset()) return;
+    ActivePreset->AddNestedElement(State, LayerTag, Element);
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->ApplyCurrentStateTextures();
+}
+
+void UFaceParallaxEditorWidget::RemoveNestedElement(EFaceAngleState State, FName LayerTag, int32 Index)
+{
+    if (!ValidatePreset()) return;
+    ActivePreset->RemoveNestedElement(State, LayerTag, Index);
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->ApplyCurrentStateTextures();
+}
+
+void UFaceParallaxEditorWidget::SetNestedTextures(EFaceAngleState State, FName LayerTag, int32 Index, const FFaceTextureSet& Textures)
+{
+    if (!ValidatePreset()) return;
+    ActivePreset->SetNestedElement(State, LayerTag, Index, ActivePreset->GetNestedElement(State, LayerTag, Index));
+    // Must use the component function to set specific sub-field
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->SetNestedTextures(State, LayerTag, Index, Textures);
+}
+
+FFaceTextureSet UFaceParallaxEditorWidget::GetNestedTextures(EFaceAngleState State, FName LayerTag, int32 Index) const
+{
+    if (!ValidatePreset()) return FFaceTextureSet();
+    FFaceNestedArt Elem = ActivePreset->GetNestedElement(State, LayerTag, Index);
+    return Elem.Textures;
+}
+
+void UFaceParallaxEditorWidget::SetNestedTransform(EFaceAngleState State, FName LayerTag, int32 Index, const FFaceArtTransform& Transform)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->SetNestedTransform(State, LayerTag, Index, Transform);
+}
+
+FFaceArtTransform UFaceParallaxEditorWidget::GetNestedTransform(EFaceAngleState State, FName LayerTag, int32 Index) const
+{
+    if (!ValidatePreset()) return FFaceArtTransform();
+    FFaceNestedArt Elem = ActivePreset->GetNestedElement(State, LayerTag, Index);
+    return Elem.RelativeTransform;
+}
+
+void UFaceParallaxEditorWidget::SetNestedPivot(EFaceAngleState State, FName LayerTag, int32 Index, FVector2D Pivot)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->SetNestedPivot(State, LayerTag, Index, Pivot);
+}
+
+FVector2D UFaceParallaxEditorWidget::GetNestedPivot(EFaceAngleState State, FName LayerTag, int32 Index) const
+{
+    if (!ValidatePreset()) return FVector2D(0.5f, 0.5f);
+    FFaceNestedArt Elem = ActivePreset->GetNestedElement(State, LayerTag, Index);
+    return Elem.PivotPoint;
+}
+
+void UFaceParallaxEditorWidget::SetNestedJiggleEnabled(EFaceAngleState State, FName LayerTag, int32 Index, bool bEnabled)
+{
+    if (!ValidatePreset()) return;
+    FFaceNestedArt Elem = ActivePreset->GetNestedElement(State, LayerTag, Index);
+    Elem.bJiggleEnabled = bEnabled;
+    ActivePreset->SetNestedElement(State, LayerTag, Index, Elem);
+}
+
+void UFaceParallaxEditorWidget::SetNestedJiggleSettings(EFaceAngleState State, FName LayerTag, int32 Index, const FFaceJiggleSettings& Settings)
+{
+    if (!ValidatePreset()) return;
+    FFaceNestedArt Elem = ActivePreset->GetNestedElement(State, LayerTag, Index);
+    Elem.JiggleSettings = Settings;
+    ActivePreset->SetNestedElement(State, LayerTag, Index, Elem);
+}
+
+FFaceJiggleSettings UFaceParallaxEditorWidget::GetNestedJiggleSettings(EFaceAngleState State, FName LayerTag, int32 Index) const
+{
+    if (!ValidatePreset()) return FFaceJiggleSettings();
+    FFaceNestedArt Elem = ActivePreset->GetNestedElement(State, LayerTag, Index);
+    return Elem.JiggleSettings;
+}
+
+void UFaceParallaxEditorWidget::SetNestedVisibility(EFaceAngleState State, FName LayerTag, FName ElementName, EFaceAngleState ViewState, bool bVisible)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->SetNestedVisibility(State, LayerTag, ElementName, ViewState, bVisible);
+}
+
+bool UFaceParallaxEditorWidget::GetNestedVisibility(EFaceAngleState State, FName LayerTag, FName ElementName, EFaceAngleState ViewState) const
+{
+    if (!ValidatePreset()) return true;
+    int32 Count = ActivePreset->GetNestedElementCount(State, LayerTag);
+    for (int32 i = 0; i < Count; ++i)
+    {
+        FFaceNestedArt Elem = ActivePreset->GetNestedElement(State, LayerTag, i);
+        if (Elem.ElementName == ElementName)
+        {
+            const bool* bVis = Elem.ViewVisibility.Find(ViewState);
+            return bVis ? *bVis : true;
+        }
+    }
+    return true;
+}
+
+void UFaceParallaxEditorWidget::SetNestedIdleFrames(EFaceAngleState State, FName LayerTag, int32 Index, const TArray<FFaceTextureSet>& Frames)
+{
+    if (!ValidatePreset()) return;
+    FFaceNestedArt Elem = ActivePreset->GetNestedElement(State, LayerTag, Index);
+    Elem.IdleFrames = Frames;
+    ActivePreset->SetNestedElement(State, LayerTag, Index, Elem);
+}
+
+TArray<FFaceTextureSet> UFaceParallaxEditorWidget::GetNestedIdleFrames(EFaceAngleState State, FName LayerTag, int32 Index) const
+{
+    if (!ValidatePreset()) return TArray<FFaceTextureSet>();
+    FFaceNestedArt Elem = ActivePreset->GetNestedElement(State, LayerTag, Index);
+    return Elem.IdleFrames;
+}
+
+void UFaceParallaxEditorWidget::ClearNestedIdleFrames(EFaceAngleState State, FName LayerTag, int32 Index)
+{
+    if (!ValidatePreset()) return;
+    FFaceNestedArt Elem = ActivePreset->GetNestedElement(State, LayerTag, Index);
+    Elem.IdleFrames.Empty();
+    ActivePreset->SetNestedElement(State, LayerTag, Index, Elem);
 }
 
 // ====================================================================

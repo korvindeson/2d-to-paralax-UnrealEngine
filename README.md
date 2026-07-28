@@ -499,7 +499,7 @@ The editor tool is built as an **Editor Utility Widget** (`.uasset` Blueprint) t
 
 ### Widget API Reference
 
-The `UFaceParallaxEditorWidget` C++ class exposes every setting as a bindable Blueprint function, organized into 13 categories:
+The `UFaceParallaxEditorWidget` C++ class exposes every setting as a bindable Blueprint function, organized into 14 categories:
 
 | Category | Functions | Maps To |
 |---|---|---|
@@ -516,6 +516,7 @@ The `UFaceParallaxEditorWidget` C++ class exposes every setting as a bindable Bl
 | **Expression** | `SetExpression`, `GetExpression`, `SetExpressionCrossfadeDuration`, `GetExpressionCrossfadeDuration`, `IsExpressionTransitioning`, `SetExpressionTextures`, `GetExpressionTextures`, `HasExpressionTextures`, `GetAssignedExpressions`, `GetExpressionBlendParamName`, `GetExpressionAlbedoPrevParamName`, `GetExpressionNormalPrevParamName`, `GetExpressionDepthPrevParamName` | Expression crossfade, texture assignment per expression |
 | **Viseme** | `SetVisemeEnabled`, `GetVisemeEnabled`, `PlayViseme`, `StopViseme`, `IsVisemePlaying`, `GetCurrentViseme`, `SetVisemeFrameDuration`, `GetVisemeFrameDuration`, `GetVisemeFrameCount`, `SetVisemeFrameTextures`, `GetVisemeFrameTextures`, `GetAssignedVisemes` | Speech mouth shape animation per expression × viseme |
 | **Material Params** | `GetAlbedoParamName`, `GetNormalParamName`, `GetDepthParamName`, `GetAlbedoPrevParamName`, `GetNormalPrevParamName`, `GetDepthPrevParamName`, `GetArtPositionParamName`, `GetArtScaleParamName`, `GetArtRotationParamName` | Component material parameter names (dual-texture crossfade + transform) |
+| **Nested Art** | `SetNestedArtEnabled`, `GetNestedArtEnabled`, `GetNestedElementCount`, `GetNestedElement`, `SetNestedElement`, `AddNestedElement`, `RemoveNestedElement`, `SetNestedTextures`, `GetNestedTextures`, `SetNestedTransform`, `GetNestedTransform`, `SetNestedPivot`, `GetNestedPivot`, `SetNestedJiggleEnabled`, `SetNestedJiggleSettings`, `GetNestedJiggleSettings`, `SetNestedVisibility`, `GetNestedVisibility`, `SetNestedIdleFrames`, `GetNestedIdleFrames`, `ClearNestedIdleFrames` | Nested element management per slot |
 | **Query** | `HasSlot`, `IsSlotFullyAssigned`, `ClearState`, `ClearAll` | Preset slot state queries |
 
 ### Creating the EUW Blueprint
@@ -657,6 +658,73 @@ With the preset system, you no longer need separate material instances per state
 | `ArtRotationParamName` | "ArtRotation" | Art Transform Params |
 | `GridResolution` (debug) | 48 | Debug Visualizer |
 | `HeightScale` (debug) | 10.0 | Debug Visualizer |
+| `bNestedArtEnabled` | true | Nested Art |
+| `ArtPivotParamName` | "ArtPivot" | Nested Art |
+| `NestedAnimParamName` | "NestedAnimFrame" | Nested Art |
+
+---
+
+---
+
+## Nested Art & Jiggle System
+
+Attach child art pieces to existing layers (whiskers on face, ears above head) with independent transforms, per-view visibility, jiggle physics, idle animation, and pivot point control.
+
+### How it works
+
+Nested elements are stored as `FFaceNestedArt` on each `FFaceArtSlot`. Each element renders through a separate primitive component tagged with `LayerTag_ElementName` (e.g., `FaceLayer_WhiskerL`). The component discovers these primitives during `InitializeMaterials`.
+
+### Key Concepts
+
+**Primitive Tag Convention** — Nested primitives are tagged `LayerTag_ElementName`. Example: a wig belonging to the `HairLayer` gets tag `HairLayer_Wig`. The component scans all primitives for tags matching this pattern.
+
+**Nested Transform** — Each element has a `RelativeTransform` (position, scale, rotation) relative to its parent layer. The final transform is:
+```
+ChildFinal = ParentEffective + ChildRelative + JiggleOffset
+```
+
+**Pivot Point** — A normalized UV coordinate (0–1) controlling rotation/scale origin. Pushed via the `ArtPivot` material parameter. Example: a cigarette rotates around its base, not its center.
+
+**Jiggle** — Spring-damper physics driven by camera angular velocity:
+- `Stiffness` — spring constant (higher = faster oscillation)
+- `Damping` — resistance (higher = settles faster)
+- `ImpulseScale` — how much camera movement feeds the jiggle
+- `JiggleAxis` — which axes jiggle (X, Y, or both)
+
+The jiggle offset is additive to the child's position and only affects the element itself, not its parent or siblings.
+
+**Idle Animation** — A looping flipbook defined by `IdleFrames` (array of `FFaceTextureSet`). Configurable `IdleFrameDuration` and `IdleSpeedMultiplier`. Animation cycles continuously; 0 frames = static.
+
+**Per-View Visibility** — `ViewVisibility` map on each element overrides visibility per view state. Unlisted states default to visible.
+
+**Static Nesting** — Non-jiggle elements can have `Children` (arbitrary depth). Jiggle elements are leaf nodes (cannot have children).
+
+### Data Structures
+
+| Struct | Fields | Purpose |
+|---|---|---|
+| `FFaceJiggleSettings` | Stiffness, Damping, ImpulseScale, JiggleAxis | Spring-damper physics parameters |
+| `FFaceNestedArt` | ElementName, Textures, RelativeTransform, PivotPoint, bJiggleEnabled, JiggleSettings, IdleFrames, IdleFrameDuration, IdleSpeedMultiplier, ViewVisibility, ParamBindings, Children | A child art piece attached to a slot |
+
+### Widget API — Nested Art Category
+
+The `UFaceParallaxEditorWidget` adds a **Nested Art** category with 23 BP functions:
+
+| Function | Purpose |
+|---|---|
+| `SetNestedArtEnabled` / `GetNestedArtEnabled` | Master toggle |
+| `GetNestedElementCount` | Count elements on a slot |
+| `GetNestedElement` / `SetNestedElement` | Get/set element by index |
+| `AddNestedElement` / `RemoveNestedElement` | Add/remove elements |
+| `SetNestedTextures` / `GetNestedTextures` | Element textures |
+| `SetNestedTransform` / `GetNestedTransform` | Relative transform |
+| `SetNestedPivot` / `GetNestedPivot` | Pivot point |
+| `SetNestedJiggleEnabled` | Toggle jiggle per element |
+| `SetNestedJiggleSettings` / `GetNestedJiggleSettings` | Jiggle physics params |
+| `SetNestedVisibility` / `GetNestedVisibility` | Per-view visibility |
+| `SetNestedIdleFrames` / `GetNestedIdleFrames` / `ClearNestedIdleFrames` | Idle animation frames |
+
+The Widget API table in the previous section now has **14 categories** (Nested Art added).
 
 ---
 
@@ -672,12 +740,12 @@ With the preset system, you no longer need separate material instances per state
 ## Project Files
 
 ```
-FaceParallaxTypes.h             — Shared types (EFaceAngleState, FFaceTextureSet, FFaceViewStateLayerSet, FFaceArtTransform, FFaceArtSlot)
+FaceParallaxTypes.h             — Shared types (EFaceAngleState, FFaceTextureSet, FFaceViewStateLayerSet, FFaceArtTransform, FFaceArtSlot, FFaceJiggleSettings, FFaceNestedArt)
 FaceParallaxComponent.h/.cpp    — Core parallax component with preset + transform support
 FaceParallaxPreset.h/.cpp       — DataAsset for storing texture + transform assignments per view state × layer
 DepthDebugVisualizerComponent.h/.cpp  — Procedural depth mesh visualizer
 FaceParallaxPreviewActor.h/.cpp       — Preview actor with scene capture, orbit camera, and part transform access
-FaceParallaxEditorWidget.h/.cpp — Editor widget with 10 categories of bindable Blueprint functions for every setting
+FaceParallaxEditorWidget.h/.cpp — Editor widget with 14 categories of bindable Blueprint functions for every setting (includes Nested Art)
 
 Tests/
   ParallaxMathTests.cpp       — Standalone C++ tests for state machine, transforms, edge cases (no UE)

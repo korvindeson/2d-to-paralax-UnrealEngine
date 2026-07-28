@@ -9,6 +9,7 @@ class UMaterialInstanceDynamic;
 class UFaceParallaxPreset;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnFaceStateChangedSignature, EFaceAngleState, NewState, EFaceAngleState, OldState);
+DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnParamValueChangedSignature, FName, ParamName, float, OldValue, float, NewValue);
 
 USTRUCT(BlueprintType)
 struct FFaceLayerDef
@@ -124,6 +125,106 @@ public:
 
     UFUNCTION(BlueprintCallable, Category = "Face Parallax|Swoosh")
     float GetSwooshSize() const { return SwooshSize; }
+
+    // --- NESTED ART + JIGGLE SETTINGS ---
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Nested Art")
+    bool bNestedArtEnabled = true;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Nested Art",
+        meta = (DisplayName = "Art Pivot Param Name"))
+    FName ArtPivotParamName = "ArtPivot";
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Nested Art",
+        meta = (DisplayName = "Nested Anim Frame Param Name"))
+    FName NestedAnimParamName = "NestedAnimFrame";
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Nested Art")
+    void SetNestedArtEnabled(bool bEnabled) { bNestedArtEnabled = bEnabled; }
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Nested Art")
+    bool GetNestedArtEnabled() const { return bNestedArtEnabled; }
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Nested Art")
+    int32 GetNestedElementCount(EFaceAngleState State, FName LayerTag) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Nested Art")
+    FFaceNestedArt GetNestedElement(EFaceAngleState State, FName LayerTag, int32 Index) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Nested Art")
+    void SetNestedElement(EFaceAngleState State, FName LayerTag, int32 Index, const FFaceNestedArt& Element);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Nested Art")
+    void AddNestedElement(EFaceAngleState State, FName LayerTag, const FFaceNestedArt& Element);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Nested Art")
+    void RemoveNestedElement(EFaceAngleState State, FName LayerTag, int32 Index);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Nested Art")
+    void SetNestedTextures(EFaceAngleState State, FName LayerTag, int32 Index, const FFaceTextureSet& Textures);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Nested Art")
+    void SetNestedTransform(EFaceAngleState State, FName LayerTag, int32 Index, const FFaceArtTransform& Transform);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Nested Art")
+    void SetNestedPivot(EFaceAngleState State, FName LayerTag, int32 Index, FVector2D Pivot);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Nested Art")
+    void SetNestedVisibility(EFaceAngleState State, FName LayerTag, FName ElementName, EFaceAngleState ViewState, bool bVisible);
+
+    // --- PARAMETER SYSTEM ---
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Parameters")
+    bool bParamsEnabled = true;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Parameters",
+        meta = (ClampMin = "0.1", ClampMax = "100.0"))
+    float ParamSmoothingSpeed = 8.0f;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Parameters")
+    void SetParamsEnabled(bool bEnabled) { bParamsEnabled = bEnabled; }
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Parameters")
+    bool GetParamsEnabled() const { return bParamsEnabled; }
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Parameters")
+    void DefineParameter(FName ParamName, float DefaultValue = 0.0f, float Min = 0.0f, float Max = 1.0f, float SmoothingSpeed = 8.0f);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Parameters")
+    void SetParameterValue(FName ParamName, float Value);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Parameters")
+    float GetParameterValue(FName ParamName) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Parameters")
+    TArray<FName> GetParameterNames() const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Parameters")
+    void ResetAllParameters();
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Parameters")
+    void SetParamSmoothingSpeed(FName ParamName, float Speed);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Parameters")
+    float GetParamSmoothingSpeed(FName ParamName) const;
+
+    UPROPERTY(BlueprintAssignable, Category = "Face Parallax|Events")
+    FOnParamValueChangedSignature OnParamValueChanged;
+
+    // --- PARAMETER MATERIAL PARAMS ---
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Parameters",
+        meta = (DisplayName = "Param Blend Alpha Param Name"))
+    FName ParamBlendParamName = "ParamBlendAlpha";
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Parameters",
+        meta = (DisplayName = "Alt Albedo Param Name"))
+    FName ParamAltAlbedoParamName = "AltAlbedoTexture";
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Parameters",
+        meta = (DisplayName = "Alt Normal Param Name"))
+    FName ParamAltNormalParamName = "AltNormalTexture";
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Parameters",
+        meta = (DisplayName = "Alt Depth Param Name"))
+    FName ParamAltDepthParamName = "AltDepthTexture";
 
     // --- PARALLAX SETTINGS ---
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Parallax")
@@ -370,6 +471,20 @@ public:
     const TMap<FName, TArray<UMaterialInstanceDynamic*>>& GetMaterialLayers() const { return FaceMaterialsByLayer; }
 
 private:
+    struct FFaceParamDef
+    {
+        float DefaultValue = 0.0f;
+        float CurrentValue = 0.0f;
+        float TargetValue = 0.0f;
+        float Min = 0.0f;
+        float Max = 1.0f;
+        float SmoothingSpeed = 8.0f;
+    };
+
+    TMap<FName, FFaceParamDef> ParamDefinitions;
+
+    void UpdateParametersTick(float DeltaTime);
+
     UPROPERTY()
     class USkeletalMeshComponent* OwnerMesh;
 
@@ -412,9 +527,35 @@ private:
     float SwooshBlendOutElapsed = 0.0f;
     float PreviousFrameYaw = 0.0f;
     float PreviousFramePitch = 0.0f;
+    float FrameDyaw = 0.0f;
+    float FrameDpitch = 0.0f;
     float SwooshSmearAngle = 0.0f;
     int32 SwooshProceduralTick = 0;
     TArray<FFaceTextureSet> SwooshFrames;
+
+    // --- Nested art + jiggle state ---
+    struct FNestedJiggleState
+    {
+        FVector2D Position;
+        FVector2D Velocity;
+    };
+
+    struct FNestedAnimState
+    {
+        int32 FrameIndex = 0;
+        float FrameTimer = 0.0f;
+    };
+
+    TMap<FName, FNestedJiggleState> JiggleStates;
+    TMap<FName, FNestedAnimState> AnimStates;
+
+    UPROPERTY()
+    TMap<FName, TArray<UMaterialInstanceDynamic*>> NestedMaterialsByElement;
+
+    void UpdateNestedArtTick(float DeltaTime);
+    void PushNestedArtParams();
+    void PushNestedChildArt(const FFaceNestedArt& Element, const FFaceArtTransform& ParentTransform, FName LayerTag, FName ParentElementName);
+    FFaceArtTransform ComputeNestedEffectiveTransform(const FFaceNestedArt& Element, const FFaceArtTransform& ParentTransform, const FVector2D& JiggleOffset) const;
 
     void UpdateBlinkTick(float DeltaTime);
     void UpdateExpressionTick(float DeltaTime);

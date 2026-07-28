@@ -137,6 +137,113 @@ enum class EViseme : uint8
     R       UMETA(DisplayName = "R")
 };
 
+UENUM(BlueprintType)
+enum class EFaceParamTarget : uint8
+{
+    PositionX       UMETA(DisplayName = "Position X"),
+    PositionY       UMETA(DisplayName = "Position Y"),
+    ScaleX          UMETA(DisplayName = "Scale X"),
+    ScaleY          UMETA(DisplayName = "Scale Y"),
+    Rotation        UMETA(DisplayName = "Rotation"),
+    TextureBlend    UMETA(DisplayName = "Texture Blend")
+};
+
+USTRUCT(BlueprintType)
+struct FFaceParamBinding
+{
+    GENERATED_BODY()
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Param Binding")
+    FName ParamName;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Param Binding")
+    EFaceParamTarget Target = EFaceParamTarget::PositionX;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Param Binding",
+        meta = (ClampMin = "-10.0", ClampMax = "10.0"))
+    float Scale = 1.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Param Binding")
+    float Offset = 0.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Param Binding")
+    bool bInvert = false;
+};
+
+USTRUCT(BlueprintType)
+struct FFaceJiggleSettings
+{
+    GENERATED_BODY()
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Jiggle",
+        meta = (ClampMin = "0.0", ClampMax = "20.0"))
+    float Stiffness = 5.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Jiggle",
+        meta = (ClampMin = "0.0", ClampMax = "5.0"))
+    float Damping = 0.5f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Jiggle",
+        meta = (ClampMin = "0.0", ClampMax = "10.0"))
+    float ImpulseScale = 1.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Jiggle")
+    FVector2D JiggleAxis = FVector2D(1.0f, 1.0f);
+};
+
+USTRUCT(BlueprintType)
+struct FFaceNestedArt
+{
+    GENERATED_BODY()
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Nested Art")
+    FName ElementName;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Nested Art")
+    FFaceTextureSet Textures;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Nested Art")
+    FFaceArtTransform RelativeTransform;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Nested Art",
+        meta = (ClampMin = "0.0", ClampMax = "1.0"))
+    FVector2D PivotPoint = FVector2D(0.5f, 0.5f);
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Nested Art",
+        meta = (DisplayName = "Jiggle Enabled"))
+    bool bJiggleEnabled = false;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Nested Art",
+        meta = (EditCondition = "bJiggleEnabled"))
+    FFaceJiggleSettings JiggleSettings;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Nested Art",
+        meta = (DisplayName = "Idle Animation Frames (looping)"))
+    TArray<FFaceTextureSet> IdleFrames;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Nested Art",
+        meta = (ClampMin = "0.001", EditCondition = "IdleFrames.Num() > 0"))
+    float IdleFrameDuration = 0.1f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Nested Art",
+        meta = (ClampMin = "0.0", EditCondition = "IdleFrames.Num() > 0"))
+    float IdleSpeedMultiplier = 1.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Nested Art")
+    TMap<TEnumAsByte<EFaceAngleState>, bool> ViewVisibility;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Nested Art")
+    TArray<FFaceParamBinding> ParamBindings;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Nested Art",
+        meta = (DisplayName = "Alt Textures (for TextureBlend binding)"))
+    FFaceTextureSet AltTextures;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Nested Art",
+        meta = (EditCondition = "!bJiggleEnabled"))
+    TArray<FFaceNestedArt> Children;
+};
+
 USTRUCT(BlueprintType)
 struct FFaceArtSlot
 {
@@ -166,6 +273,18 @@ struct FFaceArtSlot
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Art Slot",
         meta = (DisplayName = "Swoosh Frames (per-target-state)"))
     TMap<TEnumAsByte<EFaceAngleState>, FFaceSwooshArt> SwooshToState;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Art Slot",
+        meta = (DisplayName = "Parameter Bindings"))
+    TArray<FFaceParamBinding> ParamBindings;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Art Slot",
+        meta = (DisplayName = "Alt Textures (for TextureBlend binding)"))
+    FFaceTextureSet AltTextures;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Art Slot",
+        meta = (DisplayName = "Nested Art Elements"))
+    TArray<struct FFaceNestedArt> NestedElements;
 
     FFaceArtTransform GetEffectiveTransform(EFaceAngleState ForState) const
     {

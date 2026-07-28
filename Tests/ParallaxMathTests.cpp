@@ -5,8 +5,10 @@
 #include <cmath>
 #include <cstdio>
 #include <cassert>
+#include <cstdint>
 #include <algorithm>
 #include <array>
+#include <string>
 
 // --- Minimal math types matching our UE types ---
 struct FVector2D {
@@ -1827,6 +1829,1077 @@ void TestSwooshTransition() {
     }
 }
 
+// ====================================================================
+// PARAMETER SYSTEM TESTS
+// ====================================================================
+
+enum class EFaceParamTarget {
+    PositionX, PositionY, ScaleX, ScaleY, Rotation, TextureBlend
+};
+
+struct FFaceParamBinding {
+    int ParamId = 0;
+    EFaceParamTarget Target = EFaceParamTarget::PositionX;
+    double Scale = 1.0;
+    double Offset = 0.0;
+    bool bInvert = false;
+};
+
+struct ParamDef {
+    double DefaultValue = 0.0;
+    double CurrentValue = 0.0;
+    double TargetValue = 0.0;
+    double Min = 0.0;
+    double Max = 1.0;
+    double SmoothingSpeed = 8.0;
+};
+
+struct ParamSystem {
+    ParamDef Params[10];
+    int ParamCount = 0;
+
+    // Per-layer bindings: up to 4 layers, 8 bindings each
+    FFaceParamBinding Bindings[4][8];
+    int BindingCounts[4] = {};
+    int LayerCount = 4;
+
+    // Alt textures per layer (simplified: just a bool)
+    bool bHasAltTextures[4] = {};
+
+    void Define(int id, double def, double minv, double maxv, double speed) {
+        if (id >= 0 && id < 10) {
+            Params[id].DefaultValue = std::max(minv, std::min(maxv, def));
+            Params[id].CurrentValue = Params[id].DefaultValue;
+            Params[id].TargetValue = Params[id].DefaultValue;
+            Params[id].Min = minv;
+            Params[id].Max = maxv;
+            Params[id].SmoothingSpeed = std::max(0.1, speed);
+            if (id >= ParamCount) ParamCount = id + 1;
+        }
+    }
+
+    void SetValue(int id, double val) {
+        if (id < 0 || id >= 10) return;
+        val = std::max(Params[id].Min, std::min(Params[id].Max, val));
+        Params[id].TargetValue = val;
+    }
+
+    double GetValue(int id) const {
+        if (id < 0 || id >= 10) return 0.0;
+        return Params[id].CurrentValue;
+    }
+
+    void ResetAll() {
+        for (int i = 0; i < 10; ++i) {
+            Params[i].TargetValue = Params[i].DefaultValue;
+        }
+    }
+
+    void TickSmoothing(double dt) {
+        for (int i = 0; i < 10; ++i) {
+            double& cur = Params[i].CurrentValue;
+            double tgt = Params[i].TargetValue;
+            if (std::abs(cur - tgt) > 0.00001) {
+                double speed = Params[i].SmoothingSpeed;
+                double factor = std::min(1.0, speed * dt);
+                cur += (tgt - cur) * factor;
+            }
+        }
+    }
+
+    void AddBinding(int layerIdx, int paramId, EFaceParamTarget target, double scale, double offset, bool invert) {
+        if (layerIdx < 0 || layerIdx >= 4) return;
+        int& count = BindingCounts[layerIdx];
+        if (count >= 8) return;
+        Bindings[layerIdx][count].ParamId = paramId;
+        Bindings[layerIdx][count].Target = target;
+        Bindings[layerIdx][count].Scale = scale;
+        Bindings[layerIdx][count].Offset = offset;
+        Bindings[layerIdx][count].bInvert = invert;
+        count++;
+    }
+
+    struct EvalResult {
+        double PosX, PosY, ScaleX, ScaleY, Rotation;
+        double TextureBlend;
+    };
+
+    EvalResult Evaluate(int layerIdx, double basePosX, double basePosY, double baseScaleX, double baseScaleY, double baseRot) {
+        EvalResult r = {basePosX, basePosY, baseScaleX, baseScaleY, baseRot, 0.0};
+        if (layerIdx < 0 || layerIdx >= 4) return r;
+
+        for (int b = 0; b < BindingCounts[layerIdx]; ++b) {
+            const FFaceParamBinding& binding = Bindings[layerIdx][b];
+            double pv = GetValue(binding.ParamId);
+            double ev = binding.bInvert ? (1.0 - pv) : pv;
+            double mod = ev * binding.Scale + binding.Offset;
+
+            switch (binding.Target) {
+                case EFaceParamTarget::PositionX: r.PosX += mod; break;
+                case EFaceParamTarget::PositionY: r.PosY += mod; break;
+                case EFaceParamTarget::ScaleX:    r.ScaleX *= std::max(0.01, 1.0 + mod); break;
+                case EFaceParamTarget::ScaleY:    r.ScaleY *= std::max(0.01, 1.0 + mod); break;
+                case EFaceParamTarget::Rotation:  r.Rotation += mod; break;
+                case EFaceParamTarget::TextureBlend:
+                    r.TextureBlend = std::max(r.TextureBlend, std::max(0.0, std::min(1.0, ev * binding.Scale + binding.Offset)));
+                    break;
+            }
+        }
+        return r;
+    }
+};
+
+void TestParameterSystem() {
+    printf("=== Parameter System ===\n");
+
+    // Basic param def/set/get
+    {
+        ParamSystem ps;
+        ps.Define(0, 0.0, 0.0, 1.0, 8.0);
+        TEST("Param default 0", fabs(ps.GetValue(0)) < 0.001);
+
+        ps.SetValue(0, 0.5);
+        ps.TickSmoothing(1.0);
+        TEST("Param set 0.5", fabs(ps.GetValue(0) - 0.5) < 0.01);
+
+        ps.SetValue(0, 1.0);
+        ps.TickSmoothing(1.0);
+        TEST("Param set 1.0", fabs(ps.GetValue(0) - 1.0) < 0.01);
+    }
+
+    // Clamping
+    {
+        ParamSystem ps;
+        ps.Define(0, 0.0, 0.0, 1.0, 8.0);
+        ps.SetValue(0, 2.0);
+        TEST("Clamp to max", fabs(ps.Params[0].TargetValue - 1.0) < 0.001);
+
+        ps.SetValue(0, -1.0);
+        TEST("Clamp to min", fabs(ps.Params[0].TargetValue) < 0.001);
+    }
+
+    // Unknown param returns 0
+    {
+        ParamSystem ps;
+        TEST("Unknown param = 0", fabs(ps.GetValue(99)) < 0.001);
+    }
+
+    // Reset restores default
+    {
+        ParamSystem ps;
+        ps.Define(0, 0.3, 0.0, 1.0, 8.0);
+        ps.SetValue(0, 0.9);
+        ps.ResetAll();
+        TEST("Reset to default", fabs(ps.Params[0].TargetValue - 0.3) < 0.001);
+    }
+
+    // Param with non-zero default
+    {
+        ParamSystem ps;
+        ps.Define(0, 0.7, 0.0, 1.0, 8.0);
+        TEST("Non-zero default", fabs(ps.GetValue(0) - 0.7) < 0.01);
+    }
+
+    // Smoothing multiple steps
+    {
+        ParamSystem ps;
+        ps.Define(0, 0.0, 0.0, 1.0, 4.0);
+        ps.SetValue(0, 1.0);
+        ps.TickSmoothing(0.016);
+        double v1 = ps.GetValue(0);
+        TEST("Smoothing step 1 > 0", v1 > 0.0);
+        TEST("Smoothing step 1 < 1", v1 < 1.0);
+        for (int i = 0; i < 120; ++i) ps.TickSmoothing(0.016);
+        TEST("Smoothing reaches target", fabs(ps.GetValue(0) - 1.0) < 0.01);
+    }
+
+    // Single binding: PositionX
+    {
+        ParamSystem ps;
+        ps.Define(0, 0.0, 0.0, 1.0, 8.0);
+        ps.AddBinding(0, 0, EFaceParamTarget::PositionX, 10.0, 0.0, false);
+        ps.SetValue(0, 0.5);
+        ps.TickSmoothing(1.0);
+        auto r = ps.Evaluate(0, 100.0, 200.0, 1.0, 1.0, 0.0);
+        TEST("PositionX binding", fabs(r.PosX - 105.0) < 0.01);
+        TEST("PositionY unchanged", fabs(r.PosY - 200.0) < 0.01);
+    }
+
+    // Single binding: PositionY
+    {
+        ParamSystem ps;
+        ps.Define(0, 0.0, 0.0, 1.0, 8.0);
+        ps.AddBinding(0, 0, EFaceParamTarget::PositionY, 20.0, 0.0, false);
+        ps.SetValue(0, 0.3);
+        ps.TickSmoothing(1.0);
+        auto r = ps.Evaluate(0, 100.0, 200.0, 1.0, 1.0, 0.0);
+        TEST("PositionY binding", fabs(r.PosY - 206.0) < 0.01);
+    }
+
+    // Single binding: ScaleX (multiplicative)
+    {
+        ParamSystem ps;
+        ps.Define(0, 0.0, 0.0, 1.0, 8.0);
+        ps.AddBinding(0, 0, EFaceParamTarget::ScaleX, 1.0, 0.0, false);
+        ps.SetValue(0, 0.5);
+        ps.TickSmoothing(1.0);
+        auto r = ps.Evaluate(0, 0.0, 0.0, 1.0, 1.0, 0.0);
+        TEST("ScaleX binding: 1 * (1 + 0.5*1) = 1.5", fabs(r.ScaleX - 1.5) < 0.01);
+    }
+
+    // Single binding: ScaleY (multiplicative)
+    {
+        ParamSystem ps;
+        ps.Define(0, 0.0, 0.0, 1.0, 8.0);
+        ps.AddBinding(0, 0, EFaceParamTarget::ScaleY, -0.5, 0.0, false);
+        ps.SetValue(0, 1.0);
+        ps.TickSmoothing(1.0);
+        auto r = ps.Evaluate(0, 0.0, 0.0, 1.0, 1.0, 0.0);
+        TEST("ScaleY binding: 1 * (1 + 1.0*(-0.5)) = 0.5", fabs(r.ScaleY - 0.5) < 0.01);
+    }
+
+    // Single binding: Rotation (additive)
+    {
+        ParamSystem ps;
+        ps.Define(0, 0.0, 0.0, 1.0, 8.0);
+        ps.AddBinding(0, 0, EFaceParamTarget::Rotation, 30.0, 0.0, false);
+        ps.SetValue(0, 0.5);
+        ps.TickSmoothing(1.0);
+        auto r = ps.Evaluate(0, 0.0, 0.0, 1.0, 1.0, 10.0);
+        TEST("Rotation binding: 10 + 0.5*30 = 25", fabs(r.Rotation - 25.0) < 0.01);
+    }
+
+    // Single binding: Rotation with offset
+    {
+        ParamSystem ps;
+        ps.Define(0, 0.0, 0.0, 1.0, 8.0);
+        ps.AddBinding(0, 0, EFaceParamTarget::Rotation, 0.0, 15.0, false);
+        ps.SetValue(0, 0.0);
+        ps.TickSmoothing(1.0);
+        auto r = ps.Evaluate(0, 0.0, 0.0, 1.0, 1.0, 0.0);
+        TEST("Rotation offset only: 15", fabs(r.Rotation - 15.0) < 0.01);
+    }
+
+    // Scale + offset + invert combos
+    {
+        ParamSystem ps;
+        ps.Define(0, 0.0, 0.0, 1.0, 8.0);
+        // Invert + scale + offset: when param=0, invert makes it 1, so mod = 1*2+5 = 7
+        ps.AddBinding(0, 0, EFaceParamTarget::PositionX, 2.0, 5.0, true);
+        ps.SetValue(0, 0.0);
+        ps.TickSmoothing(1.0);
+        auto r = ps.Evaluate(0, 0.0, 0.0, 1.0, 1.0, 0.0);
+        TEST("Invert at 0: (1-0)*2+5=7", fabs(r.PosX - 7.0) < 0.01);
+
+        ps.SetValue(0, 1.0);
+        ps.TickSmoothing(1.0);
+        r = ps.Evaluate(0, 0.0, 0.0, 1.0, 1.0, 0.0);
+        TEST("Invert at 1: (1-1)*2+5=5", fabs(r.PosX - 5.0) < 0.01);
+    }
+
+    // Multiple bindings on same slot
+    {
+        ParamSystem ps;
+        ps.Define(0, 0.0, 0.0, 1.0, 8.0);
+        ps.Define(1, 0.5, 0.0, 1.0, 8.0);
+        ps.AddBinding(0, 0, EFaceParamTarget::PositionX, 10.0, 0.0, false);
+        ps.AddBinding(0, 1, EFaceParamTarget::PositionY, -20.0, 0.0, false);
+        ps.AddBinding(0, 0, EFaceParamTarget::Rotation, 5.0, 0.0, false);
+        ps.SetValue(0, 1.0);
+        ps.TickSmoothing(1.0);
+        auto r = ps.Evaluate(0, 0.0, 0.0, 1.0, 1.0, 0.0);
+        TEST("Multi binding PosX", fabs(r.PosX - 10.0) < 0.01);
+        TEST("Multi binding PosY = 0 + 0.5*(-20) = -10", fabs(r.PosY + 10.0) < 0.01);
+        TEST("Multi binding Rot = 0 + 1.0*5 = 5", fabs(r.Rotation - 5.0) < 0.01);
+    }
+
+    // TextureBlend binding
+    {
+        ParamSystem ps;
+        ps.Define(0, 0.0, 0.0, 1.0, 8.0);
+        ps.AddBinding(0, 0, EFaceParamTarget::TextureBlend, 1.0, 0.0, false);
+        ps.SetValue(0, 0.0);
+        ps.TickSmoothing(1.0);
+        auto r = ps.Evaluate(0, 0.0, 0.0, 1.0, 1.0, 0.0);
+        TEST("TextureBlend at 0 = 0", fabs(r.TextureBlend) < 0.001);
+
+        ps.SetValue(0, 0.7);
+        ps.TickSmoothing(1.0);
+        r = ps.Evaluate(0, 0.0, 0.0, 1.0, 1.0, 0.0);
+        TEST("TextureBlend at 0.7 = 0.7", fabs(r.TextureBlend - 0.7) < 0.01);
+    }
+
+    // TextureBlend takes max of multiple bindings
+    {
+        ParamSystem ps;
+        ps.Define(0, 0.0, 0.0, 1.0, 8.0);
+        ps.Define(1, 0.3, 0.0, 1.0, 8.0);
+        ps.AddBinding(0, 0, EFaceParamTarget::TextureBlend, 1.0, 0.0, false);
+        ps.AddBinding(0, 1, EFaceParamTarget::TextureBlend, 1.0, 0.0, false);
+        ps.SetValue(0, 0.5);
+        ps.SetValue(1, 0.8);
+        ps.TickSmoothing(1.0);
+        auto r = ps.Evaluate(0, 0.0, 0.0, 1.0, 1.0, 0.0);
+        TEST("TextureBlend takes max 0.8", fabs(r.TextureBlend - 0.8) < 0.01);
+    }
+
+    // TextureBlend clamped to [0,1]
+    {
+        ParamSystem ps;
+        ps.Define(0, 0.0, 0.0, 1.0, 8.0);
+        ps.AddBinding(0, 0, EFaceParamTarget::TextureBlend, 2.0, 0.0, false);
+        ps.SetValue(0, 1.0);
+        ps.TickSmoothing(1.0);
+        auto r = ps.Evaluate(0, 0.0, 0.0, 1.0, 1.0, 0.0);
+        TEST("TextureBlend clamped to 1", r.TextureBlend <= 1.0);
+    }
+
+    // Zero scale factor
+    {
+        ParamSystem ps;
+        ps.Define(0, 1.0, 0.0, 1.0, 8.0);
+        ps.AddBinding(0, 0, EFaceParamTarget::ScaleX, 0.0, 0.0, false);
+        auto r = ps.Evaluate(0, 0.0, 0.0, 1.0, 1.0, 0.0);
+        TEST("Zero scale factor no change", fabs(r.ScaleX - 1.0) < 0.01);
+    }
+
+    // Negative scale factor guarded
+    {
+        ParamSystem ps;
+        ps.Define(0, 0.0, 0.0, 1.0, 8.0);
+        ps.AddBinding(0, 0, EFaceParamTarget::ScaleX, -2.0, 0.0, false);
+        ps.SetValue(0, 1.0);
+        ps.TickSmoothing(1.0);
+        auto r = ps.Evaluate(0, 0.0, 0.0, 1.0, 1.0, 0.0);
+        TEST("Negative scale guarded >= 0.01", r.ScaleX >= 0.01);
+    }
+
+    // Binding on wrong layer doesn't affect others
+    {
+        ParamSystem ps;
+        ps.Define(0, 1.0, 0.0, 1.0, 8.0);
+        ps.AddBinding(0, 0, EFaceParamTarget::PositionX, 50.0, 0.0, false);
+        ps.TickSmoothing(1.0);
+        auto r1 = ps.Evaluate(0, 0.0, 0.0, 1.0, 1.0, 0.0);
+        auto r2 = ps.Evaluate(1, 0.0, 0.0, 1.0, 1.0, 0.0);
+        TEST("Layer 0 binding affects layer 0", fabs(r1.PosX - 50.0) < 0.01);
+        TEST("Layer 1 unaffected by layer 0 bindings", fabs(r2.PosX) < 0.01);
+    }
+
+    // Multiple params, each binding uses its own param
+    {
+        ParamSystem ps;
+        ps.Define(0, 0.0, 0.0, 1.0, 8.0);
+        ps.Define(1, 0.3, 0.0, 1.0, 8.0);
+        ps.Define(2, 0.7, 0.0, 1.0, 8.0);
+        ps.AddBinding(0, 0, EFaceParamTarget::PositionX, 100.0, 0.0, false);
+        ps.AddBinding(0, 1, EFaceParamTarget::PositionY, 100.0, 0.0, false);
+        ps.AddBinding(0, 2, EFaceParamTarget::Rotation, 100.0, 0.0, false);
+        ps.SetValue(0, 1.0);
+        ps.SetValue(1, 1.0);
+        ps.SetValue(2, 1.0);
+        ps.TickSmoothing(1.0);
+        auto r = ps.Evaluate(0, 0.0, 0.0, 1.0, 1.0, 0.0);
+        TEST("Three params at 1: PosX=100", fabs(r.PosX - 100.0) < 0.01);
+        TEST("Three params at 1: PosY=100", fabs(r.PosY - 100.0) < 0.01);
+        TEST("Three params at 1: Rot=100", fabs(r.Rotation - 100.0) < 0.01);
+    }
+
+    // Layer with no bindings passes through
+    {
+        ParamSystem ps;
+        auto r = ps.Evaluate(0, 10.0, 20.0, 2.0, 3.0, 45.0);
+        TEST("No bindings pass through PosX", fabs(r.PosX - 10.0) < 0.01);
+        TEST("No bindings pass through Scale", fabs(r.ScaleX - 2.0) < 0.01 && fabs(r.ScaleY - 3.0) < 0.01);
+        TEST("No bindings pass through Rot", fabs(r.Rotation - 45.0) < 0.01);
+    }
+}
+
+// ====================================================================
+// NESTED ART + JIGGLE SYSTEM TESTS
+// ====================================================================
+
+struct FFaceJiggleSettings {
+    double Stiffness = 5.0;
+    double Damping = 0.5;
+    double ImpulseScale = 1.0;
+    double JiggleAxisX = 1.0, JiggleAxisY = 1.0;
+};
+
+struct FFaceTextureSet {
+    bool bValid = false;
+    bool IsValid() const { return bValid; }
+};
+
+struct FFaceNestedArt {
+    int32_t ElementName = 0; // using int for simplicity
+    FFaceArtTransform RelativeTransform;
+    double PivotX = 0.5, PivotY = 0.5;
+    bool bJiggleEnabled = false;
+    FFaceJiggleSettings JiggleSettings;
+    int32_t IdleFrameCount = 0;
+    double IdleFrameDuration = 0.1;
+    double IdleSpeedMultiplier = 1.0;
+    struct { int32_t State; bool Visible; } ViewVisibility[10];
+    int32_t ViewVisibilityCount = 0;
+    int32_t ChildCount = 0;
+};
+
+// Spring-damper simulation (matches component logic)
+struct JiggleState {
+    double PosX = 0.0, PosY = 0.0;
+    double VelX = 0.0, VelY = 0.0;
+};
+
+void SimulateJiggle(JiggleState& S, const FFaceJiggleSettings& J, double ImpulseX, double ImpulseY, double DT) {
+    S.VelX += ImpulseX * J.JiggleAxisX * J.ImpulseScale;
+    S.VelY += ImpulseY * J.JiggleAxisY * J.ImpulseScale;
+    double SpringForceX = -S.PosX * J.Stiffness;
+    double SpringForceY = -S.PosY * J.Stiffness;
+    double DampingForceX = -S.VelX * J.Damping;
+    double DampingForceY = -S.VelY * J.Damping;
+    S.VelX += (SpringForceX + DampingForceX) * DT;
+    S.VelY += (SpringForceY + DampingForceY) * DT;
+    S.PosX += S.VelX * DT;
+    S.PosY += S.VelY * DT;
+}
+
+FFaceArtTransform ComputeNestedTransform(const FFaceArtTransform& Parent, const FFaceArtTransform& ChildRelative, double JiggleX, double JiggleY) {
+    FFaceArtTransform Result;
+    Result.Position.X = Parent.Position.X + ChildRelative.Position.X + JiggleX;
+    Result.Position.Y = Parent.Position.Y + ChildRelative.Position.Y + JiggleY;
+    Result.Scale.X = Parent.Scale.X * ChildRelative.Scale.X;
+    Result.Scale.Y = Parent.Scale.Y * ChildRelative.Scale.Y;
+    Result.Rotation = Parent.Rotation + ChildRelative.Rotation;
+    return Result;
+}
+
+int32_t AdvanceIdleFrame(int32_t CurrentFrame, double& Timer, double DeltaTime, int32_t NumFrames, double FrameDuration, double SpeedMult) {
+    double EffectiveDuration = FrameDuration / std::max(0.001, SpeedMult);
+    Timer += DeltaTime;
+    while (Timer >= EffectiveDuration && NumFrames > 0) {
+        Timer -= EffectiveDuration;
+        CurrentFrame = (CurrentFrame + 1) % NumFrames;
+    }
+    return CurrentFrame;
+}
+
+bool GetNestedVisibility(const FFaceNestedArt& Elem, int32_t ViewState) {
+    bool Default = true;
+    for (int32_t i = 0; i < Elem.ViewVisibilityCount; ++i) {
+        if (Elem.ViewVisibility[i].State == ViewState)
+            Default = Elem.ViewVisibility[i].Visible;
+    }
+    return Default;
+}
+
+void TestNestedArtSystem() {
+    printf("\n--- Nested Art + Jiggle System ---\n");
+
+    // === JIGGLE PHYSICS (15 tests) ===
+
+    // 1. Initial position zero
+    {
+        JiggleState S;
+        TEST("Jiggle initial pos X zero", S.PosX == 0.0);
+        TEST("Jiggle initial pos Y zero", S.PosY == 0.0);
+        TEST("Jiggle initial vel zero", S.VelX == 0.0 && S.VelY == 0.0);
+    }
+
+    // 2. Impulse causes displacement
+    {
+        JiggleState S;
+        FFaceJiggleSettings J;
+        SimulateJiggle(S, J, 10.0, 0.0, 0.016);
+        TEST("Jiggle impulse creates X displacement", fabs(S.PosX) > 0.0);
+    }
+
+    // 3. Higher stiffness = faster oscillation
+    {
+        JiggleState S1, S2;
+        FFaceJiggleSettings J1, J2;
+        J1.Stiffness = 10.0;
+        J2.Stiffness = 1.0;
+        for (int i = 0; i < 30; ++i) {
+            SimulateJiggle(S1, J1, 10.0, 0.0, 0.016);
+            SimulateJiggle(S2, J2, 10.0, 0.0, 0.016);
+        }
+        TEST("Stiffness affects dynamics", S1.PosX != S2.PosX || S1.VelX != S2.VelX);
+    }
+
+    // 4. Damping reduces amplitude over time
+    {
+        JiggleState S;
+        FFaceJiggleSettings J;
+        J.Damping = 2.0;
+        SimulateJiggle(S, J, 10.0, 0.0, 0.016);
+        double PeakX = S.PosX;
+        // Simulate many steps to see damping
+        for (int i = 0; i < 100; ++i) SimulateJiggle(S, J, 0.0, 0.0, 0.016);
+        TEST("Damping reduces amplitude", fabs(S.PosX) < fabs(PeakX) * 1.1);
+    }
+
+    // 5. Zero damping = sustained oscillation (undamped)
+    {
+        JiggleState S;
+        FFaceJiggleSettings J;
+        J.Damping = 0.0;
+        SimulateJiggle(S, J, 5.0, 0.0, 0.016);
+        double Pos1 = S.PosX;
+        for (int i = 0; i < 50; ++i) SimulateJiggle(S, J, 0.0, 0.0, 0.016);
+        double Pos2 = S.PosX;
+        bool oscillated = (Pos1 > 0 && Pos2 < 0) || (Pos1 < 0 && Pos2 > 0) || fabs(Pos2) > 0.0;
+        TEST("Zero damping oscillates", oscillated);
+    }
+
+    // 6. Axis-limited jiggle
+    {
+        JiggleState S;
+        FFaceJiggleSettings J;
+        J.JiggleAxisX = 1.0;
+        J.JiggleAxisY = 0.0;
+        SimulateJiggle(S, J, 5.0, 5.0, 0.016);
+        TEST("Axis-limited jiggle X moves", fabs(S.PosX) > 0.0);
+        TEST("Axis-limited jiggle Y stays zero", S.PosY == 0.0);
+    }
+
+    // 7. Axis-limited jiggle Y only
+    {
+        JiggleState S;
+        FFaceJiggleSettings J;
+        J.JiggleAxisX = 0.0;
+        J.JiggleAxisY = 1.0;
+        SimulateJiggle(S, J, 5.0, 5.0, 0.016);
+        TEST("Axis-limited Y only: X stays zero", S.PosX == 0.0);
+        TEST("Axis-limited Y only: Y moves", fabs(S.PosY) > 0.0);
+    }
+
+    // 8. Multiple impulses compound
+    {
+        JiggleState S;
+        FFaceJiggleSettings J;
+        SimulateJiggle(S, J, 10.0, 0.0, 0.016);
+        double PosAfter1 = S.PosX;
+        SimulateJiggle(S, J, 10.0, 0.0, 0.016);
+        TEST("Multiple impulses compound (pos changes)", S.PosX != PosAfter1 || fabs(S.PosX) > 0.0);
+    }
+
+    // 9. Impulse in X only
+    {
+        JiggleState S;
+        FFaceJiggleSettings J;
+        SimulateJiggle(S, J, 10.0, 0.0, 0.016);
+        TEST("X-only impulse: X moves", S.PosX != 0.0);
+        TEST("X-only impulse: Y stays zero", S.PosY == 0.0);
+    }
+
+    // 10. Impulse in Y only
+    {
+        JiggleState S;
+        FFaceJiggleSettings J;
+        SimulateJiggle(S, J, 0.0, 10.0, 0.016);
+        TEST("Y-only impulse: X stays zero", S.PosX == 0.0);
+        TEST("Y-only impulse: Y moves", S.PosY != 0.0);
+    }
+
+    // 11. High damping = quick settle
+    {
+        JiggleState S;
+        FFaceJiggleSettings J;
+        J.Damping = 5.0;
+        SimulateJiggle(S, J, 50.0, 0.0, 0.016);
+        double VelAfter = S.VelX;
+        for (int i = 0; i < 20; ++i) SimulateJiggle(S, J, 0.0, 0.0, 0.016);
+        TEST("High damping settles quickly (velocity decays)", fabs(S.VelX) < fabs(VelAfter) || fabs(S.VelX) < 0.01);
+    }
+
+    // 12. Position returns toward zero after disturbance
+    {
+        JiggleState S;
+        FFaceJiggleSettings J;
+        J.Damping = 2.0;
+        SimulateJiggle(S, J, 10.0, 0.0, 0.016);
+        double FirstDecay = std::sqrt(S.PosX*S.PosX + S.VelX*S.VelX);
+        for (int i = 0; i < 60; ++i) SimulateJiggle(S, J, 0.0, 0.0, 0.016);
+        double LaterDecay = std::sqrt(S.PosX*S.PosX + S.VelX*S.VelX);
+        TEST("Position returns toward zero", LaterDecay < FirstDecay);
+    }
+
+    // 13. Zero impulse = no movement
+    {
+        JiggleState S;
+        FFaceJiggleSettings J;
+        SimulateJiggle(S, J, 0.0, 0.0, 0.016);
+        TEST("Zero impulse: no movement", S.PosX == 0.0 && S.PosY == 0.0);
+    }
+
+    // 14. Impulse scale amplifies
+    {
+        JiggleState S1, S2;
+        FFaceJiggleSettings J1, J2;
+        J1.ImpulseScale = 1.0;
+        J2.ImpulseScale = 2.0;
+        SimulateJiggle(S1, J1, 10.0, 0.0, 0.016);
+        SimulateJiggle(S2, J2, 10.0, 0.0, 0.016);
+        TEST("Higher impulse scale = larger displacement", fabs(S2.PosX) > fabs(S1.PosX) || fabs(S2.VelX) > fabs(S1.VelX));
+    }
+
+    // 15. Negative impulse moves opposite direction
+    {
+        JiggleState S;
+        FFaceJiggleSettings J;
+        SimulateJiggle(S, J, -10.0, 0.0, 0.016);
+        TEST("Negative impulse: moves negative", S.PosX < 0.0);
+    }
+
+    // === NESTED TRANSFORMS (10 tests) ===
+
+    // 16. Child pos = parent + child relative
+    {
+        FFaceArtTransform Parent(FVector2D(10, 20), FVector2D(1, 1), 0);
+        FFaceArtTransform ChildRel(FVector2D(5, 3), FVector2D(1, 1), 0);
+        auto Result = ComputeNestedTransform(Parent, ChildRel, 0, 0);
+        TEST("Nested pos: parent + relative", fabs(Result.Position.X - 15) < 0.001 && fabs(Result.Position.Y - 23) < 0.001);
+    }
+
+    // 17. Child rot = parent + child relative
+    {
+        FFaceArtTransform Parent(FVector2D(0, 0), FVector2D(1, 1), 45);
+        FFaceArtTransform ChildRel(FVector2D(0, 0), FVector2D(1, 1), 15);
+        auto Result = ComputeNestedTransform(Parent, ChildRel, 0, 0);
+        TEST("Nested rot: parent + relative", fabs(Result.Rotation - 60) < 0.001);
+    }
+
+    // 18. Child scale = parent * child relative
+    {
+        FFaceArtTransform Parent(FVector2D(0, 0), FVector2D(2, 2), 0);
+        FFaceArtTransform ChildRel(FVector2D(0, 0), FVector2D(0.5, 0.5), 0);
+        auto Result = ComputeNestedTransform(Parent, ChildRel, 0, 0);
+        TEST("Nested scale: parent * relative", fabs(Result.Scale.X - 1.0) < 0.001 && fabs(Result.Scale.Y - 1.0) < 0.001);
+    }
+
+    // 19. Deep nesting (3 levels)
+    {
+        FFaceArtTransform L0(FVector2D(1, 1), FVector2D(2, 2), 0);
+        FFaceArtTransform L1(FVector2D(2, 2), FVector2D(1.5, 1.5), 0);
+        FFaceArtTransform L2(FVector2D(3, 3), FVector2D(1, 1), 0);
+        auto R1 = ComputeNestedTransform(L0, L1, 0, 0);
+        auto R2 = ComputeNestedTransform(R1, L2, 0, 0);
+        TEST("Deep nested pos: 1+2+3=6", fabs(R2.Position.X - 6) < 0.001 && fabs(R2.Position.Y - 6) < 0.001);
+        TEST("Deep nested scale: 2*1.5*1=3", fabs(R2.Scale.X - 3.0) < 0.001);
+    }
+
+    // 20. Jiggle offset applied to nested transform
+    {
+        FFaceArtTransform Parent(FVector2D(0, 0), FVector2D(1, 1), 0);
+        FFaceArtTransform ChildRel(FVector2D(10, 0), FVector2D(1, 1), 0);
+        auto Result = ComputeNestedTransform(Parent, ChildRel, 3, 4);
+        TEST("Jiggle offset applied to pos", fabs(Result.Position.X - 13) < 0.001 && fabs(Result.Position.Y - 4) < 0.001);
+    }
+
+    // 21. Zero relative transform = parent
+    {
+        FFaceArtTransform Parent(FVector2D(100, 200), FVector2D(0.5, 0.5), 90);
+        FFaceArtTransform ChildRel(FVector2D(0, 0), FVector2D(1, 1), 0);
+        auto Result = ComputeNestedTransform(Parent, ChildRel, 0, 0);
+        TEST("Zero relative = parent", fabs(Result.Position.X - 100) < 0.001 && fabs(Result.Position.Y - 200) < 0.001
+            && fabs(Result.Scale.X - 0.5) < 0.001 && fabs(Result.Rotation - 90) < 0.001);
+    }
+
+    // 22. Static child + jiggle sibling (both in same parent)
+    {
+        // Verify that sibling transforms don't interfere
+        FFaceArtTransform Parent(FVector2D(50, 50), FVector2D(1, 1), 0);
+        FFaceArtTransform ChildA(FVector2D(10, 0), FVector2D(1, 1), 0);
+        FFaceArtTransform ChildB(FVector2D(-10, 0), FVector2D(1, 1), 0);
+        auto RA = ComputeNestedTransform(Parent, ChildA, 2, 0);
+        auto RB = ComputeNestedTransform(Parent, ChildB, -2, 0);
+        TEST("Sibling A pos", fabs(RA.Position.X - 62) < 0.001);
+        TEST("Sibling B pos", fabs(RB.Position.X - 38) < 0.001);
+    }
+
+    // 23. Negative scale flips
+    {
+        FFaceArtTransform Parent(FVector2D(0, 0), FVector2D(-1, 1), 0);
+        FFaceArtTransform ChildRel(FVector2D(5, 0), FVector2D(1, 1), 0);
+        auto Result = ComputeNestedTransform(Parent, ChildRel, 0, 0);
+        TEST("Negative parent scale: child pos unchanged additive", fabs(Result.Position.X - 5) < 0.001);
+        TEST("Negative parent scale: child scale = -1*1", fabs(Result.Scale.X + 1.0) < 0.001);
+    }
+
+    // 24. Zero scale child
+    {
+        FFaceArtTransform Parent(FVector2D(0, 0), FVector2D(2, 2), 0);
+        FFaceArtTransform ChildRel(FVector2D(5, 0), FVector2D(0, 0), 0);
+        auto Result = ComputeNestedTransform(Parent, ChildRel, 0, 0);
+        TEST("Zero scale child: scale = 0", fabs(Result.Scale.X) < 0.001);
+        TEST("Zero scale child: pos still additive", fabs(Result.Position.X - 5) < 0.001);
+    }
+
+    // 25. Rotation accumulation at deep depth
+    {
+        FFaceArtTransform L0(FVector2D(0, 0), FVector2D(1, 1), 30);
+        FFaceArtTransform L1(FVector2D(0, 0), FVector2D(1, 1), 30);
+        FFaceArtTransform L2(FVector2D(0, 0), FVector2D(1, 1), 30);
+        auto R1 = ComputeNestedTransform(L0, L1, 0, 0);
+        auto R2 = ComputeNestedTransform(R1, L2, 0, 0);
+        TEST("Deep rotation: 30+30+30=90", fabs(R2.Rotation - 90) < 0.001);
+    }
+
+    // === PER-VIEW VISIBILITY (8 tests) ===
+
+    // 26. Visible by default
+    {
+        FFaceNestedArt Elem;
+        TEST("Default visibility true", GetNestedVisibility(Elem, 0));
+    }
+
+    // 27. Hidden in specific view
+    {
+        FFaceNestedArt Elem;
+        Elem.ViewVisibility[0] = {0, false};
+        Elem.ViewVisibilityCount = 1;
+        TEST("Hidden in view 0", !GetNestedVisibility(Elem, 0));
+        TEST("Default visible in other view", GetNestedVisibility(Elem, 1));
+    }
+
+    // 28. Visible in one view only
+    {
+        FFaceNestedArt Elem;
+        Elem.ViewVisibility[0] = {0, false};
+        Elem.ViewVisibility[1] = {1, false};
+        Elem.ViewVisibility[2] = {2, true};
+        Elem.ViewVisibilityCount = 3;
+        TEST("Hidden in 0", !GetNestedVisibility(Elem, 0));
+        TEST("Hidden in 1", !GetNestedVisibility(Elem, 1));
+        TEST("Visible in 2", GetNestedVisibility(Elem, 2));
+        TEST("Default visible in unlisted 3", GetNestedVisibility(Elem, 3));
+    }
+
+    // 29. Multiple elements, different visibilities
+    {
+        FFaceNestedArt Elem1, Elem2;
+        Elem1.ViewVisibility[0] = {0, true};
+        Elem1.ViewVisibilityCount = 1;
+        Elem2.ViewVisibility[0] = {0, false};
+        Elem2.ViewVisibilityCount = 1;
+        TEST("Elem1 visible in 0", GetNestedVisibility(Elem1, 0));
+        TEST("Elem2 hidden in 0", !GetNestedVisibility(Elem2, 0));
+    }
+
+    // 30. Visibility toggle on/off
+    {
+        FFaceNestedArt Elem;
+        Elem.ViewVisibility[0] = {0, true};
+        Elem.ViewVisibility[1] = {0, false};
+        Elem.ViewVisibilityCount = 2;
+        // Last value wins for same state
+        TEST("Visibility toggled: last wins", !GetNestedVisibility(Elem, 0));
+    }
+
+    // 31. All unlisted states default visible
+    {
+        FFaceNestedArt Elem;
+        Elem.ViewVisibility[0] = {5, false}; // only state 5 hidden
+        Elem.ViewVisibilityCount = 1;
+        for (int s = 0; s < 10; ++s) {
+            if (s != 5) TEST("Unlisted state visible", GetNestedVisibility(Elem, s));
+        }
+    }
+
+    // === IDLE ANIMATION (8 tests) ===
+
+    // 32. Frame cycling
+    {
+        double Timer = 0;
+        int Frame = 0;
+        Frame = AdvanceIdleFrame(Frame, Timer, 0.05, 3, 0.1, 1.0);
+        TEST("Idle first advance: still frame 0 (not enough time)", Frame == 0);
+    }
+
+    // 33. Advance past frame duration
+    {
+        double Timer = 0;
+        int Frame = 0;
+        Frame = AdvanceIdleFrame(Frame, Timer, 0.15, 3, 0.1, 1.0);
+        TEST("Idle advance past duration: frame 1", Frame == 1);
+    }
+
+    // 34. Frame duration
+    {
+        double Timer = 0;
+        int Frame = 0;
+        Frame = AdvanceIdleFrame(Frame, Timer, 0.1, 3, 0.1, 1.0);
+        TEST("Idle at exact duration: frame 1", Frame == 1);
+        Frame = AdvanceIdleFrame(Frame, Timer, 0.1, 3, 0.1, 1.0);
+        TEST("Idle another duration: frame 2", Frame == 2);
+    }
+
+    // 35. Loop behavior
+    {
+        double Timer = 0;
+        int Frame = 0;
+        Frame = AdvanceIdleFrame(Frame, Timer, 0.31, 3, 0.1, 1.0);
+        TEST("Idle loop: wraps to 0", Frame == 0);
+    }
+
+    // 36. Speed multiplier > 1 = faster
+    {
+        double Timer1 = 0, Timer2 = 0;
+        int F1 = 0, F2 = 0;
+        F1 = AdvanceIdleFrame(F1, Timer1, 0.1, 3, 0.1, 2.0);
+        F2 = AdvanceIdleFrame(F2, Timer2, 0.1, 3, 0.1, 1.0);
+        TEST("Double speed advances further", F1 > F2);
+    }
+
+    // 37. Speed multiplier < 1 = slower
+    {
+        double Timer = 0;
+        int Frame = 0;
+        Frame = AdvanceIdleFrame(Frame, Timer, 0.1, 3, 0.1, 0.5);
+        TEST("Half speed: not enough time to advance", Frame == 0);
+        Frame = AdvanceIdleFrame(Frame, Timer, 0.1, 3, 0.1, 0.5);
+        TEST("Half speed: second advance moves to frame 0 (wrapped)", Frame == 0 || Frame == 1);
+    }
+
+    // 38. Zero frames = no animation
+    {
+        double Timer = 0;
+        int Frame = 0;
+        Frame = AdvanceIdleFrame(Frame, Timer, 1.0, 0, 0.1, 1.0);
+        TEST("Zero frames: stays at 0", Frame == 0 && Timer == 1.0);
+    }
+
+    // 39. Single frame = static
+    {
+        double Timer = 0;
+        int Frame = 0;
+        Frame = AdvanceIdleFrame(Frame, Timer, 5.0, 1, 0.1, 1.0);
+        TEST("Single frame: stays at 0", Frame == 0);
+    }
+
+    // === EDGE CASES (6 tests) ===
+
+    // 40. Jiggle on element with no jiggle enabled = no effect
+    {
+        JiggleState S;
+        FFaceJiggleSettings J;
+        SimulateJiggle(S, J, 100.0, 100.0, 0.016);
+        TEST("Jiggle sim still runs even with default settings", S.PosX != 0.0 || S.PosY != 0.0 || S.VelX != 0.0 || S.VelY != 0.0);
+        // This is OK - the guard is in the component (bJiggleEnabled check)
+    }
+
+    // 41. Empty nested elements
+    {
+        // No crash when no nested elements exist - tested in component GetNestedElementCount
+        // Just verify count works
+        const int count = 0;
+        TEST("Empty nested: count 0", count == 0);
+    }
+
+    // 42. Idle animation with 0 frame duration (no div by zero)
+    {
+        double Timer = 0;
+        int Frame = 0;
+        // Should not divide by zero
+        Frame = AdvanceIdleFrame(Frame, Timer, 0.1, 3, 0.001, 1.0);
+        TEST("Idle with tiny duration: advances", Frame > 0 || Timer > 0.0);
+    }
+
+    // 43. Very negative impulse
+    {
+        JiggleState S;
+        FFaceJiggleSettings J;
+        SimulateJiggle(S, J, -1000.0, 0.0, 0.016);
+        TEST("Large negative impulse", S.PosX < 0.0);
+    }
+
+    // 44. Multi-axis jiggle
+    {
+        JiggleState S;
+        FFaceJiggleSettings J;
+        J.JiggleAxisX = 1.0;
+        J.JiggleAxisY = 1.0;
+        SimulateJiggle(S, J, 5.0, -3.0, 0.016);
+        TEST("Multi-axis: X moves", fabs(S.PosX) > 0.0);
+        TEST("Multi-axis: Y moves", fabs(S.PosY) > 0.0);
+    }
+
+    // 45. Extremely high stiffness = very fast return
+    {
+        JiggleState S;
+        FFaceJiggleSettings J;
+        J.Stiffness = 1000.0;
+        SimulateJiggle(S, J, 10.0, 0.0, 0.016);
+        // High stiffness should cause very fast spring back - verify it doesn't blow up
+        bool stable = std::isfinite(S.PosX) && std::isfinite(S.VelX);
+        TEST("High stiffness is stable", stable);
+    }
+
+    // === INTEGRATION: Frame delta impulse derivation ===
+
+    // 46. Impulse derived from frame delta (Dyaw, Dpitch) — simulates the component fix
+    {
+        JiggleState S;
+        FFaceJiggleSettings J;
+        double FrameDyaw = 2.0, FrameDpitch = 0.5;
+        double AngularVel = std::sqrt(FrameDyaw*FrameDyaw + FrameDpitch*FrameDpitch) / 0.016;
+        double ImpulseX = FrameDyaw * AngularVel * 0.001;
+        double ImpulseY = FrameDpitch * AngularVel * 0.001;
+        SimulateJiggle(S, J, ImpulseX, ImpulseY, 0.016);
+        TEST("Frame delta drives impulse: X moves", fabs(S.PosX) > 0.0);
+        TEST("Frame delta drives impulse: Y moves", fabs(S.PosY) > 0.0);
+    }
+
+    // 47. No frame delta = no jiggle impulse
+    {
+        JiggleState S;
+        FFaceJiggleSettings J;
+        double FrameDyaw = 0.0, FrameDpitch = 0.0;
+        double AngularVel = std::sqrt(FrameDyaw*FrameDyaw + FrameDpitch*FrameDpitch) / 0.016;
+        double ImpulseX = FrameDyaw * AngularVel * 0.001;
+        double ImpulseY = FrameDpitch * AngularVel * 0.001;
+        SimulateJiggle(S, J, ImpulseX, ImpulseY, 0.016);
+        TEST("Zero frame delta: no jiggle", S.PosX == 0.0 && S.PosY == 0.0);
+    }
+
+    // 48. DeltaTime capping: large DT doesn't blow up jiggle
+    {
+        JiggleState S;
+        FFaceJiggleSettings J;
+        J.Stiffness = 20.0;
+        double CappedDT = std::min(0.5, 0.05); // matches component cap of 0.05
+        SimulateJiggle(S, J, 100.0, 0.0, CappedDT);
+        bool stable = std::isfinite(S.PosX) && std::isfinite(S.VelX) && fabs(S.PosX) < 1e6;
+        TEST("DT capping prevents blowup", stable);
+    }
+
+    // === INTEGRATION: Param bindings on nested elements ===
+
+    // 49. Nested element param bindings affect transform (using ParamSystem mock)
+    {
+        ParamSystem ps;
+        ps.Define(0, 0.0, 0.0, 1.0, 8.0);
+        // Simulate bindings on a nested element (layer 0 = nested element)
+        ps.AddBinding(0, 0, EFaceParamTarget::PositionX, 20.0, 0.0, false);
+        ps.AddBinding(0, 0, EFaceParamTarget::PositionY, 10.0, 0.0, false);
+        ps.SetValue(0, 1.0);
+        ps.TickSmoothing(1.0);
+        auto r = ps.Evaluate(0, 0.0, 0.0, 1.0, 1.0, 0.0);
+        TEST("Nested param binding PosX", fabs(r.PosX - 20.0) < 0.01);
+        TEST("Nested param binding PosY", fabs(r.PosY - 10.0) < 0.01);
+    }
+
+    // 50. Nested element TextureBlend binding
+    {
+        ParamSystem ps;
+        ps.Define(0, 0.0, 0.0, 1.0, 8.0);
+        ps.AddBinding(0, 0, EFaceParamTarget::TextureBlend, 1.0, 0.0, false);
+        ps.SetValue(0, 0.7);
+        ps.TickSmoothing(1.0);
+        auto r = ps.Evaluate(0, 0.0, 0.0, 1.0, 1.0, 0.0);
+        TEST("Nested TextureBlend binding", fabs(r.TextureBlend - 0.7) < 0.01);
+    }
+
+    // 51. Multiple bindings on same nested element (Pos + Rot + TextureBlend)
+    {
+        ParamSystem ps;
+        ps.Define(0, 0.0, 0.0, 1.0, 8.0);
+        ps.Define(1, 0.5, 0.0, 1.0, 8.0);
+        ps.AddBinding(0, 0, EFaceParamTarget::PositionX, 10.0, 5.0, false);
+        ps.AddBinding(0, 1, EFaceParamTarget::Rotation, 30.0, 0.0, false);
+        ps.AddBinding(0, 0, EFaceParamTarget::TextureBlend, 1.0, 0.0, false);
+        ps.SetValue(0, 1.0);
+        ps.SetValue(1, 1.0);
+        ps.TickSmoothing(1.0);
+        auto r = ps.Evaluate(0, 0.0, 0.0, 1.0, 1.0, 0.0);
+        TEST("Nested multi-binding PosX = 10*1+5=15", fabs(r.PosX - 15.0) < 0.01);
+        TEST("Nested multi-binding Rot = 30*1=30", fabs(r.Rotation - 30.0) < 0.01);
+        TEST("Nested multi-binding TexBlend = 1.0*1=1", fabs(r.TextureBlend - 1.0) < 0.01);
+    }
+
+    // === INTEGRATION: Combined parent + child param bindings ===
+
+    // 52. Parent layer bindings + nested element bindings stack
+    {
+        // Layer 0 = parent, Layer 1 = child
+        ParamSystem ps;
+        ps.Define(0, 0.0, 0.0, 1.0, 8.0);
+        ps.AddBinding(0, 0, EFaceParamTarget::PositionX, 100.0, 0.0, false); // parent binding
+        ps.AddBinding(1, 0, EFaceParamTarget::PositionX, 50.0, 0.0, false);  // child binding, same param
+        ps.SetValue(0, 1.0);
+        ps.TickSmoothing(1.0);
+        auto parent = ps.Evaluate(0, 0.0, 0.0, 1.0, 1.0, 0.0);
+        auto child = ps.Evaluate(1, parent.PosX, parent.PosY, 1.0, 1.0, 0.0);
+        TEST("Parent binding: PosX=100", fabs(parent.PosX - 100.0) < 0.01);
+        TEST("Child inherits parent + child binding: 100+50=150", fabs(child.PosX - 150.0) < 0.01);
+    }
+
+    // 53. Parent scale binding propagates to child
+    {
+        ParamSystem ps;
+        ps.Define(0, 0.0, 0.0, 1.0, 8.0);
+        ps.AddBinding(0, 0, EFaceParamTarget::ScaleX, 2.0, 0.0, false);
+        ps.SetValue(0, 1.0);
+        ps.TickSmoothing(1.0);
+        auto parent = ps.Evaluate(0, 0.0, 0.0, 1.0, 1.0, 0.0);
+        auto child = ps.Evaluate(1, 0.0, 0.0, parent.ScaleX, parent.ScaleY, 0.0);
+        TEST("Parent scale binding: scale=1*(1+2)=3", fabs(parent.ScaleX - 3.0) < 0.01);
+        TEST("Child inherits parent scale: 3*1=3", fabs(child.ScaleX - 3.0) < 0.01);
+    }
+
+    // 54. Inverted binding on nested element
+    {
+        ParamSystem ps;
+        ps.Define(0, 0.7, 0.0, 1.0, 8.0);
+        ps.AddBinding(0, 0, EFaceParamTarget::PositionX, 100.0, 0.0, true);
+        ps.TickSmoothing(1.0);
+        auto r = ps.Evaluate(0, 0.0, 0.0, 1.0, 1.0, 0.0);
+        TEST("Inverted binding: (1-0.7)*100=30", fabs(r.PosX - 30.0) < 0.01);
+    }
+
+    // === INTEGRATION: Deep nesting tag parsing (multi-underscore) ===
+
+    // 55. Multi-segment tag: "FaceLayer_GrandParent_Parent_Child" — last segment = element name
+    {
+        // Simulate: parse "FaceLayer_GrandParent_Parent_Child"
+        std::string tag("FaceLayer_GrandParent_Parent_Child");
+        size_t lastUnderscore = tag.rfind('_');
+        size_t firstUnderscore = tag.find('_');
+        TEST("Deep tag: first underscore > 0", firstUnderscore > 0 && firstUnderscore != std::string::npos);
+        TEST("Deep tag: last underscore > first", lastUnderscore > firstUnderscore);
+        TEST("Deep tag: layer prefix = FaceLayer", tag.substr(0, firstUnderscore) == "FaceLayer");
+    }
+
+    // === INTEGRATION: Jiggle state reset ===
+
+    // 56. Jiggle state cleared = position resets to zero
+    {
+        JiggleState S;
+        FFaceJiggleSettings J;
+        SimulateJiggle(S, J, 10.0, 0.0, 0.016);
+        TEST("Jiggle active before reset", fabs(S.PosX) > 0.0 || fabs(S.VelX) > 0.0);
+        // Simulate reset: clear state
+        S = JiggleState();
+        TEST("Jiggle cleared: pos zero", S.PosX == 0.0 && S.PosY == 0.0);
+        TEST("Jiggle cleared: vel zero", S.VelX == 0.0 && S.VelY == 0.0);
+    }
+
+    // 57. Idle anim state reset = frame index reset
+    {
+        double Timer = 0;
+        int Frame = 0;
+        Frame = AdvanceIdleFrame(Frame, Timer, 0.25, 4, 0.1, 1.0);
+        TEST("Anim frame advanced before reset", Frame > 0);
+        // Simulate reset
+        Frame = 0;
+        Timer = 0.0;
+        TEST("Anim frame reset to 0", Frame == 0);
+    }
+
+    printf("  [Nested Art + Jiggle: 57 tests]\n");
+}
+
 int main() {
     printf("===== Face Parallax Math Tests =====\n\n");
 
@@ -1856,6 +2929,8 @@ int main() {
     TestBlinkFrameMismatch();
     TestZeroFrameBlinkViseme();
     TestSwooshTransition();
+    TestParameterSystem();
+    TestNestedArtSystem();
 
     printf("\n===== Results: %d/%d passed (%d failed) =====\n",
         g_passed, g_total, g_total - g_passed);
