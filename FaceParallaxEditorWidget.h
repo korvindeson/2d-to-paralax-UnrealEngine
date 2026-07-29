@@ -10,7 +10,7 @@ class UFaceParallaxPreset;
 class UFaceParallaxComponent;
 
 UCLASS(BlueprintType, Blueprintable)
-class FACEPARALLAX_API UFaceParallaxEditorWidget : public UUserWidget
+class UFaceParallaxEditorWidget : public UUserWidget
 {
     GENERATED_BODY()
 

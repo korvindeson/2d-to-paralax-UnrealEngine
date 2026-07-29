@@ -4,6 +4,7 @@
 #include "FaceParallaxPreset.h"
 #include "DepthDebugVisualizerComponent.h"
 #include "Engine/Texture2D.h"
+#include "UObject/SavePackage.h"
 
 bool UFaceParallaxEditorWidget::ValidatePreset() const
 {
@@ -68,9 +69,11 @@ bool UFaceParallaxEditorWidget::SavePreset()
     ActivePreset->MarkPackageDirty();
 
     FString PackageName = Package->GetName();
-    return UPackage::SavePackage(Package, nullptr,
-        RF_Standalone, *FPackageName::LongPackageNameToFilename(PackageName,
-            FPackageName::GetAssetPackageExtension()));
+    FString PackageFilename = FPackageName::LongPackageNameToFilename(PackageName,
+        FPackageName::GetAssetPackageExtension());
+    FSavePackageArgs SaveArgs;
+    SaveArgs.TopLevelFlags = RF_Standalone;
+    return UPackage::SavePackage(Package, nullptr, *PackageFilename, SaveArgs);
 }
 
 void UFaceParallaxEditorWidget::SetCanvasSize(float Width, float Height)
@@ -292,8 +295,8 @@ FFaceArtTransform UFaceParallaxEditorWidget::GetViewOverride(EFaceAngleState Sta
     EFaceAngleState OverrideView) const
 {
     if (!ValidatePreset()) return FFaceArtTransform();
-    FFaceArtSlot Slot = ActivePreset->GetSlot(State, LayerTag);
-    const FFaceArtTransform* Override = Slot.ViewOverrides.Find(OverrideView);
+    FFaceArtSlot ArtSlot = ActivePreset->GetSlot(State, LayerTag);
+    const FFaceArtTransform* Override = ArtSlot.ViewOverrides.Find(OverrideView);
     return Override ? *Override : FFaceArtTransform();
 }
 
@@ -348,9 +351,9 @@ TArray<EFaceAngleState> UFaceParallaxEditorWidget::GetOverrideViewsForSlot(EFace
 {
     if (!ValidatePreset()) return TArray<EFaceAngleState>();
 
-    FFaceArtSlot Slot = ActivePreset->GetSlot(State, LayerTag);
+    FFaceArtSlot ArtSlot = ActivePreset->GetSlot(State, LayerTag);
     TArray<EFaceAngleState> Result;
-    Slot.ViewOverrides.GetKeys(Result);
+    ArtSlot.ViewOverrides.GetKeys(Result);
     return Result;
 }
 
@@ -730,18 +733,18 @@ void UFaceParallaxEditorWidget::SetBlinkFrameTextures(EFaceAngleState State, FNa
     int32 FrameIndex, const FFaceTextureSet& Textures)
 {
     if (!ValidatePreset()) return;
-    FFaceArtSlot Slot = ActivePreset->GetSlot(State, LayerTag);
-    if (FrameIndex >= 0 && FrameIndex <= Slot.BlinkFrames.Num())
+    FFaceArtSlot ArtSlot = ActivePreset->GetSlot(State, LayerTag);
+    if (FrameIndex >= 0 && FrameIndex <= ArtSlot.BlinkFrames.Num())
     {
-        if (FrameIndex == Slot.BlinkFrames.Num())
+        if (FrameIndex == ArtSlot.BlinkFrames.Num())
         {
-            Slot.BlinkFrames.Add(Textures);
+            ArtSlot.BlinkFrames.Add(Textures);
         }
         else
         {
-            Slot.BlinkFrames[FrameIndex] = Textures;
+            ArtSlot.BlinkFrames[FrameIndex] = Textures;
         }
-        ActivePreset->SetSlot(State, LayerTag, Slot);
+        ActivePreset->SetSlot(State, LayerTag, ArtSlot);
     }
 }
 
@@ -749,10 +752,10 @@ FFaceTextureSet UFaceParallaxEditorWidget::GetBlinkFrameTextures(EFaceAngleState
     FName LayerTag, int32 FrameIndex) const
 {
     if (!ValidatePreset()) return FFaceTextureSet();
-    const FFaceArtSlot& Slot = ActivePreset->GetSlot(State, LayerTag);
-    if (FrameIndex >= 0 && FrameIndex < Slot.BlinkFrames.Num())
+    const FFaceArtSlot& ArtSlot = ActivePreset->GetSlot(State, LayerTag);
+    if (FrameIndex >= 0 && FrameIndex < ArtSlot.BlinkFrames.Num())
     {
-        return Slot.BlinkFrames[FrameIndex];
+        return ArtSlot.BlinkFrames[FrameIndex];
     }
     return FFaceTextureSet();
 }
@@ -760,9 +763,9 @@ FFaceTextureSet UFaceParallaxEditorWidget::GetBlinkFrameTextures(EFaceAngleState
 void UFaceParallaxEditorWidget::ClearBlinkFrames(EFaceAngleState State, FName LayerTag)
 {
     if (!ValidatePreset()) return;
-    FFaceArtSlot Slot = ActivePreset->GetSlot(State, LayerTag);
-    Slot.BlinkFrames.Empty();
-    ActivePreset->SetSlot(State, LayerTag, Slot);
+    FFaceArtSlot ArtSlot = ActivePreset->GetSlot(State, LayerTag);
+    ArtSlot.BlinkFrames.Empty();
+    ActivePreset->SetSlot(State, LayerTag, ArtSlot);
 }
 
 // ====================================================================
@@ -803,26 +806,26 @@ void UFaceParallaxEditorWidget::ClearExpressionTextures(EFaceAngleState State, F
     EExpression Expression)
 {
     if (!ValidatePreset()) return;
-    FFaceArtSlot Slot = ActivePreset->GetSlot(State, LayerTag);
-    Slot.ExpressionTextures.Remove(Expression);
-    ActivePreset->SetSlot(State, LayerTag, Slot);
+    FFaceArtSlot ArtSlot = ActivePreset->GetSlot(State, LayerTag);
+    ArtSlot.ExpressionTextures.Remove(Expression);
+    ActivePreset->SetSlot(State, LayerTag, ArtSlot);
 }
 
 void UFaceParallaxEditorWidget::SetExpressionTextures(EFaceAngleState State, FName LayerTag,
     EExpression Expression, const FFaceTextureSet& Textures)
 {
     if (!ValidatePreset()) return;
-    FFaceArtSlot Slot = ActivePreset->GetSlot(State, LayerTag);
-    Slot.ExpressionTextures.Add(Expression, Textures);
-    ActivePreset->SetSlot(State, LayerTag, Slot);
+    FFaceArtSlot ArtSlot = ActivePreset->GetSlot(State, LayerTag);
+    ArtSlot.ExpressionTextures.Add(Expression, Textures);
+    ActivePreset->SetSlot(State, LayerTag, ArtSlot);
 }
 
 FFaceTextureSet UFaceParallaxEditorWidget::GetExpressionTextures(EFaceAngleState State,
     FName LayerTag, EExpression Expression) const
 {
     if (!ValidatePreset()) return FFaceTextureSet();
-    const FFaceArtSlot& Slot = ActivePreset->GetSlot(State, LayerTag);
-    const FFaceTextureSet* Found = Slot.ExpressionTextures.Find(Expression);
+    const FFaceArtSlot& ArtSlot = ActivePreset->GetSlot(State, LayerTag);
+    const FFaceTextureSet* Found = ArtSlot.ExpressionTextures.Find(Expression);
     return Found ? *Found : FFaceTextureSet();
 }
 
@@ -830,17 +833,17 @@ bool UFaceParallaxEditorWidget::HasExpressionTextures(EFaceAngleState State,
     FName LayerTag, EExpression Expression) const
 {
     if (!ValidatePreset()) return false;
-    const FFaceArtSlot& Slot = ActivePreset->GetSlot(State, LayerTag);
-    return Slot.ExpressionTextures.Contains(Expression);
+    const FFaceArtSlot& ArtSlot = ActivePreset->GetSlot(State, LayerTag);
+    return ArtSlot.ExpressionTextures.Contains(Expression);
 }
 
 TArray<EExpression> UFaceParallaxEditorWidget::GetAssignedExpressions(EFaceAngleState State,
     FName LayerTag) const
 {
     if (!ValidatePreset()) return TArray<EExpression>();
-    const FFaceArtSlot& Slot = ActivePreset->GetSlot(State, LayerTag);
+    const FFaceArtSlot& ArtSlot = ActivePreset->GetSlot(State, LayerTag);
     TArray<EExpression> Result;
-    Slot.ExpressionTextures.GetKeys(Result);
+    ArtSlot.ExpressionTextures.GetKeys(Result);
     return Result;
 }
 
@@ -924,20 +927,20 @@ int32 UFaceParallaxEditorWidget::GetVisemeFrameCount(EFaceAngleState State, FNam
     EExpression Expression, EViseme Viseme) const
 {
     if (!ValidatePreset()) return 0;
-    const FFaceArtSlot& Slot = ActivePreset->GetSlot(State, LayerTag);
-    const TMap<TEnumAsByte<EViseme>, TArray<FFaceTextureSet>>* ExprVisemes =
-        Slot.VisemeFrameSets.Find(Expression);
+    const FFaceArtSlot& ArtSlot = ActivePreset->GetSlot(State, LayerTag);
+    const FFaceExpressionVisemeMap* ExprVisemes =
+        ArtSlot.VisemeFrameSets.Find(Expression);
     if (!ExprVisemes) return 0;
-    const TArray<FFaceTextureSet>* Frames = ExprVisemes->Find(Viseme);
-    return Frames ? Frames->Num() : 0;
+    const FFaceVisemeFrameArray* Frames = ExprVisemes->Visemes.Find(Viseme);
+    return Frames ? Frames->Frames.Num() : 0;
 }
 
 void UFaceParallaxEditorWidget::SetVisemeFrameTextures(EFaceAngleState State, FName LayerTag,
     EExpression Expression, EViseme Viseme, int32 FrameIndex, const FFaceTextureSet& Textures)
 {
     if (!ValidatePreset()) return;
-    FFaceArtSlot Slot = ActivePreset->GetSlot(State, LayerTag);
-    TArray<FFaceTextureSet>& Frames = Slot.VisemeFrameSets.FindOrAdd(Expression).FindOrAdd(Viseme);
+    FFaceArtSlot ArtSlot = ActivePreset->GetSlot(State, LayerTag);
+    TArray<FFaceTextureSet>& Frames = ArtSlot.VisemeFrameSets.FindOrAdd(Expression).Visemes.FindOrAdd(Viseme).Frames;
     if (FrameIndex >= 0 && FrameIndex <= Frames.Num())
     {
         if (FrameIndex == Frames.Num())
@@ -948,7 +951,7 @@ void UFaceParallaxEditorWidget::SetVisemeFrameTextures(EFaceAngleState State, FN
         {
             Frames[FrameIndex] = Textures;
         }
-        ActivePreset->SetSlot(State, LayerTag, Slot);
+        ActivePreset->SetSlot(State, LayerTag, ArtSlot);
     }
 }
 
@@ -956,25 +959,25 @@ FFaceTextureSet UFaceParallaxEditorWidget::GetVisemeFrameTextures(EFaceAngleStat
     EExpression Expression, EViseme Viseme, int32 FrameIndex) const
 {
     if (!ValidatePreset()) return FFaceTextureSet();
-    const FFaceArtSlot& Slot = ActivePreset->GetSlot(State, LayerTag);
-    const TMap<TEnumAsByte<EViseme>, TArray<FFaceTextureSet>>* ExprVisemes =
-        Slot.VisemeFrameSets.Find(Expression);
+    const FFaceArtSlot& ArtSlot = ActivePreset->GetSlot(State, LayerTag);
+    const FFaceExpressionVisemeMap* ExprVisemes =
+        ArtSlot.VisemeFrameSets.Find(Expression);
     if (!ExprVisemes) return FFaceTextureSet();
-    const TArray<FFaceTextureSet>* Frames = ExprVisemes->Find(Viseme);
-    if (!Frames || FrameIndex < 0 || FrameIndex >= Frames->Num()) return FFaceTextureSet();
-    return (*Frames)[FrameIndex];
+    const FFaceVisemeFrameArray* Frames = ExprVisemes->Visemes.Find(Viseme);
+    if (!Frames || FrameIndex < 0 || FrameIndex >= Frames->Frames.Num()) return FFaceTextureSet();
+    return Frames->Frames[FrameIndex];
 }
 
 TArray<EViseme> UFaceParallaxEditorWidget::GetAssignedVisemes(EFaceAngleState State, FName LayerTag,
     EExpression Expression) const
 {
     if (!ValidatePreset()) return TArray<EViseme>();
-    const FFaceArtSlot& Slot = ActivePreset->GetSlot(State, LayerTag);
-    const TMap<TEnumAsByte<EViseme>, TArray<FFaceTextureSet>>* ExprVisemes =
-        Slot.VisemeFrameSets.Find(Expression);
+    const FFaceArtSlot& ArtSlot = ActivePreset->GetSlot(State, LayerTag);
+    const FFaceExpressionVisemeMap* ExprVisemes =
+        ArtSlot.VisemeFrameSets.Find(Expression);
     if (!ExprVisemes) return TArray<EViseme>();
     TArray<EViseme> Result;
-    ExprVisemes->GetKeys(Result);
+    ExprVisemes->Visemes.GetKeys(Result);
     return Result;
 }
 
@@ -982,13 +985,13 @@ void UFaceParallaxEditorWidget::ClearVisemeFrames(EFaceAngleState State, FName L
     EExpression Expression, EViseme Viseme)
 {
     if (!ValidatePreset()) return;
-    FFaceArtSlot Slot = ActivePreset->GetSlot(State, LayerTag);
-    TMap<TEnumAsByte<EViseme>, TArray<FFaceTextureSet>>* ExprVisemes =
-        Slot.VisemeFrameSets.Find(Expression);
+    FFaceArtSlot ArtSlot = ActivePreset->GetSlot(State, LayerTag);
+    FFaceExpressionVisemeMap* ExprVisemes =
+        ArtSlot.VisemeFrameSets.Find(Expression);
     if (ExprVisemes)
     {
-        ExprVisemes->Remove(Viseme);
-        ActivePreset->SetSlot(State, LayerTag, Slot);
+        ExprVisemes->Visemes.Remove(Viseme);
+        ActivePreset->SetSlot(State, LayerTag, ArtSlot);
     }
 }
 
@@ -996,9 +999,9 @@ void UFaceParallaxEditorWidget::ClearAllVisemes(EFaceAngleState State, FName Lay
     EExpression Expression)
 {
     if (!ValidatePreset()) return;
-    FFaceArtSlot Slot = ActivePreset->GetSlot(State, LayerTag);
-    Slot.VisemeFrameSets.Remove(Expression);
-    ActivePreset->SetSlot(State, LayerTag, Slot);
+    FFaceArtSlot ArtSlot = ActivePreset->GetSlot(State, LayerTag);
+    ArtSlot.VisemeFrameSets.Remove(Expression);
+    ActivePreset->SetSlot(State, LayerTag, ArtSlot);
 }
 
 // ====================================================================

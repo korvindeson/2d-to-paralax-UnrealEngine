@@ -11,7 +11,7 @@ class UDepthDebugVisualizerComponent;
 class UTextureRenderTarget2D;
 
 UCLASS(BlueprintType)
-class FACEPARALLAX_API AFaceParallaxPreviewActor : public AActor
+class AFaceParallaxPreviewActor : public AActor
 {
     GENERATED_BODY()
 
@@ -112,10 +112,11 @@ protected:
     virtual void BeginPlay() override;
     virtual void Tick(float DeltaTime) override;
 
-private:
+public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Preview|Camera")
     float AutoRotateSpeed = 30.0f;
 
+private:
     float OrbitYaw = 0.0f;
     float OrbitPitch = -15.0f;
     float OrbitDistance = 180.0f;

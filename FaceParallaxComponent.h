@@ -31,7 +31,7 @@ struct FFaceLayerDef
 };
 
 UCLASS(ClassGroup=(Custom), meta=(BlueprintSpawnableComponent))
-class FACEPARALLAX_API UFaceParallaxComponent : public UActorComponent
+class UFaceParallaxComponent : public UActorComponent
 {
     GENERATED_BODY()
 
@@ -741,7 +741,6 @@ private:
     UPROPERTY()
     class APlayerCameraManager* CameraManager;
 
-    UPROPERTY()
     TMap<FName, TArray<UMaterialInstanceDynamic*>> FaceMaterialsByLayer;
 
     int32 HysteresisFramesRemaining = 0;
@@ -799,7 +798,6 @@ private:
     TMap<FName, FNestedJiggleState> JiggleStates;
     TMap<FName, FNestedAnimState> AnimStates;
 
-    UPROPERTY()
     TMap<FName, TArray<UMaterialInstanceDynamic*>> NestedMaterialsByElement;
 
     void UpdateNestedArtTick(float DeltaTime);
@@ -818,6 +816,7 @@ private:
 
     void InitializeMaterials();
     void UpdateMaterialParameters();
+public:
     void ApplyCurrentStateTextures();
     void CaptureCurrentTextures();
     void SetPreviousStateTextures();

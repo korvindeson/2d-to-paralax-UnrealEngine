@@ -4,13 +4,12 @@
 #include "Components/ActorComponent.h"
 #include "DepthDebugVisualizerComponent.generated.h"
 
-class UProceduralMeshComponent;
 class UMaterialInstanceDynamic;
 class UMaterialInterface;
 class UTexture2D;
 
 UCLASS(ClassGroup=(Custom), meta=(BlueprintSpawnableComponent))
-class FACEPARALLAX_API UDepthDebugVisualizerComponent : public UActorComponent
+class UDepthDebugVisualizerComponent : public UActorComponent
 {
     GENERATED_BODY()
 
@@ -70,7 +69,7 @@ public:
 
 private:
     UPROPERTY()
-    UProceduralMeshComponent* DebugMesh;
+    UPrimitiveComponent* DebugMesh;
 
     UPROPERTY()
     UMaterialInstanceDynamic* DebugMaterialInstance;

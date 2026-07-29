@@ -117,7 +117,8 @@ void UFaceParallaxComponent::InitializeMaterials()
         {
             FString TagStr = Tag.ToString();
             // Use last underscore to find the layer prefix — supports multi-segment names like "FaceLayer_Parent_Child"
-            int32 UnderscoreIdx = TagStr.FindLastChar('_');
+            int32 UnderscoreIdx = -1;
+            TagStr.FindLastChar('_', UnderscoreIdx);
             if (UnderscoreIdx > 0 && UnderscoreIdx < TagStr.Len() - 1)
             {
                 FName LayerPrefix = FName(TagStr.Left(UnderscoreIdx));
@@ -678,14 +679,14 @@ void UFaceParallaxComponent::UpdateMaterialParameters()
             if (bIsVisemePlaying && ActivePreset)
             {
                 const FFaceArtSlot& VisemeSlot = ActivePreset->GetSlot(CurrentState, LayerTag);
-                const TMap<TEnumAsByte<EViseme>, TArray<FFaceTextureSet>>* ExprVisemes =
+                const FFaceExpressionVisemeMap* ExprVisemes =
                     VisemeSlot.VisemeFrameSets.Find(CurrentExpression);
                 if (ExprVisemes)
                 {
-                    const TArray<FFaceTextureSet>* VisemeFrames = ExprVisemes->Find(CurrentViseme);
-                    if (VisemeFrames && VisemeFrameIndex >= 0 && VisemeFrameIndex < VisemeFrames->Num())
+                    const FFaceVisemeFrameArray* VisemeFrames = ExprVisemes->Visemes.Find(CurrentViseme);
+                    if (VisemeFrames && VisemeFrameIndex >= 0 && VisemeFrameIndex < VisemeFrames->Frames.Num())
                     {
-                        const FFaceTextureSet& VisemeFrame = (*VisemeFrames)[VisemeFrameIndex];
+                        const FFaceTextureSet& VisemeFrame = VisemeFrames->Frames[VisemeFrameIndex];
                         if (VisemeFrame.Albedo) Mat->SetTextureParameterValue(AlbedoParamName, VisemeFrame.Albedo);
                         if (VisemeFrame.Normal) Mat->SetTextureParameterValue(NormalParamName, VisemeFrame.Normal);
                         if (VisemeFrame.Depth)  Mat->SetTextureParameterValue(DepthParamName, VisemeFrame.Depth);
@@ -982,14 +983,14 @@ void UFaceParallaxComponent::UpdateVisemeTick(float DeltaTime)
     for (const auto& LayerPair : FaceMaterialsByLayer)
     {
         const FFaceArtSlot& Slot = ActivePreset->GetSlot(CurrentState, LayerPair.Key);
-        const TMap<TEnumAsByte<EViseme>, TArray<FFaceTextureSet>>* ExprVisemes =
+        const FFaceExpressionVisemeMap* ExprVisemes =
             Slot.VisemeFrameSets.Find(CurrentExpression);
         if (ExprVisemes)
         {
-            const TArray<FFaceTextureSet>* VisemeFrames = ExprVisemes->Find(CurrentViseme);
+            const FFaceVisemeFrameArray* VisemeFrames = ExprVisemes->Visemes.Find(CurrentViseme);
             if (VisemeFrames)
             {
-                MaxFrames = FMath::Max(MaxFrames, VisemeFrames->Num());
+                MaxFrames = FMath::Max(MaxFrames, VisemeFrames->Frames.Num());
             }
         }
     }

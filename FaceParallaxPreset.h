@@ -6,7 +6,7 @@
 #include "FaceParallaxPreset.generated.h"
 
 UCLASS(BlueprintType, AutoExpandCategories = ("View Assignments|Canvas"))
-class FACEPARALLAX_API UFaceParallaxPreset : public UDataAsset
+class UFaceParallaxPreset : public UDataAsset
 {
     GENERATED_BODY()
 
@@ -14,7 +14,7 @@ public:
     // --- TEXTURE ASSIGNMENTS ---
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "View Assignments",
         meta = (DisplayName = "State → Layer → Art Slot"))
-    TMap<TEnumAsByte<EFaceAngleState>, FFaceViewStateLayerSet> ViewAssignments;
+    TMap<EFaceAngleState, FFaceViewStateLayerSet> ViewAssignments;
 
     // --- CANVAS ---
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Canvas",

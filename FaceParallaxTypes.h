@@ -4,6 +4,10 @@
 #include "Engine/Texture2D.h"
 #include "FaceParallaxTypes.generated.h"
 
+#ifndef MYPROJECT_API
+#define MYPROJECT_API
+#endif
+
 UENUM(BlueprintType)
 enum class EFaceAngleState : uint8
 {
@@ -60,18 +64,6 @@ struct FFaceTextureSet
 };
 
 USTRUCT(BlueprintType)
-struct FFaceSwooshArt
-{
-    GENERATED_BODY()
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Swoosh Art")
-    TArray<FFaceTextureSet> Frames;
-
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Swoosh Art")
-    FFaceArtTransform OverrideTransform;
-};
-
-USTRUCT(BlueprintType)
 struct FFaceArtTransform
 {
     GENERATED_BODY()
@@ -111,6 +103,18 @@ enum class ESwooshPhase : uint8
     Inactive        UMETA(DisplayName = "Inactive"),
     Smearing        UMETA(DisplayName = "Smearing"),
     BlendingOut     UMETA(DisplayName = "Blending Out")
+};
+
+USTRUCT(BlueprintType)
+struct FFaceSwooshArt
+{
+    GENERATED_BODY()
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Swoosh Art")
+    TArray<FFaceTextureSet> Frames;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Swoosh Art")
+    FFaceArtTransform OverrideTransform;
 };
 
 UENUM(BlueprintType)
@@ -265,7 +269,7 @@ struct FFaceNestedArt
     float IdleSpeedMultiplier = 1.0f;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Nested Art")
-    TMap<TEnumAsByte<EFaceAngleState>, bool> ViewVisibility;
+    TMap<EFaceAngleState, bool> ViewVisibility;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Nested Art")
     TArray<FFaceParamBinding> ParamBindings;
@@ -274,9 +278,23 @@ struct FFaceNestedArt
         meta = (DisplayName = "Alt Textures (for TextureBlend binding)"))
     FFaceTextureSet AltTextures;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Nested Art",
-        meta = (EditCondition = "!bJiggleEnabled"))
     TArray<FFaceNestedArt> Children;
+};
+
+USTRUCT(BlueprintType)
+struct FFaceVisemeFrameArray
+{
+    GENERATED_BODY()
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Art Slot")
+    TArray<FFaceTextureSet> Frames;
+};
+
+USTRUCT(BlueprintType)
+struct FFaceExpressionVisemeMap
+{
+    GENERATED_BODY()
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Art Slot")
+    TMap<EViseme, FFaceVisemeFrameArray> Visemes;
 };
 
 USTRUCT(BlueprintType)
@@ -291,11 +309,11 @@ struct FFaceArtSlot
     FFaceArtTransform CanonicalTransform;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Art Slot")
-    TMap<TEnumAsByte<EFaceAngleState>, FFaceArtTransform> ViewOverrides;
+    TMap<EFaceAngleState, FFaceArtTransform> ViewOverrides;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Art Slot",
         meta = (DisplayName = "Expression Textures"))
-    TMap<TEnumAsByte<EExpression>, FFaceTextureSet> ExpressionTextures;
+    TMap<EExpression, FFaceTextureSet> ExpressionTextures;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Art Slot",
         meta = (DisplayName = "Blink Animation Frames"))
@@ -303,11 +321,11 @@ struct FFaceArtSlot
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Art Slot",
         meta = (DisplayName = "Viseme Frame Sets (Expression > Viseme > Frames)"))
-    TMap<TEnumAsByte<EExpression>, TMap<TEnumAsByte<EViseme>, TArray<FFaceTextureSet>>> VisemeFrameSets;
+    TMap<EExpression, FFaceExpressionVisemeMap> VisemeFrameSets;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Art Slot",
         meta = (DisplayName = "Swoosh Frames (per-target-state)"))
-    TMap<TEnumAsByte<EFaceAngleState>, FFaceSwooshArt> SwooshToState;
+    TMap<EFaceAngleState, FFaceSwooshArt> SwooshToState;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Art Slot",
         meta = (DisplayName = "Parameter Bindings"))
