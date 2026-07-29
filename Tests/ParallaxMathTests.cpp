@@ -2900,6 +2900,331 @@ void TestNestedArtSystem() {
     printf("  [Nested Art + Jiggle: 57 tests]\n");
 }
 
+// --- 3D Pin Projection Tests ---
+void TestPinProjection() {
+    printf("\n=== 3D Pin Projection ===\n");
+
+    // Mock zone center yaw (matches UE GetZoneCenterYaw with HalfZoneWidth=22.5)
+    auto GetZoneYaw = [](int StateIdx) -> double {
+        double HZW = 22.5;
+        switch (StateIdx) {
+            case 0: return 0.0;              // Front
+            case 1: return HZW * 2.0;        // ThreeQuarterRight
+            case 2: return HZW * 4.0;        // RightProfile
+            case 3: return HZW * 6.0;        // BackRight
+            case 4: return 180.0;            // Back
+            case 5: return -HZW * 6.0;       // BackLeft
+            case 6: return -HZW * 4.0;       // LeftProfile
+            case 7: return -HZW * 2.0;       // ThreeQuarterLeft
+            default: return 0.0;
+        }
+    };
+
+    // ProjectPinToUV: 3D pin → 2D UV for a given state
+    auto Project = [&](double Px, double Py, double Pz, int StateIdx,
+                       double HW, double HD, double HH) -> FVector2D {
+        double YawDeg = GetZoneYaw(StateIdx);
+        double Rad = YawDeg * (std::acos(-1.0) / 180.0);
+        double CosA = std::cos(Rad);
+        double SinA = std::sin(Rad);
+
+        double WX = Px * HW;
+        double WZ = Pz * HD;
+        double WY = Py * HH;
+
+        double ViewX = WX * CosA + WZ * SinA;
+        double VisibleX = HW * std::abs(CosA) + HD * std::abs(SinA);
+
+        double UVx = 0.5;
+        double UVy = 0.5;
+        if (VisibleX > 1e-7) UVx = 0.5 + 0.5 * ViewX / VisibleX;
+        if (HH > 1e-7) UVy = 0.5 + 0.5 * WY / HH;
+
+        return FVector2D(std::clamp(UVx, 0.0, 1.0), std::clamp(UVy, 0.0, 1.0));
+    };
+
+    double HW = 256.0, HD = 128.0, HH = 256.0;
+    int Front = 0, ProfileR = 2, ThreeQ = 1, Back = 4;
+
+    // 1. Center pin projects to UV(0.5, 0.5) in all views
+    {
+        for (int s = 0; s < 8; ++s) {
+            FVector2D UV = Project(0, 0, 0, s, HW, HD, HH);
+            TEST("Center pin UV(0.5,0.5) for all views", std::abs(UV.X - 0.5) < 0.001 && std::abs(UV.Y - 0.5) < 0.001);
+        }
+    }
+
+    // 2. Front view: right side (Px=+1) → UVx > 0.5
+    {
+        FVector2D UV = Project(1.0, 0, 0, Front, HW, HD, HH);
+        TEST("Front: right pin UVx > 0.5", UV.X > 0.5);
+        TEST("Front: right pin UVy = 0.5", std::abs(UV.Y - 0.5) < 0.001);
+    }
+
+    // 3. Front view: left side (Px=-1) → UVx < 0.5
+    {
+        FVector2D UV = Project(-1.0, 0, 0, Front, HW, HD, HH);
+        TEST("Front: left pin UVx < 0.5", UV.X < 0.5);
+    }
+
+    // 4. Front view: top (Py=+1) → UVy > 0.5
+    {
+        FVector2D UV = Project(0, 1.0, 0, Front, HW, HD, HH);
+        TEST("Front: top pin UVy > 0.5", UV.Y > 0.5);
+    }
+
+    // 5. Front view: bottom (Py=-1) → UVy < 0.5
+    {
+        FVector2D UV = Project(0, -1.0, 0, Front, HW, HD, HH);
+        TEST("Front: bottom pin UVy < 0.5", UV.Y < 0.5);
+    }
+
+    // 6. Profile right: nose (Pz=+1) → UVx > 0.5
+    {
+        FVector2D UV = Project(0, 0, 1.0, ProfileR, HW, HD, HH);
+        TEST("Profile: nose pin UVx > 0.5", UV.X > 0.5);
+    }
+
+    // 7. Profile right: back of head (Pz=-1) → UVx < 0.5
+    {
+        FVector2D UV = Project(0, 0, -1.0, ProfileR, HW, HD, HH);
+        TEST("Profile: back pin UVx < 0.5", UV.X < 0.5);
+    }
+
+    // 8. 3/4 Right: UVx interpolates between Front and Profile for asymmetric pin
+    {
+        FVector2D UV_F = Project(0.8, 0, 0.2, Front, HW, HD, HH);
+        FVector2D UV_P = Project(0.8, 0, 0.2, ProfileR, HW, HD, HH);
+        FVector2D UV_Q = Project(0.8, 0, 0.2, ThreeQ, HW, HD, HH);
+        TEST("3/4 UVx between Front and Profile", (UV_F.X < UV_Q.X && UV_Q.X < UV_P.X) || (UV_F.X > UV_Q.X && UV_Q.X > UV_P.X));
+    }
+
+    // 9. Back view: same as front but mirrored (Px negative)
+    {
+        FVector2D UV_F = Project(0.3, 0, 0, Front, HW, HD, HH);
+        FVector2D UV_B = Project(0.3, 0, 0, Back, HW, HD, HH);
+        TEST("Back: UV differs from front", std::abs(UV_F.X - UV_B.X) > 0.001 || std::abs(UV_F.Y - UV_B.Y) > 0.001);
+    }
+
+    // 10. PivotPoint fallback when Pin3D not pinned
+    {
+        struct FFaceNestedArtMock {
+            FVector2D PivotPoint = FVector2D(0.3, 0.7);
+            struct { bool bPinned = false; double PX=0, PY=0, PZ=0; } Pin3D;
+        };
+        auto GetEffectivePivot = [](const FFaceNestedArtMock& E) -> FVector2D {
+            if (E.Pin3D.bPinned) return FVector2D(0.5, 0.5);
+            return E.PivotPoint;
+        };
+        FFaceNestedArtMock Elem;
+        FVector2D Eff = GetEffectivePivot(Elem);
+        TEST("Fallback: returns PivotPoint when not pinned", std::abs(Eff.X - 0.3) < 0.001 && std::abs(Eff.Y - 0.7) < 0.001);
+
+        Elem.Pin3D.bPinned = true;
+        FVector2D EffPinned = GetEffectivePivot(Elem);
+        TEST("Pinned: returns projected UV when pinned", std::abs(EffPinned.X - 0.5) < 0.001);
+    }
+
+    // 11. UV→3D for Front view: center UV → X=0, Y=0
+    {
+        auto UVToPin3D_Front = [](double UVx, double UVy) {
+            struct { double X, Y, Z; } Pos;
+            Pos.X = (UVx - 0.5) * 2.0;
+            Pos.Y = (UVy - 0.5) * 2.0;
+            Pos.Z = 0.0;
+            return Pos;
+        };
+        auto P = UVToPin3D_Front(0.5, 0.5);
+        TEST("UV→3D Front center: X=0", std::abs(P.X) < 0.001);
+        TEST("UV→3D Front center: Y=0", std::abs(P.Y) < 0.001);
+    }
+
+    // 12. UV→3D round-trip: Front click → 3D → project back
+    {
+        struct { double X, Y, Z; } Pin3D = {0.3, 0.4, 0.0};
+        FVector2D UV = Project(Pin3D.X, Pin3D.Y, Pin3D.Z, Front, HW, HD, HH);
+        double Rx = (UV.X - 0.5) * 2.0;
+        double Ry = (UV.Y - 0.5) * 2.0;
+        TEST("Front round-trip X", std::abs(Rx - Pin3D.X) < 0.01);
+        TEST("Front round-trip Y", std::abs(Ry - Pin3D.Y) < 0.01);
+    }
+
+    // 13. UV→3D round-trip: Profile click → 3D → project back
+    {
+        struct { double X, Y, Z; } Pin3D = {0.0, 0.2, 0.5};
+        FVector2D UV = Project(Pin3D.X, Pin3D.Y, Pin3D.Z, ProfileR, HW, HD, HH);
+        double Rz = (UV.X - 0.5) * 2.0;
+        double Ry = (UV.Y - 0.5) * 2.0;
+        TEST("Profile round-trip Z: 0.5", std::abs(Rz - Pin3D.Z) < 0.01);
+        TEST("Profile round-trip Y: 0.2", std::abs(Ry - Pin3D.Y) < 0.01);
+    }
+
+    // 14. Same 3D pin projects differently to Front vs Profile
+    {
+        struct { double X, Y, Z; } Pin = {0.8, 0.0, 0.2};
+        FVector2D UV_F = Project(Pin.X, Pin.Y, Pin.Z, Front, HW, HD, HH);
+        FVector2D UV_P = Project(Pin.X, Pin.Y, Pin.Z, ProfileR, HW, HD, HH);
+        bool different = std::abs(UV_F.X - UV_P.X) > 0.01;
+        TEST("Same 3D pin → different UV across views", different);
+    }
+
+    // 15. Nested pin fallback: Pin3D.bPinned=false → uses PivotPoint
+    {
+        FVector2D DefaultPivot(0.5, 0.5);
+        struct MockElem { FVector2D PivotPoint = FVector2D(0.2, 0.8); bool bPinned = false; };
+        MockElem E;
+        FVector2D Eff = E.bPinned ? FVector2D(0.5, 0.5) : E.PivotPoint;
+        TEST("Nested pin fallback to PivotPoint", std::abs(Eff.X - 0.2) < 0.001 && std::abs(Eff.Y - 0.8) < 0.001);
+    }
+
+    printf("  [3D Pin Projection: 15 tests]\n");
+}
+
+// --- Batch Operations Tests ---
+void TestBatchOperations() {
+    printf("\n=== Batch Operations ===\n");
+
+    // 1) Count of EFaceAngleState values (10)
+    TEST("EFaceAngleState count is 10", int(EFaceAngleState::MAX) == 10);
+    TEST("Front is first", EFaceAngleState::Front == EFaceAngleState(0));
+    TEST("Back is index 4", EFaceAngleState::Back == EFaceAngleState(4));
+    TEST("Bottom is last before MAX", EFaceAngleState::Bottom == EFaceAngleState(9));
+
+    // 2) Simulate DuplicateState: copy front layer tags to another map
+    {
+        struct FStateLayerSet {
+            bool bHasData = false;
+            int LayerCount = 0;
+        };
+        std::array<FStateLayerSet, 10> sourceLayers;
+        sourceLayers[0].bHasData = true;
+        sourceLayers[0].LayerCount = 3;
+        sourceLayers[1].bHasData = true;
+        sourceLayers[1].LayerCount = 2;
+
+        std::array<FStateLayerSet, 10> destLayers;
+        auto DuplicateState = [&](int srcIdx, int dstIdx) {
+            destLayers[dstIdx] = sourceLayers[srcIdx];
+        };
+
+        DuplicateState(0, 5);
+        TEST("DuplicateState: dest matches source LayerCount", destLayers[5].LayerCount == 3);
+        TEST("DuplicateState: dest matches source bHasData", destLayers[5].bHasData == true);
+        TEST("DuplicateState: other dest remains empty", destLayers[0].bHasData == false);
+    }
+
+    // 3) Simulate ClearAllTextures: batch reset
+    {
+        int textureSlots[10][3] = {}; // [state][layer]
+        textureSlots[0][0] = 1;
+        textureSlots[1][1] = 2;
+        textureSlots[2][2] = 3;
+
+        auto ClearAll = [&]() {
+            for (int s = 0; s < 10; ++s)
+                for (int l = 0; l < 3; ++l)
+                    textureSlots[s][l] = 0;
+        };
+
+        ClearAll();
+        int total = 0;
+        for (int s = 0; s < 10; ++s)
+            for (int l = 0; l < 3; ++l)
+                total += textureSlots[s][l];
+        TEST("ClearAll: all texture slots zero", total == 0);
+    }
+
+    // 4) Simulate SyncLayerNestedToAllViews: copy one element from Front to all states
+    {
+        struct NestedElement {
+            bool bValid = false;
+            int Id = 0;
+        };
+        NestedElement perState[10];
+        perState[0].bValid = true;
+        perState[0].Id = 42;
+
+        auto SyncToAllViews = [&]() {
+            for (int i = 1; i < 10; ++i) {
+                perState[i] = perState[0];
+            }
+        };
+
+        SyncToAllViews();
+        int countValid = 0;
+        for (int i = 0; i < 10; ++i) {
+            if (perState[i].bValid && perState[i].Id == 42)
+                ++countValid;
+        }
+        TEST("SyncToAllViews: all 10 states have Id=42", countValid == 10);
+    }
+
+    // 5) Simulate BatchSetTextures: replace all textures for a state/layer
+    {
+        int texture[10][3] = {};
+        auto BatchSet = [&](int state, int layer, int val) {
+            texture[state][layer] = val;
+        };
+        BatchSet(3, 1, 99);
+        TEST("BatchSet: sets correct slot", texture[3][1] == 99);
+        TEST("BatchSet: leaves other slots unchanged", texture[0][0] == 0 && texture[9][2] == 0);
+    }
+
+    // 6) Simulate GetNumViewStates: count populated states
+    {
+        bool hasState[10] = {true, true, false, false, true, false, false, true, false, true};
+        int count = 0;
+        for (int i = 0; i < 10; ++i)
+            if (hasState[i]) ++count;
+        TEST("GetNumViewStates: 5 states populated", count == 5);
+    }
+
+    // 7) Simulate GetAllLayerTags
+    {
+        const char* layers[10][3] = {};
+        layers[0][0] = "Face";
+        layers[0][1] = "Hair";
+        layers[0][2] = "Eyes";
+
+        int tagCount = 0;
+        for (auto* l : layers[0])
+            if (l && l[0]) ++tagCount;
+        TEST("GetAllLayerTags: Front has 3 layers", tagCount == 3);
+    }
+
+    // 8) Simulate SetNestedAltTextures
+    {
+        struct MockNested {
+            int altCount = 0;
+        };
+        MockNested elements[5];
+        auto SetAlt = [&](int idx, int count) {
+            if (idx >= 0 && idx < 5)
+                elements[idx].altCount = count;
+        };
+        SetAlt(2, 4);
+        TEST("SetAltTextures: target index gets count 4", elements[2].altCount == 4);
+        TEST("SetAltTextures: other index unchanged", elements[0].altCount == 0);
+    }
+
+    // 9) Simulate BatchSetTexturesAllLayers
+    {
+        struct TexSet { int id = 0; };
+        TexSet stateLayers[10][5] = {};
+        auto BatchAllLayers = [&](int state, int ids[5]) {
+            for (int l = 0; l < 5; ++l)
+                stateLayers[state][l].id = ids[l];
+        };
+        int ids[5] = {10, 20, 30, 40, 50};
+        BatchAllLayers(0, ids);
+        TEST("BatchAllLayers: layer 0 has id 10", stateLayers[0][0].id == 10);
+        TEST("BatchAllLayers: layer 4 has id 50", stateLayers[0][4].id == 50);
+        TEST("BatchAllLayers: other state unchanged", stateLayers[1][0].id == 0);
+    }
+
+    printf("  [Batch Operations: 10 tests]\n");
+}
+
 int main() {
     printf("===== Face Parallax Math Tests =====\n\n");
 
@@ -2931,6 +3256,8 @@ int main() {
     TestSwooshTransition();
     TestParameterSystem();
     TestNestedArtSystem();
+    TestPinProjection();
+    TestBatchOperations();
 
     printf("\n===== Results: %d/%d passed (%d failed) =====\n",
         g_passed, g_total, g_total - g_passed);

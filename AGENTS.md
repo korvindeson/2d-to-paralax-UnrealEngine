@@ -8,13 +8,13 @@
 
 | File | Purpose |
 |---|---|---|
-| `FaceParallaxTypes.h` | Shared types: `EFaceAngleState`, `FFaceTextureSet`, `FFaceArtTransform`, `FFaceArtSlot`, `FFaceViewStateLayerSet`, `FFaceJiggleSettings`, `FFaceNestedArt`, `FFaceParamBinding` |
-| `FaceParallaxComponent.h/.cpp` | Core component — state machine, parallax offsets, material parameter push, preset application, jiggle physics, idle animation, nested art transforms |
-| `FaceParallaxPreset.h/.cpp` | DataAsset — stores per-state × per-layer texture + transform assignments |
+| `FaceParallaxTypes.h` | Shared types: `EFaceAngleState`, `FFaceTextureSet`, `FFaceArtTransform`, `FFaceArtSlot`, `FFaceViewStateLayerSet`, `FFaceJiggleSettings`, `FFaceNestedArt`, `FFaceParamBinding`, `FFaceProfile3D`, `FFacePin3D` |
+| `FaceParallaxComponent.h/.cpp` | Core component — state machine, parallax offsets, material parameter push, preset application, jiggle physics, idle animation, nested art transforms, 3D pin projection, face profile detection. 145 BP-accessible functions. |
+| `FaceParallaxPreset.h/.cpp` | DataAsset — stores per-state × per-layer texture + transform assignments. Now includes batch operations (BatchSetTextures, ClearAllTextures, DuplicateState, SyncLayerNestedToAllViews, etc.) and Pin3D accessors. |
 | `DepthDebugVisualizerComponent.h/.cpp` | Procedural depth mesh from depth map texture |
 | `FaceParallaxPreviewActor.h/.cpp` | Preview actor with scene capture, orbit camera, part transform access |
-| `FaceParallaxEditorWidget.h/.cpp` | Editor widget — 14 categories of bindable Blueprint functions for every setting (incl. Nested Art) |
-| `Tests/ParallaxMathTests.cpp` | Standalone C++17 tests (no UE) — state machine, transforms, blink/expression/viseme, swoosh, parameters, nested art + jiggle (460 tests) |
+| `FaceParallaxEditorWidget.h/.cpp` | Editor widget — 17 restructured categories of bindable Blueprint functions (221 UFUNCTIONs). Includes TextureAndTransformParams (merged Material Params), batch ops, read-back accessors, DebugOverlays, Status includes former Query, 3D pin BP functions. |
+| `Tests/ParallaxMathTests.cpp` | Standalone C++17 tests (no UE) — state machine, transforms, blink/expression/viseme, swoosh, parameters, nested art + jiggle, 3D pin projection, batch operations (505 tests) |
 | `Tests/SyntaxValidator.py` | Python syntax validator — brace/macro balance, include guards |
 | `Tests/run_tests.ps1` | Test runner — Python validator + C++ compilation/execution |
 

@@ -343,3 +343,144 @@ void UFaceParallaxPreset::ClearNestedElements(EFaceAngleState State, FName Layer
     if (!Slot) return;
     Slot->NestedElements.Empty();
 }
+
+FFacePin3D UFaceParallaxPreset::GetNestedPin3D(EFaceAngleState State, FName LayerTag, int32 Index) const
+{
+    const FFaceViewStateLayerSet* StateSet = ViewAssignments.Find(State);
+    if (!StateSet) return FFacePin3D();
+    const FFaceArtSlot* Slot = StateSet->Layers.Find(LayerTag);
+    if (!Slot) return FFacePin3D();
+    if (Index < 0 || Index >= Slot->NestedElements.Num()) return FFacePin3D();
+    return Slot->NestedElements[Index].Pin3D;
+}
+
+void UFaceParallaxPreset::SetNestedPin3D(EFaceAngleState State, FName LayerTag, int32 Index, const FFacePin3D& Pin)
+{
+    FFaceViewStateLayerSet& StateSet = ViewAssignments.FindOrAdd(State);
+    FFaceArtSlot& Slot = StateSet.Layers.FindOrAdd(LayerTag);
+    if (Index < 0 || Index >= Slot.NestedElements.Num()) return;
+    Slot.NestedElements[Index].Pin3D = Pin;
+}
+
+// ====================================================================
+// BATCH OPERATIONS
+// ====================================================================
+
+void UFaceParallaxPreset::BatchSetTextures(EFaceAngleState State, FName LayerTag, const TArray<FFaceTextureSet>& Textures)
+{
+    if (Textures.Num() == 0)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("BatchSetTextures: empty array for State=%d, Layer=%s"), (int32)State, *LayerTag.ToString());
+        return;
+    }
+    FFaceArtSlot& Slot = GetSlotMutable(State, LayerTag);
+    Slot.Textures = Textures[0];
+    Slot.Textures.CaptureSourceSize();
+    if (bAutoFitOnAssign && Slot.CanonicalTransform.IsIdentity())
+    {
+        Slot.CanonicalTransform = ComputeAutoFitTransform(Slot.Textures);
+    }
+}
+
+void UFaceParallaxPreset::BatchSetTexturesAllLayers(EFaceAngleState State, const TMap<FName, FFaceTextureSet>& LayerTextures)
+{
+    for (const auto& Pair : LayerTextures)
+    {
+        FFaceArtSlot& Slot = GetSlotMutable(State, Pair.Key);
+        Slot.Textures = Pair.Value;
+        Slot.Textures.CaptureSourceSize();
+        if (bAutoFitOnAssign && Slot.CanonicalTransform.IsIdentity())
+        {
+            Slot.CanonicalTransform = ComputeAutoFitTransform(Slot.Textures);
+        }
+    }
+}
+
+void UFaceParallaxPreset::SyncLayerNestedToAllViews(FName LayerTag, FName ElementName, const FFaceNestedArt& Element)
+{
+    FFaceViewStateLayerSet* FrontSet = ViewAssignments.Find(EFaceAngleState::Front);
+    if (!FrontSet || !FrontSet->Layers.Contains(LayerTag))
+    {
+        UE_LOG(LogTemp, Warning, TEXT("SyncLayerNestedToAllViews: Front state has no layer '%s'"), *LayerTag.ToString());
+        return;
+    }
+
+    for (auto& StatePair : ViewAssignments)
+    {
+        if (StatePair.Key == EFaceAngleState::Front) continue;
+
+        FFaceArtSlot* Slot = StatePair.Value.Layers.Find(LayerTag);
+        if (!Slot) continue;
+
+        int32 FoundIndex = -1;
+        for (int32 i = 0; i < Slot->NestedElements.Num(); ++i)
+        {
+            if (Slot->NestedElements[i].ElementName == ElementName)
+            {
+                FoundIndex = i;
+                break;
+            }
+        }
+
+        if (FoundIndex >= 0)
+        {
+            Slot->NestedElements[FoundIndex] = Element;
+        }
+        else
+        {
+            Slot->NestedElements.Add(Element);
+        }
+    }
+}
+
+void UFaceParallaxPreset::ClearAllTextures()
+{
+    for (auto& StatePair : ViewAssignments)
+    {
+        for (auto& LayerPair : StatePair.Value.Layers)
+        {
+            LayerPair.Value.Textures = FFaceTextureSet();
+        }
+    }
+}
+
+TArray<FName> UFaceParallaxPreset::GetAllLayerTags(EFaceAngleState State) const
+{
+    TArray<FName> Result;
+    const FFaceViewStateLayerSet* StateSet = ViewAssignments.Find(State);
+    if (StateSet)
+    {
+        StateSet->Layers.GetKeys(Result);
+    }
+    return Result;
+}
+
+int32 UFaceParallaxPreset::GetNumViewStates() const
+{
+    return ViewAssignments.Num();
+}
+
+void UFaceParallaxPreset::DuplicateState(EFaceAngleState SourceState, EFaceAngleState DestState)
+{
+    const FFaceViewStateLayerSet* SourceSet = ViewAssignments.Find(SourceState);
+    if (!SourceSet)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("DuplicateState: source state %d not found"), (int32)SourceState);
+        return;
+    }
+    ViewAssignments.Add(DestState, *SourceSet);
+}
+
+void UFaceParallaxPreset::SetNestedAltTextures(EFaceAngleState State, FName LayerTag, int32 NestedIndex, const TArray<UTexture2D*>& AltTextures)
+{
+    FFaceViewStateLayerSet* StateSet = ViewAssignments.Find(State);
+    if (!StateSet) return;
+    FFaceArtSlot* Slot = StateSet->Layers.Find(LayerTag);
+    if (!Slot) return;
+    if (NestedIndex < 0 || NestedIndex >= Slot->NestedElements.Num()) return;
+
+    FFaceNestedArt& Nested = Slot->NestedElements[NestedIndex];
+    if (AltTextures.Num() > 0) Nested.AltTextures.Albedo = AltTextures[0];
+    if (AltTextures.Num() > 1) Nested.AltTextures.Normal = AltTextures[1];
+    if (AltTextures.Num() > 2) Nested.AltTextures.Depth = AltTextures[2];
+}

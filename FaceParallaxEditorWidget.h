@@ -15,7 +15,7 @@ class FACEPARALLAX_API UFaceParallaxEditorWidget : public UUserWidget
     GENERATED_BODY()
 
 public:
-    // --- PREVIEW ACTOR ---
+    // ===== TARGETS =====
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Editor|Targets",
         meta = (DisplayName = "Preview Actor"))
     TObjectPtr<AFaceParallaxPreviewActor> PreviewActor;
@@ -24,9 +24,7 @@ public:
         meta = (DisplayName = "Active Preset"))
     TObjectPtr<UFaceParallaxPreset> ActivePreset;
 
-    // ====================================================================
-    // PRESET MANAGEMENT
-    // ====================================================================
+    // ===== PRESET =====
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Preset")
     void ApplyPresetToPreview();
 
@@ -48,30 +46,35 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Preset")
     bool GetAutoFitOnAssign() const;
 
-    // ====================================================================
-    // VIEW STATE
-    // ====================================================================
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|View State")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Preset")
+    void BatchSetTextures(EFaceAngleState State, FName LayerTag, const TArray<FFaceTextureSet>& Textures);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Preset")
+    void ClearAllTextures();
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Preset")
+    void DuplicateState(EFaceAngleState SourceState, EFaceAngleState DestState);
+
+    // ===== VIEWSTATE =====
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|ViewState")
     void SetActiveViewState(EFaceAngleState State);
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|View State")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|ViewState")
     EFaceAngleState GetActiveViewState() const;
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|View State")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|ViewState")
     TArray<EFaceAngleState> GetAssignedStates() const;
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|View State")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|ViewState")
     bool HasState(EFaceAngleState State) const;
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|View State")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|ViewState")
     TArray<FName> GetLayerTagsForState(EFaceAngleState State) const;
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|View State")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|ViewState")
     int32 GetLayerCount() const;
 
-    // ====================================================================
-    // TRANSFORM — PER-LAYER
-    // ====================================================================
+    // ===== TRANSFORM =====
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Transform")
     FFaceArtTransform GetLayerCanonicalTransform(EFaceAngleState State, FName LayerTag) const;
 
@@ -79,10 +82,19 @@ public:
     void SetLayerPosition(EFaceAngleState State, FName LayerTag, float X, float Y);
 
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Transform")
+    FVector2D GetLayerPosition(EFaceAngleState State, FName LayerTag) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Transform")
     void SetLayerScale(EFaceAngleState State, FName LayerTag, float X, float Y);
 
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Transform")
+    FVector2D GetLayerScale(EFaceAngleState State, FName LayerTag) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Transform")
     void SetLayerRotation(EFaceAngleState State, FName LayerTag, float Degrees);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Transform")
+    float GetLayerRotation(EFaceAngleState State, FName LayerTag) const;
 
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Transform")
     void SetLayerTransform(EFaceAngleState State, FName LayerTag, const FFaceArtTransform& Transform);
@@ -105,34 +117,30 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Transform")
     void SyncAllLayersToAllViews();
 
-    // ====================================================================
-    // VIEW OVERRIDES
-    // ====================================================================
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|View Override")
+    // ===== VIEWOVERRIDE =====
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|ViewOverride")
     bool HasViewOverride(EFaceAngleState State, FName LayerTag, EFaceAngleState OverrideView) const;
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|View Override")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|ViewOverride")
     FFaceArtTransform GetViewOverride(EFaceAngleState State, FName LayerTag, EFaceAngleState OverrideView) const;
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|View Override")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|ViewOverride")
     void SetViewOverride(EFaceAngleState State, FName LayerTag, EFaceAngleState OverrideView,
         const FFaceArtTransform& Override);
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|View Override")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|ViewOverride")
     void ClearViewOverride(EFaceAngleState State, FName LayerTag, EFaceAngleState OverrideView);
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|View Override")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|ViewOverride")
     void ClearAllOverridesForSlot(EFaceAngleState State, FName LayerTag);
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|View Override")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|ViewOverride")
     void ClearAllOverrides();
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|View Override")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|ViewOverride")
     TArray<EFaceAngleState> GetOverrideViewsForSlot(EFaceAngleState State, FName LayerTag) const;
 
-    // ====================================================================
-    // TEXTURES
-    // ====================================================================
+    // ===== TEXTURES =====
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Textures")
     FFaceTextureSet GetSlotTextures(EFaceAngleState State, FName LayerTag) const;
 
@@ -151,9 +159,7 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Textures")
     class UTexture2D* GetSlotNormal(EFaceAngleState State, FName LayerTag) const;
 
-    // ====================================================================
-    // CAMERA
-    // ====================================================================
+    // ===== CAMERA =====
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Camera")
     void SetOrbitYaw(float Degrees);
 
@@ -193,24 +199,26 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Camera")
     void ResetCamera();
 
-    // ====================================================================
-    // DEBUG OVERLAYS
-    // ====================================================================
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Debug Overlays")
+    // ===== DEBUGOAVERLAYS =====
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|DebugOverlays")
     void ShowTextures(bool bVisible);
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Debug Overlays")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|DebugOverlays")
     void ShowDepthMesh(bool bVisible);
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Debug Overlays")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|DebugOverlays")
     void ShowWireframe(bool bVisible);
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Debug Overlays")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|DebugOverlays")
     void ColorByDepth(bool bEnabled);
 
-    // ====================================================================
-    // STATUS
-    // ====================================================================
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|DebugOverlays")
+    void SetEnableMaterialDebugMode(bool bEnabled);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|DebugOverlays")
+    bool GetEnableMaterialDebugMode() const;
+
+    // ===== STATUS =====
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Status")
     int32 GetAssignedStateCount() const;
 
@@ -223,54 +231,93 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Status")
     FString GetStatusString() const;
 
-    // ====================================================================
-    // DYNAMIC ART (eye tracking)
-    // ====================================================================
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Dynamic Art")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Status")
+    int32 GetStateTextureCount() const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Status")
+    FString GetStatusDetails() const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Status")
+    bool HasSlot(EFaceAngleState State, FName LayerTag) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Status")
+    bool IsSlotFullyAssigned(EFaceAngleState State, FName LayerTag) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Status")
+    void ClearState(EFaceAngleState State);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Status")
+    void ClearAll();
+
+    // ===== DYNAMICART =====
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|DynamicArt")
     void SetDriveArtPositionFromYaw(bool bEnabled);
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Dynamic Art")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|DynamicArt")
     bool GetDriveArtPositionFromYaw() const;
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Dynamic Art")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|DynamicArt")
     void SetMaxYawArtOffset(float Offset);
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Dynamic Art")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|DynamicArt")
     float GetMaxYawArtOffset() const;
 
-    // ====================================================================
-    // MATERIAL PARAM NAMES
-    // ====================================================================
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Material Params")
+    // ===== TEXTUREANDTRANSFORMPARAMS =====
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|TextureAndTransformParams")
+    void SetAlbedoParamName(FName Name);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|TextureAndTransformParams")
     FName GetAlbedoParamName() const;
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Material Params")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|TextureAndTransformParams")
+    void SetNormalParamName(FName Name);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|TextureAndTransformParams")
     FName GetNormalParamName() const;
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Material Params")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|TextureAndTransformParams")
+    void SetDepthParamName(FName Name);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|TextureAndTransformParams")
     FName GetDepthParamName() const;
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Material Params")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|TextureAndTransformParams")
+    void SetAlbedoPrevParamName(FName Name);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|TextureAndTransformParams")
     FName GetAlbedoPrevParamName() const;
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Material Params")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|TextureAndTransformParams")
+    void SetNormalPrevParamName(FName Name);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|TextureAndTransformParams")
     FName GetNormalPrevParamName() const;
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Material Params")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|TextureAndTransformParams")
+    void SetDepthPrevParamName(FName Name);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|TextureAndTransformParams")
     FName GetDepthPrevParamName() const;
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Material Params")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|TextureAndTransformParams")
+    void SetArtPositionParamName(FName Name);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|TextureAndTransformParams")
     FName GetArtPositionParamName() const;
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Material Params")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|TextureAndTransformParams")
+    void SetArtScaleParamName(FName Name);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|TextureAndTransformParams")
     FName GetArtScaleParamName() const;
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Material Params")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|TextureAndTransformParams")
+    void SetArtRotationParamName(FName Name);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|TextureAndTransformParams")
     FName GetArtRotationParamName() const;
 
-    // ====================================================================
-    // BLINK ANIMATION
-    // ====================================================================
+    // ===== BLINK =====
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Blink")
     void SetBlinkingEnabled(bool bEnabled);
 
@@ -310,9 +357,7 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Blink")
     void ClearBlinkFrames(EFaceAngleState State, FName LayerTag);
 
-    // ====================================================================
-    // EXPRESSION SYSTEM
-    // ====================================================================
+    // ===== EXPRESSION =====
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Expression")
     void SetExpression(EExpression NewExpression);
 
@@ -344,20 +389,30 @@ public:
     TArray<EExpression> GetAssignedExpressions(EFaceAngleState State, FName LayerTag) const;
 
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Expression")
+    void SetExpressionBlendParamName(FName Name);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Expression")
     FName GetExpressionBlendParamName() const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Expression")
+    void SetExpressionAlbedoPrevParamName(FName Name);
 
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Expression")
     FName GetExpressionAlbedoPrevParamName() const;
 
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Expression")
+    void SetExpressionNormalPrevParamName(FName Name);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Expression")
     FName GetExpressionNormalPrevParamName() const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Expression")
+    void SetExpressionDepthPrevParamName(FName Name);
 
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Expression")
     FName GetExpressionDepthPrevParamName() const;
 
-    // ====================================================================
-    // VISEME (speech mouth shapes)
-    // ====================================================================
+    // ===== VISEME =====
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Viseme")
     void SetVisemeEnabled(bool bEnabled);
 
@@ -402,9 +457,7 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Viseme")
     void ClearAllVisemes(EFaceAngleState State, FName LayerTag, EExpression Expression);
 
-    // ====================================================================
-    // PARAMETER SYSTEM
-    // ====================================================================
+    // ===== PARAMETER =====
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Parameter")
     void SetParamsEnabled(bool bEnabled);
 
@@ -432,24 +485,44 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Parameter")
     float GetParamSmoothingSpeed(FName ParamName) const;
 
-    // ====================================================================
-    // PARAM BINDINGS (per-slot)
-    // ====================================================================
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Param Binding")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Parameter")
+    void SetParamBlendParamName(FName Name);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Parameter")
+    FName GetParamBlendParamName() const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Parameter")
+    void SetParamAltAlbedoParamName(FName Name);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Parameter")
+    FName GetParamAltAlbedoParamName() const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Parameter")
+    void SetParamAltNormalParamName(FName Name);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Parameter")
+    FName GetParamAltNormalParamName() const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Parameter")
+    void SetParamAltDepthParamName(FName Name);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Parameter")
+    FName GetParamAltDepthParamName() const;
+
+    // ===== PARAMBINDING =====
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|ParamBinding")
     TArray<FFaceParamBinding> GetParamBindings(EFaceAngleState State, FName LayerTag) const;
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Param Binding")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|ParamBinding")
     void SetParamBindings(EFaceAngleState State, FName LayerTag, const TArray<FFaceParamBinding>& Bindings);
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Param Binding")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|ParamBinding")
     FFaceTextureSet GetAltTextures(EFaceAngleState State, FName LayerTag) const;
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Param Binding")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|ParamBinding")
     void SetAltTextures(EFaceAngleState State, FName LayerTag, const FFaceTextureSet& Textures);
 
-    // ====================================================================
-    // SWOOSH TRANSITION
-    // ====================================================================
+    // ===== SWOOSH =====
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Swoosh")
     void SetSwooshEnabled(bool bEnabled);
 
@@ -492,86 +565,146 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Swoosh")
     void ClearSwooshFrames(EFaceAngleState State, FName LayerTag);
 
-    // ====================================================================
-    // NESTED ART
-    // ====================================================================
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Swoosh")
+    void SetSwooshFrameDuration(float Duration);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Swoosh")
+    float GetSwooshFrameDuration() const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Swoosh")
+    void SetSwooshBlendOutDuration(float Duration);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Swoosh")
+    float GetSwooshBlendOutDuration() const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Swoosh")
+    void SetSwooshLayerBlendParamName(FName Name);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Swoosh")
+    FName GetSwooshLayerBlendParamName() const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Swoosh")
+    void SetSwooshIntensityParamName(FName Name);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Swoosh")
+    FName GetSwooshIntensityParamName() const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Swoosh")
+    void SetSwooshAngleParamName(FName Name);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Swoosh")
+    FName GetSwooshAngleParamName() const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Swoosh")
+    void SetSwooshSizeParamName(FName Name);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Swoosh")
+    FName GetSwooshSizeParamName() const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Swoosh")
+    void SetSwooshTextureParamName(FName Name);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Swoosh")
+    FName GetSwooshTextureParamName() const;
+
+    // ===== NESTEDART =====
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|NestedArt")
     void SetNestedArtEnabled(bool bEnabled);
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|NestedArt")
     bool GetNestedArtEnabled() const;
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|NestedArt")
     int32 GetNestedElementCount(EFaceAngleState State, FName LayerTag) const;
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|NestedArt")
     FFaceNestedArt GetNestedElement(EFaceAngleState State, FName LayerTag, int32 Index) const;
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|NestedArt")
     void SetNestedElement(EFaceAngleState State, FName LayerTag, int32 Index, const FFaceNestedArt& Element);
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|NestedArt")
     void AddNestedElement(EFaceAngleState State, FName LayerTag, const FFaceNestedArt& Element);
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|NestedArt")
     void RemoveNestedElement(EFaceAngleState State, FName LayerTag, int32 Index);
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|NestedArt")
     void SetNestedTextures(EFaceAngleState State, FName LayerTag, int32 Index, const FFaceTextureSet& Textures);
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|NestedArt")
     FFaceTextureSet GetNestedTextures(EFaceAngleState State, FName LayerTag, int32 Index) const;
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|NestedArt")
     void SetNestedTransform(EFaceAngleState State, FName LayerTag, int32 Index, const FFaceArtTransform& Transform);
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|NestedArt")
     FFaceArtTransform GetNestedTransform(EFaceAngleState State, FName LayerTag, int32 Index) const;
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|NestedArt")
     void SetNestedPivot(EFaceAngleState State, FName LayerTag, int32 Index, FVector2D Pivot);
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|NestedArt")
     FVector2D GetNestedPivot(EFaceAngleState State, FName LayerTag, int32 Index) const;
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|NestedArt")
     void SetNestedJiggleEnabled(EFaceAngleState State, FName LayerTag, int32 Index, bool bEnabled);
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|NestedArt")
     void SetNestedJiggleSettings(EFaceAngleState State, FName LayerTag, int32 Index, const FFaceJiggleSettings& Settings);
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|NestedArt")
     FFaceJiggleSettings GetNestedJiggleSettings(EFaceAngleState State, FName LayerTag, int32 Index) const;
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|NestedArt")
     void SetNestedVisibility(EFaceAngleState State, FName LayerTag, FName ElementName, EFaceAngleState ViewState, bool bVisible);
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|NestedArt")
     bool GetNestedVisibility(EFaceAngleState State, FName LayerTag, FName ElementName, EFaceAngleState ViewState) const;
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|NestedArt")
     void SetNestedIdleFrames(EFaceAngleState State, FName LayerTag, int32 Index, const TArray<FFaceTextureSet>& Frames);
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|NestedArt")
     TArray<FFaceTextureSet> GetNestedIdleFrames(EFaceAngleState State, FName LayerTag, int32 Index) const;
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Nested Art")
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|NestedArt")
     void ClearNestedIdleFrames(EFaceAngleState State, FName LayerTag, int32 Index);
 
-    // ====================================================================
-    // PRESET QUERIES
-    // ====================================================================
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Query")
-    bool HasSlot(EFaceAngleState State, FName LayerTag) const;
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|NestedArt")
+    void BatchSetNestedTexturesAllViews(FName LayerTag, FName ElementName, const FFaceTextureSet& Textures);
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Query")
-    bool IsSlotFullyAssigned(EFaceAngleState State, FName LayerTag) const;
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|NestedArt")
+    void DuplicateNestedElement(EFaceAngleState State, FName LayerTag, int32 SourceIndex, int32 DestIndex);
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Query")
-    void ClearState(EFaceAngleState State);
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|NestedArt")
+    void SyncNestedToAllViews(FName LayerTag, FName ElementName);
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Query")
-    void ClearAll();
+    // --- PIN FUNCTIONS ---
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|NestedArt")
+    FFacePin3D GetNestedPin3D(EFaceAngleState State, FName LayerTag, int32 Index) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|NestedArt")
+    void SetNestedPin3D(EFaceAngleState State, FName LayerTag, int32 Index, const FFacePin3D& Pin);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|NestedArt")
+    FVector2D GetNestedPinUV(EFaceAngleState State, FName LayerTag, int32 Index, EFaceAngleState ViewState) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|NestedArt")
+    void SetNestedPinFromUV(EFaceAngleState State, FName LayerTag, int32 Index, EFaceAngleState FromViewState, FVector2D UV);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|NestedArt")
+    FVector2D GetNestedEffectivePivot(EFaceAngleState State, FName LayerTag, int32 Index) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|NestedArt")
+    FFaceProfile3D GetFaceProfile() const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|NestedArt")
+    void SetFaceProfile(const FFaceProfile3D& Profile);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|NestedArt")
+    void DetectFaceProfile();
 
 private:
     EFaceAngleState ActiveViewState = EFaceAngleState::Front;

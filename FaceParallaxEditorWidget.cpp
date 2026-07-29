@@ -1399,3 +1399,507 @@ void UFaceParallaxEditorWidget::ClearAll()
         PreviewActor->FaceParallax->ApplyCurrentStateTextures();
     }
 }
+
+// ====================================================================
+// TEXTUREANDTRANSFORMPARAMS (Set functions)
+// ====================================================================
+
+void UFaceParallaxEditorWidget::SetAlbedoParamName(FName Name)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->AlbedoParamName = Name;
+}
+
+void UFaceParallaxEditorWidget::SetNormalParamName(FName Name)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->NormalParamName = Name;
+}
+
+void UFaceParallaxEditorWidget::SetDepthParamName(FName Name)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->DepthParamName = Name;
+}
+
+void UFaceParallaxEditorWidget::SetAlbedoPrevParamName(FName Name)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->AlbedoPrevParamName = Name;
+}
+
+void UFaceParallaxEditorWidget::SetNormalPrevParamName(FName Name)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->NormalPrevParamName = Name;
+}
+
+void UFaceParallaxEditorWidget::SetDepthPrevParamName(FName Name)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->DepthPrevParamName = Name;
+}
+
+void UFaceParallaxEditorWidget::SetArtPositionParamName(FName Name)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->ArtPositionParamName = Name;
+}
+
+void UFaceParallaxEditorWidget::SetArtScaleParamName(FName Name)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->ArtScaleParamName = Name;
+}
+
+void UFaceParallaxEditorWidget::SetArtRotationParamName(FName Name)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->ArtRotationParamName = Name;
+}
+
+// ====================================================================
+// TRANSFORM (read-back accessors)
+// ====================================================================
+
+FVector2D UFaceParallaxEditorWidget::GetLayerPosition(EFaceAngleState State, FName LayerTag) const
+{
+    return GetLayerCanonicalTransform(State, LayerTag).Position;
+}
+
+FVector2D UFaceParallaxEditorWidget::GetLayerScale(EFaceAngleState State, FName LayerTag) const
+{
+    return GetLayerCanonicalTransform(State, LayerTag).Scale;
+}
+
+float UFaceParallaxEditorWidget::GetLayerRotation(EFaceAngleState State, FName LayerTag) const
+{
+    return GetLayerCanonicalTransform(State, LayerTag).Rotation;
+}
+
+// ====================================================================
+// PRESET (batch operations)
+// ====================================================================
+
+void UFaceParallaxEditorWidget::BatchSetTextures(EFaceAngleState State, FName LayerTag, const TArray<FFaceTextureSet>& Textures)
+{
+    if (!ValidatePreset()) return;
+    ActivePreset->BatchSetTextures(State, LayerTag, Textures);
+
+    if (PreviewActor && PreviewActor->FaceParallax)
+    {
+        PreviewActor->FaceParallax->ApplyCurrentStateTextures();
+    }
+}
+
+void UFaceParallaxEditorWidget::ClearAllTextures()
+{
+    if (!ValidatePreset()) return;
+    ActivePreset->ClearAllTextures();
+
+    if (PreviewActor && PreviewActor->FaceParallax)
+    {
+        PreviewActor->FaceParallax->ApplyCurrentStateTextures();
+    }
+}
+
+void UFaceParallaxEditorWidget::DuplicateState(EFaceAngleState SourceState, EFaceAngleState DestState)
+{
+    if (!ValidatePreset()) return;
+    ActivePreset->DuplicateState(SourceState, DestState);
+
+    if (PreviewActor && PreviewActor->FaceParallax)
+    {
+        PreviewActor->FaceParallax->ApplyCurrentStateTextures();
+    }
+}
+
+// ====================================================================
+// EXPRESSION (Set functions)
+// ====================================================================
+
+void UFaceParallaxEditorWidget::SetExpressionBlendParamName(FName Name)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->ExpressionBlendParamName = Name;
+}
+
+void UFaceParallaxEditorWidget::SetExpressionAlbedoPrevParamName(FName Name)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->ExpressionAlbedoPrevParamName = Name;
+}
+
+void UFaceParallaxEditorWidget::SetExpressionNormalPrevParamName(FName Name)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->ExpressionNormalPrevParamName = Name;
+}
+
+void UFaceParallaxEditorWidget::SetExpressionDepthPrevParamName(FName Name)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->ExpressionDepthPrevParamName = Name;
+}
+
+// ====================================================================
+// PARAMETER (extended param name accessors)
+// ====================================================================
+
+void UFaceParallaxEditorWidget::SetParamBlendParamName(FName Name)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->ParamBlendParamName = Name;
+}
+
+FName UFaceParallaxEditorWidget::GetParamBlendParamName() const
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    return Comp ? Comp->ParamBlendParamName : FName("ParamBlendAlpha");
+}
+
+void UFaceParallaxEditorWidget::SetParamAltAlbedoParamName(FName Name)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->ParamAltAlbedoParamName = Name;
+}
+
+FName UFaceParallaxEditorWidget::GetParamAltAlbedoParamName() const
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    return Comp ? Comp->ParamAltAlbedoParamName : FName("AltAlbedoTexture");
+}
+
+void UFaceParallaxEditorWidget::SetParamAltNormalParamName(FName Name)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->ParamAltNormalParamName = Name;
+}
+
+FName UFaceParallaxEditorWidget::GetParamAltNormalParamName() const
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    return Comp ? Comp->ParamAltNormalParamName : FName("AltNormalTexture");
+}
+
+void UFaceParallaxEditorWidget::SetParamAltDepthParamName(FName Name)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->ParamAltDepthParamName = Name;
+}
+
+FName UFaceParallaxEditorWidget::GetParamAltDepthParamName() const
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    return Comp ? Comp->ParamAltDepthParamName : FName("AltDepthTexture");
+}
+
+// ====================================================================
+// SWOOSH (extended accessors)
+// ====================================================================
+
+void UFaceParallaxEditorWidget::SetSwooshFrameDuration(float Duration)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->SetSwooshFrameDuration(Duration);
+}
+
+float UFaceParallaxEditorWidget::GetSwooshFrameDuration() const
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    return Comp ? Comp->GetSwooshFrameDuration() : 0.033f;
+}
+
+void UFaceParallaxEditorWidget::SetSwooshBlendOutDuration(float Duration)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->SetSwooshBlendOutDuration(Duration);
+}
+
+float UFaceParallaxEditorWidget::GetSwooshBlendOutDuration() const
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    return Comp ? Comp->GetSwooshBlendOutDuration() : 0.15f;
+}
+
+void UFaceParallaxEditorWidget::SetSwooshLayerBlendParamName(FName Name)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->SetSwooshLayerBlendParamName(Name);
+}
+
+FName UFaceParallaxEditorWidget::GetSwooshLayerBlendParamName() const
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    return Comp ? Comp->GetSwooshLayerBlendParamName() : FName("SwooshLayerBlend");
+}
+
+void UFaceParallaxEditorWidget::SetSwooshIntensityParamName(FName Name)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->SetSwooshIntensityParamName(Name);
+}
+
+FName UFaceParallaxEditorWidget::GetSwooshIntensityParamName() const
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    return Comp ? Comp->GetSwooshIntensityParamName() : FName("SwooshIntensity");
+}
+
+void UFaceParallaxEditorWidget::SetSwooshAngleParamName(FName Name)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->SetSwooshAngleParamName(Name);
+}
+
+FName UFaceParallaxEditorWidget::GetSwooshAngleParamName() const
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    return Comp ? Comp->GetSwooshAngleParamName() : FName("SwooshAngle");
+}
+
+void UFaceParallaxEditorWidget::SetSwooshSizeParamName(FName Name)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->SetSwooshSizeParamName(Name);
+}
+
+FName UFaceParallaxEditorWidget::GetSwooshSizeParamName() const
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    return Comp ? Comp->GetSwooshSizeParamName() : FName("SwooshSize");
+}
+
+void UFaceParallaxEditorWidget::SetSwooshTextureParamName(FName Name)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->SetSwooshTextureParamName(Name);
+}
+
+FName UFaceParallaxEditorWidget::GetSwooshTextureParamName() const
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    return Comp ? Comp->GetSwooshTextureParamName() : FName("SwooshTexture");
+}
+
+// ====================================================================
+// DEBUG OVERLAYS (material debug mode)
+// ====================================================================
+
+void UFaceParallaxEditorWidget::SetEnableMaterialDebugMode(bool bEnabled)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->SetEnableMaterialDebugMode(bEnabled);
+}
+
+bool UFaceParallaxEditorWidget::GetEnableMaterialDebugMode() const
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    return Comp && Comp->GetEnableMaterialDebugMode();
+}
+
+// ====================================================================
+// STATUS (extended)
+// ====================================================================
+
+int32 UFaceParallaxEditorWidget::GetStateTextureCount() const
+{
+    if (!ValidatePreset()) return 0;
+    int32 Count = 0;
+    for (const auto& StatePair : ActivePreset->ViewAssignments)
+    {
+        for (const auto& LayerPair : StatePair.Value.Layers)
+        {
+            if (LayerPair.Value.Textures.Albedo) ++Count;
+            if (LayerPair.Value.Textures.Normal) ++Count;
+            if (LayerPair.Value.Textures.Depth) ++Count;
+        }
+    }
+    return Count;
+}
+
+FString UFaceParallaxEditorWidget::GetStatusDetails() const
+{
+    if (!ValidatePreset()) return TEXT("No preset assigned");
+
+    int32 AssignedStates = ActivePreset->GetAssignedStates().Num();
+    int32 TotalSlots = ActivePreset->GetTotalAssignedSlots();
+    int32 TextureCount = 0;
+    int32 FullyAssigned = 0;
+
+    for (const auto& StatePair : ActivePreset->ViewAssignments)
+    {
+        for (const auto& LayerPair : StatePair.Value.Layers)
+        {
+            const FFaceTextureSet& Tex = LayerPair.Value.Textures;
+            if (Tex.Albedo) ++TextureCount;
+            if (Tex.Normal) ++TextureCount;
+            if (Tex.Depth) ++TextureCount;
+            if (Tex.IsFullyAssigned()) ++FullyAssigned;
+        }
+    }
+
+    int32 Layers = 0;
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Layers = Comp->LayerDefinitions.Num();
+
+    FString BlinkStr = (Comp && Comp->bBlinkingEnabled) ? TEXT("On") : TEXT("Off");
+    FString SwooshStr = (Comp && Comp->bSwooshEnabled) ? TEXT("On") : TEXT("Off");
+    FString NestedStr = (Comp && Comp->bNestedArtEnabled) ? TEXT("On") : TEXT("Off");
+    FString ParamsStr = (Comp && Comp->bParamsEnabled) ? TEXT("On") : TEXT("Off");
+
+    return FString::Printf(TEXT("States: %d/10 | Layers: %d | Slots: %d | Textures: %d | Fully: %d | Blink: %s | Swoosh: %s | Nested: %s | Params: %s"),
+        AssignedStates, Layers, TotalSlots, TextureCount, FullyAssigned,
+        *BlinkStr, *SwooshStr, *NestedStr, *ParamsStr);
+}
+
+// ====================================================================
+// NESTED ART (batch operations)
+// ====================================================================
+
+void UFaceParallaxEditorWidget::BatchSetNestedTexturesAllViews(FName LayerTag, FName ElementName, const FFaceTextureSet& Textures)
+{
+    if (!ValidatePreset()) return;
+
+    const EFaceAngleState AllStates[] = {
+        EFaceAngleState::Front,
+        EFaceAngleState::ThreeQuarterRight,
+        EFaceAngleState::RightProfile,
+        EFaceAngleState::BackRight,
+        EFaceAngleState::Back,
+        EFaceAngleState::BackLeft,
+        EFaceAngleState::LeftProfile,
+        EFaceAngleState::ThreeQuarterLeft,
+        EFaceAngleState::Top,
+        EFaceAngleState::Bottom
+    };
+
+    for (EFaceAngleState State : AllStates)
+    {
+        int32 Count = ActivePreset->GetNestedElementCount(State, LayerTag);
+        for (int32 i = 0; i < Count; ++i)
+        {
+            FFaceNestedArt Elem = ActivePreset->GetNestedElement(State, LayerTag, i);
+            if (Elem.ElementName == ElementName)
+            {
+                Elem.Textures = Textures;
+                ActivePreset->SetNestedElement(State, LayerTag, i, Elem);
+                break;
+            }
+        }
+    }
+
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->ApplyCurrentStateTextures();
+}
+
+void UFaceParallaxEditorWidget::DuplicateNestedElement(EFaceAngleState State, FName LayerTag, int32 SourceIndex, int32 DestIndex)
+{
+    if (!ValidatePreset()) return;
+    FFaceNestedArt Source = ActivePreset->GetNestedElement(State, LayerTag, SourceIndex);
+    ActivePreset->SetNestedElement(State, LayerTag, DestIndex, Source);
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->ApplyCurrentStateTextures();
+}
+
+void UFaceParallaxEditorWidget::SyncNestedToAllViews(FName LayerTag, FName ElementName)
+{
+    if (!ValidatePreset()) return;
+
+    int32 Count = ActivePreset->GetNestedElementCount(EFaceAngleState::Front, LayerTag);
+    for (int32 i = 0; i < Count; ++i)
+    {
+        FFaceNestedArt Elem = ActivePreset->GetNestedElement(EFaceAngleState::Front, LayerTag, i);
+        if (Elem.ElementName == ElementName)
+        {
+            ActivePreset->SyncLayerNestedToAllViews(LayerTag, ElementName, Elem);
+            break;
+        }
+    }
+
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->ApplyCurrentStateTextures();
+}
+
+// ====================================================================
+// NESTED ART (3D Pin System)
+// ====================================================================
+
+FFacePin3D UFaceParallaxEditorWidget::GetNestedPin3D(EFaceAngleState State, FName LayerTag, int32 Index) const
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (!Comp) return FFacePin3D();
+    return Comp->GetNestedPin3D(State, LayerTag, Index);
+}
+
+void UFaceParallaxEditorWidget::SetNestedPin3D(EFaceAngleState State, FName LayerTag, int32 Index, const FFacePin3D& Pin)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->SetNestedPin3D(State, LayerTag, Index, Pin);
+}
+
+FVector2D UFaceParallaxEditorWidget::GetNestedPinUV(EFaceAngleState State, FName LayerTag, int32 Index, EFaceAngleState ViewState) const
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (!Comp) return FVector2D(0.5f, 0.5f);
+    FFacePin3D Pin = Comp->GetNestedPin3D(State, LayerTag, Index);
+    if (!Pin.bPinned) return FVector2D(0.5f, 0.5f);
+    return Comp->ProjectPinToUV(Pin.Position3D, ViewState);
+}
+
+void UFaceParallaxEditorWidget::SetNestedPinFromUV(EFaceAngleState State, FName LayerTag, int32 Index, EFaceAngleState FromViewState, FVector2D UV)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (!Comp) return;
+
+    FFacePin3D Pin = Comp->GetNestedPin3D(State, LayerTag, Index);
+    Pin.bPinned = true;
+
+    float YawDeg = Comp->GetZoneCenterYaw(FromViewState);
+    FVector2D UVCenter(UV.X - 0.5f, UV.Y - 0.5f);
+
+    if (FMath::Abs(YawDeg) < 45.0f)
+    {
+        Pin.Position3D.X = UVCenter.X * 2.0f;
+        Pin.Position3D.Y = UVCenter.Y * 2.0f;
+    }
+    else if (FMath::Abs(YawDeg - 90.0f) < 45.0f || FMath::Abs(YawDeg + 90.0f) < 45.0f)
+    {
+        Pin.Position3D.Z = UVCenter.X * 2.0f;
+        Pin.Position3D.Y = UVCenter.Y * 2.0f;
+    }
+    else
+    {
+        Pin.Position3D.X = UVCenter.X * 2.0f;
+        Pin.Position3D.Y = UVCenter.Y * 2.0f;
+        Pin.Position3D.Z = 0.0f;
+    }
+
+    Comp->SetNestedPin3D(State, LayerTag, Index, Pin);
+}
+
+FVector2D UFaceParallaxEditorWidget::GetNestedEffectivePivot(EFaceAngleState State, FName LayerTag, int32 Index) const
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (!Comp) return FVector2D(0.5f, 0.5f);
+    return Comp->GetNestedEffectivePivot(State, LayerTag, Index);
+}
+
+FFaceProfile3D UFaceParallaxEditorWidget::GetFaceProfile() const
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (!Comp) return FFaceProfile3D();
+    return Comp->FaceProfile;
+}
+
+void UFaceParallaxEditorWidget::SetFaceProfile(const FFaceProfile3D& Profile)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->FaceProfile = Profile;
+}
+
+void UFaceParallaxEditorWidget::DetectFaceProfile()
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->DetectFaceProfileFromPreset();
+}

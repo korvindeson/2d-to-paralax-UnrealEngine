@@ -795,6 +795,7 @@ void UFaceParallaxComponent::ApplyPreset(UFaceParallaxPreset* Preset)
     ActivePreset = Preset;
     if (ActivePreset)
     {
+        DetectFaceProfileFromPreset();
         ApplyCurrentStateTextures();
     }
 }
@@ -1407,8 +1408,9 @@ void UFaceParallaxComponent::PushNestedArtParams()
                 Mat->SetScalarParameterValue(ArtRotationParamName, NestedTransform.Rotation);
 
                 // Pivot point
+                FVector2D EffectivePivot = GetEffectivePivot(Element);
                 Mat->SetVectorParameterValue(ArtPivotParamName,
-                    FLinearColor(Element.PivotPoint.X, Element.PivotPoint.Y, 0.0f, 0.0f));
+                    FLinearColor(EffectivePivot.X, EffectivePivot.Y, 0.0f, 0.0f));
 
                 // TextureBlend — push alt textures + blend alpha
                 if (NestedTextureBlend > 0.0f)
@@ -1506,6 +1508,9 @@ void UFaceParallaxComponent::PushNestedChildArt(const FFaceNestedArt& Element, c
         }
     }
 
+    // Compute effective pivot for this child element
+    FVector2D ChildEffectivePivot = GetEffectivePivot(Element);
+
     for (UMaterialInstanceDynamic* Mat : *ElemMats)
     {
         if (!Mat) continue;
@@ -1515,7 +1520,7 @@ void UFaceParallaxComponent::PushNestedChildArt(const FFaceNestedArt& Element, c
         Mat->SetVectorParameterValue(ArtPositionParamName, FLinearColor(NestedTransform.Position.X, NestedTransform.Position.Y, 0.0f, 0.0f));
         Mat->SetVectorParameterValue(ArtScaleParamName, FLinearColor(NestedTransform.Scale.X, NestedTransform.Scale.Y, 0.0f, 0.0f));
         Mat->SetScalarParameterValue(ArtRotationParamName, NestedTransform.Rotation);
-        Mat->SetVectorParameterValue(ArtPivotParamName, FLinearColor(Element.PivotPoint.X, Element.PivotPoint.Y, 0.0f, 0.0f));
+        Mat->SetVectorParameterValue(ArtPivotParamName, FLinearColor(ChildEffectivePivot.X, ChildEffectivePivot.Y, 0.0f, 0.0f));
 
         // TextureBlend
         if (ChildTextureBlend > 0.0f)
@@ -1633,4 +1638,142 @@ void UFaceParallaxComponent::SetNestedVisibility(EFaceAngleState State, FName La
             return;
         }
     }
+}
+
+FFaceLayerDef UFaceParallaxComponent::GetLayerDefinition(int32 Index) const
+{
+    if (Index < 0 || Index >= LayerDefinitions.Num()) return FFaceLayerDef();
+    return LayerDefinitions[Index];
+}
+
+void UFaceParallaxComponent::SetLayerDefinition(int32 Index, const FFaceLayerDef& Def)
+{
+    if (Index < 0 || Index >= LayerDefinitions.Num()) return;
+    LayerDefinitions[Index] = Def;
+}
+
+FVector2D UFaceParallaxComponent::GetLayerParallaxOffset(int32 LayerIndex) const
+{
+    if (LayerIndex < 0 || LayerIndex >= LayerParallaxOffsets.Num()) return FVector2D::ZeroVector;
+    return LayerParallaxOffsets[LayerIndex];
+}
+
+// --- 3D PIN SYSTEM ---
+
+FVector2D UFaceParallaxComponent::GetEffectivePivot(const FFaceNestedArt& Element) const
+{
+    if (Element.Pin3D.bPinned)
+    {
+        return ProjectPinToUVInternal(Element.Pin3D.Position3D, CurrentState);
+    }
+    return Element.PivotPoint;
+}
+
+FVector2D UFaceParallaxComponent::ProjectPinToUVInternal(const FVector& Pin3D, EFaceAngleState ViewState) const
+{
+    float YawDeg = GetZoneCenterYaw(ViewState);
+    float PitchDeg = GetZoneCenterPitch(ViewState);
+
+    float YawRad = FMath::DegreesToRadians(YawDeg);
+    float CosY = FMath::Cos(YawRad);
+    float SinY = FMath::Sin(YawRad);
+
+    float PitchRad = FMath::DegreesToRadians(PitchDeg);
+    float CosP = FMath::Cos(PitchRad);
+    float SinP = FMath::Sin(PitchRad);
+
+    // 3D pin in face-local space
+    float WX = Pin3D.X * FaceProfile.FaceHalfWidth;
+    float WY = Pin3D.Y * FaceProfile.FaceHalfHeight;
+    float WZ = Pin3D.Z * FaceProfile.FaceHalfDepth;
+
+    // Yaw: project XZ onto view plane
+    float ViewX = WX * CosY + WZ * SinY;
+    float VisibleX = FaceProfile.FaceHalfWidth * FMath::Abs(CosY) + FaceProfile.FaceHalfDepth * FMath::Abs(SinY);
+
+    // Pitch: project Y and Z*SinP
+    float ViewY = WY * CosP;
+    float VisibleY = FaceProfile.FaceHalfHeight * FMath::Abs(CosP) + FaceProfile.FaceHalfDepth * FMath::Abs(SinP);
+
+    float UVx = 0.5f;
+    float UVy = 0.5f;
+    if (VisibleX > KINDA_SMALL_NUMBER) UVx = 0.5f + 0.5f * ViewX / VisibleX;
+    if (VisibleY > KINDA_SMALL_NUMBER) UVy = 0.5f + 0.5f * ViewY / VisibleY;
+
+    return FVector2D(FMath::Clamp(UVx, 0.0f, 1.0f), FMath::Clamp(UVy, 0.0f, 1.0f));
+}
+
+FVector2D UFaceParallaxComponent::ProjectPinToUV(FVector Pin3D, EFaceAngleState ViewState) const
+{
+    return ProjectPinToUVInternal(Pin3D, ViewState);
+}
+
+void UFaceParallaxComponent::DetectFaceProfileFromPreset()
+{
+    if (!ActivePreset) return;
+
+    // Find the first layer in Front state for width/height
+    TArray<FName> FrontLayers = ActivePreset->GetAllLayerTags(EFaceAngleState::Front);
+    if (FrontLayers.Num() > 0)
+    {
+        const FFaceArtSlot& Slot = ActivePreset->GetSlot(EFaceAngleState::Front, FrontLayers[0]);
+        if (Slot.Textures.Albedo)
+        {
+            int32 TexW = Slot.Textures.SourceTexWidth > 0 ? Slot.Textures.SourceTexWidth : Slot.Textures.Albedo->GetSizeX();
+            int32 TexH = Slot.Textures.SourceTexHeight > 0 ? Slot.Textures.SourceTexHeight : Slot.Textures.Albedo->GetSizeY();
+            if (TexW > 0) FaceProfile.FaceHalfWidth = (float)TexW * 0.5f;
+            if (TexH > 0) FaceProfile.FaceHalfHeight = (float)TexH * 0.5f;
+        }
+    }
+
+    // Find the first layer in RightProfile state for depth
+    TArray<FName> ProfileLayers = ActivePreset->GetAllLayerTags(EFaceAngleState::RightProfile);
+    if (ProfileLayers.Num() > 0)
+    {
+        const FFaceArtSlot& Slot = ActivePreset->GetSlot(EFaceAngleState::RightProfile, ProfileLayers[0]);
+        if (Slot.Textures.Albedo)
+        {
+            int32 TexW = Slot.Textures.SourceTexWidth > 0 ? Slot.Textures.SourceTexWidth : Slot.Textures.Albedo->GetSizeX();
+            if (TexW > 0) FaceProfile.FaceHalfDepth = (float)TexW * 0.5f;
+        }
+    }
+
+    // Fall back to LeftProfile if RightProfile has no textures
+    if (FaceProfile.FaceHalfDepth <= 0.5f)
+    {
+        TArray<FName> LeftProfileLayers = ActivePreset->GetAllLayerTags(EFaceAngleState::LeftProfile);
+        if (LeftProfileLayers.Num() > 0)
+        {
+            const FFaceArtSlot& Slot = ActivePreset->GetSlot(EFaceAngleState::LeftProfile, LeftProfileLayers[0]);
+            if (Slot.Textures.Albedo)
+            {
+                int32 TexW = Slot.Textures.SourceTexWidth > 0 ? Slot.Textures.SourceTexWidth : Slot.Textures.Albedo->GetSizeX();
+                if (TexW > 0) FaceProfile.FaceHalfDepth = (float)TexW * 0.5f;
+            }
+        }
+    }
+}
+
+void UFaceParallaxComponent::SetNestedPin3D(EFaceAngleState State, FName LayerTag, int32 Index, const FFacePin3D& Pin)
+{
+    if (!ActivePreset) return;
+    FFaceArtSlot& Slot = ActivePreset->GetSlotMutable(State, LayerTag);
+    if (Index < 0 || Index >= Slot.NestedElements.Num()) return;
+    Slot.NestedElements[Index].Pin3D = Pin;
+}
+
+FFacePin3D UFaceParallaxComponent::GetNestedPin3D(EFaceAngleState State, FName LayerTag, int32 Index) const
+{
+    if (!ActivePreset) return FFacePin3D();
+    const FFaceArtSlot& Slot = ActivePreset->GetSlot(State, LayerTag);
+    if (Index < 0 || Index >= Slot.NestedElements.Num()) return FFacePin3D();
+    return Slot.NestedElements[Index].Pin3D;
+}
+
+FVector2D UFaceParallaxComponent::GetNestedEffectivePivot(EFaceAngleState State, FName LayerTag, int32 Index) const
+{
+    if (!ActivePreset) return FVector2D(0.5f, 0.5f);
+    const FFaceArtSlot& Slot = ActivePreset->GetSlot(State, LayerTag);
+    if (Index < 0 || Index >= Slot.NestedElements.Num()) return FVector2D(0.5f, 0.5f);
+    return GetEffectivePivot(Slot.NestedElements[Index]);
 }

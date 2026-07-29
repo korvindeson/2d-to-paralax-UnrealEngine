@@ -117,6 +117,12 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Face Preset|Nested")
     void ClearNestedElements(EFaceAngleState State, FName LayerTag);
 
+    UFUNCTION(BlueprintCallable, Category = "Face Preset|Nested")
+    FFacePin3D GetNestedPin3D(EFaceAngleState State, FName LayerTag, int32 Index) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Preset|Nested")
+    void SetNestedPin3D(EFaceAngleState State, FName LayerTag, int32 Index, const FFacePin3D& Pin);
+
     // --- QUERIES ---
     UFUNCTION(BlueprintCallable, Category = "Face Preset")
     bool HasState(EFaceAngleState State) const;
@@ -135,4 +141,29 @@ public:
 
     UFUNCTION(BlueprintCallable, Category = "Face Preset")
     void ClearAll();
+
+    // --- BATCH OPERATIONS ---
+    UFUNCTION(BlueprintCallable, Category = "Face Preset|Batch")
+    void BatchSetTextures(EFaceAngleState State, FName LayerTag, const TArray<FFaceTextureSet>& Textures);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Preset|Batch")
+    void BatchSetTexturesAllLayers(EFaceAngleState State, const TMap<FName, FFaceTextureSet>& LayerTextures);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Preset|Batch")
+    void SyncLayerNestedToAllViews(FName LayerTag, FName ElementName, const FFaceNestedArt& Element);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Preset|Batch")
+    void ClearAllTextures();
+
+    UFUNCTION(BlueprintCallable, Category = "Face Preset|Batch")
+    TArray<FName> GetAllLayerTags(EFaceAngleState State) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Preset|Batch")
+    int32 GetNumViewStates() const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Preset|Batch")
+    void DuplicateState(EFaceAngleState SourceState, EFaceAngleState DestState);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Preset|Batch")
+    void SetNestedAltTextures(EFaceAngleState State, FName LayerTag, int32 NestedIndex, const TArray<UTexture2D*>& AltTextures);
 };

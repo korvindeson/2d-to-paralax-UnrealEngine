@@ -58,6 +58,30 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|View Angles")
     float HalfZoneWidth = 22.5f;
 
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|View Angles")
+    void SetTopViewPitchThreshold(float Threshold) { TopViewPitchThreshold = Threshold; }
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|View Angles")
+    float GetTopViewPitchThreshold() const { return TopViewPitchThreshold; }
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|View Angles")
+    void SetBottomViewPitchThreshold(float Threshold) { BottomViewPitchThreshold = Threshold; }
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|View Angles")
+    float GetBottomViewPitchThreshold() const { return BottomViewPitchThreshold; }
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|View Angles")
+    void SetHalfZoneWidth(float Width) { HalfZoneWidth = FMath::Max(1.0f, Width); }
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|View Angles")
+    float GetHalfZoneWidth() const { return HalfZoneWidth; }
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|View Angles")
+    float GetZoneCenterYaw(EFaceAngleState State) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|View Angles")
+    float GetZoneCenterPitch(EFaceAngleState State) const;
+
     // --- TRANSITION SETTINGS ---
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Transitions")
     float CrossfadeSpeed = 15.0f;
@@ -71,6 +95,30 @@ public:
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Transitions")
     float BlendWindowWidth = 5.0f;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Transitions")
+    void SetCrossfadeSpeed(float Speed) { CrossfadeSpeed = FMath::Max(0.1f, Speed); }
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Transitions")
+    float GetCrossfadeSpeed() const { return CrossfadeSpeed; }
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Transitions")
+    void SetHysteresisFrames(int32 Frames) { HysteresisFrames = FMath::Clamp(Frames, 1, 30); }
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Transitions")
+    int32 GetHysteresisFrames() const { return HysteresisFrames; }
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Transitions")
+    void SetUseContinuousBlending(bool bEnabled) { bUseContinuousBlending = bEnabled; }
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Transitions")
+    bool GetUseContinuousBlending() const { return bUseContinuousBlending; }
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Transitions")
+    void SetBlendWindowWidth(float Width) { BlendWindowWidth = FMath::Max(0.0f, Width); }
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Transitions")
+    float GetBlendWindowWidth() const { return BlendWindowWidth; }
 
     // --- SWOOSH TRANSITION SETTINGS ---
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Swoosh")
@@ -171,6 +219,32 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Face Parallax|Nested Art")
     void SetNestedVisibility(EFaceAngleState State, FName LayerTag, FName ElementName, EFaceAngleState ViewState, bool bVisible);
 
+    // --- 3D FACE PROFILE + PIN ---
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Nested Art",
+        meta = (DisplayName = "Face Profile (auto-detected from texture sizes)"))
+    FFaceProfile3D FaceProfile;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Nested Art")
+    void DetectFaceProfileFromPreset();
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Nested Art")
+    void SetFaceProfile(const FFaceProfile3D& Profile) { FaceProfile = Profile; }
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Nested Art")
+    FFaceProfile3D GetFaceProfile() const { return FaceProfile; }
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Nested Art")
+    FVector2D ProjectPinToUV(FVector Pin3D, EFaceAngleState ViewState) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Nested Art")
+    void SetNestedPin3D(EFaceAngleState State, FName LayerTag, int32 Index, const FFacePin3D& Pin);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Nested Art")
+    FFacePin3D GetNestedPin3D(EFaceAngleState State, FName LayerTag, int32 Index) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Nested Art")
+    FVector2D GetNestedEffectivePivot(EFaceAngleState State, FName LayerTag, int32 Index) const;
+
     // --- PARAMETER SYSTEM ---
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Parameters")
     bool bParamsEnabled = true;
@@ -226,6 +300,23 @@ public:
         meta = (DisplayName = "Alt Depth Param Name"))
     FName ParamAltDepthParamName = "AltDepthTexture";
 
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Parameters")
+    void SetParamBlendParamName(FName Name) { ParamBlendParamName = Name; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Parameters")
+    FName GetParamBlendParamName() const { return ParamBlendParamName; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Parameters")
+    void SetParamAltAlbedoParamName(FName Name) { ParamAltAlbedoParamName = Name; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Parameters")
+    FName GetParamAltAlbedoParamName() const { return ParamAltAlbedoParamName; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Parameters")
+    void SetParamAltNormalParamName(FName Name) { ParamAltNormalParamName = Name; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Parameters")
+    FName GetParamAltNormalParamName() const { return ParamAltNormalParamName; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Parameters")
+    void SetParamAltDepthParamName(FName Name) { ParamAltDepthParamName = Name; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Parameters")
+    FName GetParamAltDepthParamName() const { return ParamAltDepthParamName; }
+
     // --- PARALLAX SETTINGS ---
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Parallax")
     float MaxParallaxOffset = 5.0f;
@@ -236,12 +327,41 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Parallax")
     TArray<FFaceLayerDef> LayerDefinitions;
 
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Parallax")
+    void SetMaxParallaxOffset(float Offset) { MaxParallaxOffset = FMath::Max(0.0f, Offset); }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Parallax")
+    float GetMaxParallaxOffset() const { return MaxParallaxOffset; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Parallax")
+    void SetMaxVerticalParallaxOffset(float Offset) { MaxVerticalParallaxOffset = FMath::Max(0.0f, Offset); }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Parallax")
+    float GetMaxVerticalParallaxOffset() const { return MaxVerticalParallaxOffset; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Parallax")
+    int32 GetNumLayerDefinitions() const { return LayerDefinitions.Num(); }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Parallax")
+    FFaceLayerDef GetLayerDefinition(int32 Index) const;
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Parallax")
+    void SetLayerDefinition(int32 Index, const FFaceLayerDef& Def);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Parallax")
+    FVector2D GetLayerParallaxOffset(int32 LayerIndex) const;
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Parallax")
+    TArray<FVector2D> GetAllLayerParallaxOffsets() const { return LayerParallaxOffsets; }
+
     // --- DEPTH MAP SETTINGS ---
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Depth Maps")
     bool bUseMaterialDrivenDepth = true;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Depth Maps")
     float DepthMapIntensity = 1.0f;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Depth Maps")
+    void SetUseMaterialDrivenDepth(bool bEnabled) { bUseMaterialDrivenDepth = bEnabled; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Depth Maps")
+    bool GetUseMaterialDrivenDepth() const { return bUseMaterialDrivenDepth; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Depth Maps")
+    void SetDepthMapIntensity(float Intensity) { DepthMapIntensity = FMath::Max(0.0f, Intensity); }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Depth Maps")
+    float GetDepthMapIntensity() const { return DepthMapIntensity; }
 
     // --- MATERIAL TEXTURE PARAMETERS ---
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Material Texture Params")
@@ -252,6 +372,19 @@ public:
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Material Texture Params")
     FName DepthParamName = "DepthTexture";
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Material Texture Params")
+    void SetAlbedoParamName(FName Name) { AlbedoParamName = Name; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Material Texture Params")
+    FName GetAlbedoParamName() const { return AlbedoParamName; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Material Texture Params")
+    void SetNormalParamName(FName Name) { NormalParamName = Name; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Material Texture Params")
+    FName GetNormalParamName() const { return NormalParamName; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Material Texture Params")
+    void SetDepthParamName(FName Name) { DepthParamName = Name; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Material Texture Params")
+    FName GetDepthParamName() const { return DepthParamName; }
 
     // --- DUAL-TEXTURE PARAMETERS for state crossfade blending ---
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Material Texture Params",
@@ -266,6 +399,19 @@ public:
         meta = (DisplayName = "Prev Depth Param Name"))
     FName DepthPrevParamName = "DepthTexturePrev";
 
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Material Texture Params")
+    void SetAlbedoPrevParamName(FName Name) { AlbedoPrevParamName = Name; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Material Texture Params")
+    FName GetAlbedoPrevParamName() const { return AlbedoPrevParamName; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Material Texture Params")
+    void SetNormalPrevParamName(FName Name) { NormalPrevParamName = Name; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Material Texture Params")
+    FName GetNormalPrevParamName() const { return NormalPrevParamName; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Material Texture Params")
+    void SetDepthPrevParamName(FName Name) { DepthPrevParamName = Name; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Material Texture Params")
+    FName GetDepthPrevParamName() const { return DepthPrevParamName; }
+
     // --- DYNAMIC ART OFFSET ---
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Art Transform Params",
         meta = (DisplayName = "Drive ArtPosition X from yaw deviation"))
@@ -275,6 +421,15 @@ public:
         meta = (DisplayName = "Max yaw-driven art offset (UV units)",
             ClampMin = "0.0", ClampMax = "1.0"))
     float MaxYawArtOffset = 0.05f;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Art Transform Params")
+    void SetDriveArtPositionFromYaw(bool bEnabled) { bDriveArtPositionFromYaw = bEnabled; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Art Transform Params")
+    bool GetDriveArtPositionFromYaw() const { return bDriveArtPositionFromYaw; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Art Transform Params")
+    void SetMaxYawArtOffset(float Offset) { MaxYawArtOffset = FMath::Clamp(Offset, 0.0f, 1.0f); }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Art Transform Params")
+    float GetMaxYawArtOffset() const { return MaxYawArtOffset; }
 
     // --- ART TRANSFORM PARAMETERS (per-part UV manipulation) ---
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Art Transform Params")
@@ -286,12 +441,32 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Art Transform Params")
     FName ArtRotationParamName = "ArtRotation";
 
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Art Transform Params")
+    void SetArtPositionParamName(FName Name) { ArtPositionParamName = Name; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Art Transform Params")
+    FName GetArtPositionParamName() const { return ArtPositionParamName; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Art Transform Params")
+    void SetArtScaleParamName(FName Name) { ArtScaleParamName = Name; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Art Transform Params")
+    FName GetArtScaleParamName() const { return ArtScaleParamName; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Art Transform Params")
+    void SetArtRotationParamName(FName Name) { ArtRotationParamName = Name; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Art Transform Params")
+    FName GetArtRotationParamName() const { return ArtRotationParamName; }
+
     // --- PRESET ---
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Preset")
     class UFaceParallaxPreset* ActivePreset;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Preset")
     bool bAutoApplyPreset = true;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Preset")
+    void SetAutoApplyPreset(bool bEnabled) { bAutoApplyPreset = bEnabled; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Preset")
+    bool GetAutoApplyPreset() const { return bAutoApplyPreset; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Preset")
+    UFaceParallaxPreset* GetActivePreset() const { return ActivePreset; }
 
     UFUNCTION(BlueprintCallable, Category = "Face Parallax|Preset")
     void ApplyPreset(UFaceParallaxPreset* Preset);
@@ -332,6 +507,15 @@ public:
 
     UFUNCTION(BlueprintCallable, Category = "Face Parallax|Blink")
     float GetBlinkIntervalMax() const { return BlinkIntervalMax; }
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Blink")
+    void SetBlinkingEnabled(bool bEnabled) { bBlinkingEnabled = bEnabled; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Blink")
+    bool GetBlinkingEnabled() const { return bBlinkingEnabled; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Blink")
+    void SetBlinkFrameDuration(float Duration) { BlinkFrameDuration = FMath::Clamp(Duration, 0.001f, 1.0f); }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Blink")
+    float GetBlinkFrameDuration() const { return BlinkFrameDuration; }
 
     UPROPERTY(BlueprintAssignable, Category = "Face Parallax|Events")
     FOnFaceStateChangedSignature OnBlinkStarted;
@@ -382,6 +566,15 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Face Parallax|Viseme")
     EViseme GetCurrentViseme() const { return CurrentViseme; }
 
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Viseme")
+    void SetVisemeEnabled(bool bEnabled) { bVisemeEnabled = bEnabled; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Viseme")
+    bool GetVisemeEnabled() const { return bVisemeEnabled; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Viseme")
+    void SetVisemeFrameDuration(float Duration) { VisemeFrameDuration = FMath::Clamp(Duration, 0.001f, 1.0f); }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Viseme")
+    float GetVisemeFrameDuration() const { return VisemeFrameDuration; }
+
     UPROPERTY(BlueprintAssignable, Category = "Face Parallax|Events")
     FOnFaceStateChangedSignature OnVisemeStarted;
 
@@ -412,6 +605,23 @@ public:
         meta = (DisplayName = "Expression Prev Depth Param"))
     FName ExpressionDepthPrevParamName = "ExpressionDepthPrev";
 
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Expression")
+    void SetExpressionBlendParamName(FName Name) { ExpressionBlendParamName = Name; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Expression")
+    FName GetExpressionBlendParamName() const { return ExpressionBlendParamName; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Expression")
+    void SetExpressionAlbedoPrevParamName(FName Name) { ExpressionAlbedoPrevParamName = Name; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Expression")
+    FName GetExpressionAlbedoPrevParamName() const { return ExpressionAlbedoPrevParamName; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Expression")
+    void SetExpressionNormalPrevParamName(FName Name) { ExpressionNormalPrevParamName = Name; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Expression")
+    FName GetExpressionNormalPrevParamName() const { return ExpressionNormalPrevParamName; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Expression")
+    void SetExpressionDepthPrevParamName(FName Name) { ExpressionDepthPrevParamName = Name; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Expression")
+    FName GetExpressionDepthPrevParamName() const { return ExpressionDepthPrevParamName; }
+
     // --- SWOOSH MATERIAL PARAMETERS ---
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Swoosh",
         meta = (DisplayName = "Swoosh Layer Blend Param"))
@@ -433,9 +643,49 @@ public:
         meta = (DisplayName = "Swoosh Texture Param"))
     FName SwooshTextureParamName = "SwooshTexture";
 
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Swoosh")
+    void SetSwooshLayerBlendParamName(FName Name) { SwooshLayerBlendParamName = Name; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Swoosh")
+    FName GetSwooshLayerBlendParamName() const { return SwooshLayerBlendParamName; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Swoosh")
+    void SetSwooshIntensityParamName(FName Name) { SwooshIntensityParamName = Name; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Swoosh")
+    FName GetSwooshIntensityParamName() const { return SwooshIntensityParamName; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Swoosh")
+    void SetSwooshAngleParamName(FName Name) { SwooshAngleParamName = Name; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Swoosh")
+    FName GetSwooshAngleParamName() const { return SwooshAngleParamName; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Swoosh")
+    void SetSwooshSizeParamName(FName Name) { SwooshSizeParamName = Name; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Swoosh")
+    FName GetSwooshSizeParamName() const { return SwooshSizeParamName; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Swoosh")
+    void SetSwooshTextureParamName(FName Name) { SwooshTextureParamName = Name; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Swoosh")
+    FName GetSwooshTextureParamName() const { return SwooshTextureParamName; }
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Swoosh")
+    void SetSwooshFrameDuration(float Duration) { SwooshFrameDuration = FMath::Clamp(Duration, 0.001f, 1.0f); }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Swoosh")
+    float GetSwooshFrameDuration() const { return SwooshFrameDuration; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Swoosh")
+    void SetSwooshBlendOutDuration(float Duration) { SwooshBlendOutDuration = FMath::Clamp(Duration, 0.0f, 2.0f); }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Swoosh")
+    float GetSwooshBlendOutDuration() const { return SwooshBlendOutDuration; }
+
     // --- MATERIAL DEBUG ---
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Debug")
     bool bEnableMaterialDebugMode = false;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Debug")
+    void SetEnableMaterialDebugMode(bool bEnabled) { bEnableMaterialDebugMode = bEnabled; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Debug")
+    bool GetEnableMaterialDebugMode() const { return bEnableMaterialDebugMode; }
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Skeletal Mesh")
+    void SetHeadBoneName(FName Name) { HeadBoneName = Name; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Skeletal Mesh")
+    FName GetHeadBoneName() const { return HeadBoneName; }
 
     // --- EVENTS ---
     UPROPERTY(BlueprintAssignable, Category = "Face Parallax|Events")
@@ -557,6 +807,9 @@ private:
     void PushNestedChildArt(const FFaceNestedArt& Element, const FFaceArtTransform& ParentTransform, FName LayerTag, FName ParentElementName);
     FFaceArtTransform ComputeNestedEffectiveTransform(const FFaceNestedArt& Element, const FFaceArtTransform& ParentTransform, const FVector2D& JiggleOffset) const;
 
+    FVector2D GetEffectivePivot(const FFaceNestedArt& Element) const;
+    FVector2D ProjectPinToUVInternal(const FVector& Pin3D, EFaceAngleState ViewState) const;
+
     void UpdateBlinkTick(float DeltaTime);
     void UpdateExpressionTick(float DeltaTime);
     void UpdateVisemeTick(float DeltaTime);
@@ -571,9 +824,6 @@ private:
 
     void CalculateLookDelta(float& OutYaw, float& OutPitch);
     EFaceAngleState DetermineStateFromAngles(float Yaw, float Pitch);
-    float GetZoneCenterYaw(EFaceAngleState State) const;
-    float GetZoneCenterPitch(EFaceAngleState State) const;
-
     void UpdateStateMachine(float Yaw, float Pitch, float DeltaTime, float AngularVelocity = 0.0f);
     void UpdateParallaxOffsets(float DeltaTime);
     FVector2D ComputeOffsetForState(EFaceAngleState State, float Yaw, float Pitch, int32 LayerIndex) const;

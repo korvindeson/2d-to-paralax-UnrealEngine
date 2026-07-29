@@ -499,25 +499,27 @@ The editor tool is built as an **Editor Utility Widget** (`.uasset` Blueprint) t
 
 ### Widget API Reference
 
-The `UFaceParallaxEditorWidget` C++ class exposes every setting as a bindable Blueprint function, organized into 14 categories:
+The `UFaceParallaxEditorWidget` C++ class exposes every setting as a bindable Blueprint function, organized into categories:
 
 | Category | Functions | Maps To |
 |---|---|---|
-| **Preset** | `ApplyPresetToPreview`, `CreateNewPreset`, `SavePreset`, `SetCanvasSize`, `GetCanvasSize`, `SetAutoFitOnAssign`, `GetAutoFitOnAssign` | `UFaceParallaxPreset` on `ActivePreset` |
-| **View State** | `SetActiveViewState`, `GetActiveViewState`, `GetAssignedStates`, `HasState`, `GetLayerTagsForState`, `GetLayerCount` | Active tab selection, state enumeration |
-| **Transform** | `GetLayerCanonicalTransform`, `SetLayerPosition`, `SetLayerScale`, `SetLayerRotation`, `SetLayerTransform`, `ResetLayerTransform`, `GetEffectiveLayerTransform`, `ApplyAutoFit`, `ApplyAutoFitToAllSlots`, `SyncLayerToAllViews`, `SyncAllLayersToAllViews` | Per-layer sliders → `FFaceArtTransform` on `ActivePreset` |
-| **View Override** | `HasViewOverride`, `GetViewOverride`, `SetViewOverride`, `ClearViewOverride`, `ClearAllOverridesForSlot`, `ClearAllOverrides`, `GetOverrideViewsForSlot` | Per-state transform overrides on `FFaceArtSlot` |
-| **Textures** | `GetSlotTextures`, `SetSlotTextures`, `GetSlotSourceSize`, `GetSlotAlbedo`, `GetSlotDepth` | `FFaceTextureSet` on preset slots |
+| **Preset** | `ApplyPresetToPreview`, `CreateNewPreset`, `SavePreset`, `SetCanvasSize`, `GetCanvasSize`, `SetAutoFitOnAssign`, `GetAutoFitOnAssign`, `BatchSetTextures`, `ClearAllTextures`, `DuplicateState` | `UFaceParallaxPreset` on `ActivePreset` |
+| **ViewState** | `SetActiveViewState`, `GetActiveViewState`, `GetAssignedStates`, `HasState`, `GetLayerTagsForState`, `GetLayerCount` | Active tab selection, state enumeration |
+| **Transform** | `GetLayerCanonicalTransform`, `SetLayerPosition`, `GetLayerPosition`, `SetLayerScale`, `GetLayerScale`, `SetLayerRotation`, `GetLayerRotation`, `SetLayerTransform`, `ResetLayerTransform`, `GetEffectiveLayerTransform`, `ApplyAutoFit`, `ApplyAutoFitToAllSlots`, `SyncLayerToAllViews`, `SyncAllLayersToAllViews` | Per-layer sliders → `FFaceArtTransform` on `ActivePreset` |
+| **ViewOverride** | `HasViewOverride`, `GetViewOverride`, `SetViewOverride`, `ClearViewOverride`, `ClearAllOverridesForSlot`, `ClearAllOverrides`, `GetOverrideViewsForSlot` | Per-state transform overrides on `FFaceArtSlot` |
+| **Textures** | `GetSlotTextures`, `SetSlotTextures`, `GetSlotSourceSize`, `GetSlotAlbedo`, `GetSlotDepth`, `GetSlotNormal` | `FFaceTextureSet` on preset slots |
 | **Camera** | `SetOrbitYaw`, `GetOrbitYaw`, `SetOrbitPitch`, `GetOrbitPitch`, `SetOrbitDistance`, `GetOrbitDistance`, `SetPreviewFOV`, `GetPreviewFOV`, `SetAutoRotate`, `GetAutoRotate`, `SetAutoRotateSpeed`, `GetAutoRotateSpeed`, `ResetCamera` | Preview actor camera controls |
-| **Debug Overlays** | `ShowTextures`, `ShowDepthMesh`, `ShowWireframe`, `ColorByDepth` | Preview actor + depth debug toggles |
-| **Status** | `GetAssignedStateCount`, `GetTotalAssignedSlots`, `GetActiveLayerCount`, `GetStatusString` | Preset slot queries |
-| **Dynamic Art** | `SetDriveArtPositionFromYaw`, `GetDriveArtPositionFromYaw`, `SetMaxYawArtOffset`, `GetMaxYawArtOffset` | Eye tracking via yaw-driven ArtPosition X |
+| **DebugOverlays** | `ShowTextures`, `ShowDepthMesh`, `ShowWireframe`, `ColorByDepth`, `SetEnableMaterialDebugMode`, `GetEnableMaterialDebugMode` | Preview actor + depth debug toggles |
+| **Status** | `GetAssignedStateCount`, `GetTotalAssignedSlots`, `GetActiveLayerCount`, `GetStatusString`, `GetStateTextureCount`, `GetStatusDetails`, `HasSlot`, `IsSlotFullyAssigned`, `ClearState`, `ClearAll` | Preset slot queries |
+| **DynamicArt** | `SetDriveArtPositionFromYaw`, `GetDriveArtPositionFromYaw`, `SetMaxYawArtOffset`, `GetMaxYawArtOffset` | Eye tracking via yaw-driven ArtPosition X |
+| **TextureAndTransformParams** | `SetAlbedoParamName`, `GetAlbedoParamName`, `SetNormalParamName`, `GetNormalParamName`, `SetDepthParamName`, `GetDepthParamName`, `SetAlbedoPrevParamName`, `GetAlbedoPrevParamName`, `SetNormalPrevParamName`, `GetNormalPrevParamName`, `SetDepthPrevParamName`, `GetDepthPrevParamName`, `SetArtPositionParamName`, `GetArtPositionParamName`, `SetArtScaleParamName`, `GetArtScaleParamName`, `SetArtRotationParamName`, `GetArtRotationParamName` | Component material + transform param names |
 | **Blink** | `SetBlinkingEnabled`, `GetBlinkingEnabled`, `SetBlinkInterval`, `GetBlinkIntervalMin`, `GetBlinkIntervalMax`, `ForceBlink`, `IsBlinking`, `SetBlinkFrameDuration`, `GetBlinkFrameDuration`, `GetBlinkFrameCount`, `SetBlinkFrameTextures`, `GetBlinkFrameTextures` | Blink animation toggle, timing, frame assignment |
-| **Expression** | `SetExpression`, `GetExpression`, `SetExpressionCrossfadeDuration`, `GetExpressionCrossfadeDuration`, `IsExpressionTransitioning`, `SetExpressionTextures`, `GetExpressionTextures`, `HasExpressionTextures`, `GetAssignedExpressions`, `GetExpressionBlendParamName`, `GetExpressionAlbedoPrevParamName`, `GetExpressionNormalPrevParamName`, `GetExpressionDepthPrevParamName` | Expression crossfade, texture assignment per expression |
+| **Expression** | `SetExpression`, `GetExpression`, `SetExpressionCrossfadeDuration`, `GetExpressionCrossfadeDuration`, `IsExpressionTransitioning`, `SetExpressionTextures`, `GetExpressionTextures`, `HasExpressionTextures`, `GetAssignedExpressions`, `SetExpressionBlendParamName`, `GetExpressionBlendParamName`, `SetExpressionAlbedoPrevParamName`, `GetExpressionAlbedoPrevParamName`, `SetExpressionNormalPrevParamName`, `GetExpressionNormalPrevParamName`, `SetExpressionDepthPrevParamName`, `GetExpressionDepthPrevParamName` | Expression crossfade, texture assignment, expression material param names |
 | **Viseme** | `SetVisemeEnabled`, `GetVisemeEnabled`, `PlayViseme`, `StopViseme`, `IsVisemePlaying`, `GetCurrentViseme`, `SetVisemeFrameDuration`, `GetVisemeFrameDuration`, `GetVisemeFrameCount`, `SetVisemeFrameTextures`, `GetVisemeFrameTextures`, `GetAssignedVisemes` | Speech mouth shape animation per expression × viseme |
-| **Material Params** | `GetAlbedoParamName`, `GetNormalParamName`, `GetDepthParamName`, `GetAlbedoPrevParamName`, `GetNormalPrevParamName`, `GetDepthPrevParamName`, `GetArtPositionParamName`, `GetArtScaleParamName`, `GetArtRotationParamName` | Component material parameter names (dual-texture crossfade + transform) |
-| **Nested Art** | `SetNestedArtEnabled`, `GetNestedArtEnabled`, `GetNestedElementCount`, `GetNestedElement`, `SetNestedElement`, `AddNestedElement`, `RemoveNestedElement`, `SetNestedTextures`, `GetNestedTextures`, `SetNestedTransform`, `GetNestedTransform`, `SetNestedPivot`, `GetNestedPivot`, `SetNestedJiggleEnabled`, `SetNestedJiggleSettings`, `GetNestedJiggleSettings`, `SetNestedVisibility`, `GetNestedVisibility`, `SetNestedIdleFrames`, `GetNestedIdleFrames`, `ClearNestedIdleFrames` | Nested element management per slot |
-| **Query** | `HasSlot`, `IsSlotFullyAssigned`, `ClearState`, `ClearAll` | Preset slot state queries |
+| **Parameter** | `SetParamsEnabled`, `GetParamsEnabled`, `DefineParameter`, `SetParameterValue`, `GetParameterValue`, `GetParameterNames`, `ResetAllParameters`, `SetParamSmoothingSpeed`, `GetParamSmoothingSpeed`, `SetParamBlendParamName`, `GetParamBlendParamName`, `SetParamAltAlbedoParamName`, `GetParamAltAlbedoParamName`, `SetParamAltNormalParamName`, `GetParamAltNormalParamName`, `SetParamAltDepthParamName`, `GetParamAltDepthParamName` | Component parameter system + alt texture param names |
+| **ParamBinding** | `GetParamBindings`, `SetParamBindings`, `GetAltTextures`, `SetAltTextures` | Per-slot parameter bindings + alt texture sets |
+| **Swoosh** | `SetSwooshEnabled`, `GetSwooshEnabled`, `SetSwooshSpeedThreshold`, `GetSwooshSpeedThreshold`, `SetSwooshBusyness`, `GetSwooshBusyness`, `SetSwooshSize`, `GetSwooshSize`, `ForceSwoosh`, `IsSwooshActive`, `GetSwooshFrameCount`, `SetSwooshFrameTextures`, `GetSwooshFrameTextures`, `ClearSwooshFrames`, `SetSwooshFrameDuration`, `GetSwooshFrameDuration`, `SetSwooshBlendOutDuration`, `GetSwooshBlendOutDuration`, `SetSwooshLayerBlendParamName`, `GetSwooshLayerBlendParamName`, `SetSwooshIntensityParamName`, `GetSwooshIntensityParamName`, `SetSwooshAngleParamName`, `GetSwooshAngleParamName`, `SetSwooshSizeParamName`, `GetSwooshSizeParamName`, `SetSwooshTextureParamName`, `GetSwooshTextureParamName` | Swoosh timing, texture frames, material param names |
+| **NestedArt** | `SetNestedArtEnabled`, `GetNestedArtEnabled`, `GetNestedElementCount`, `GetNestedElement`, `SetNestedElement`, `AddNestedElement`, `RemoveNestedElement`, `SetNestedTextures`, `GetNestedTextures`, `SetNestedTransform`, `GetNestedTransform`, `SetNestedPivot`, `GetNestedPivot`, `SetNestedJiggleEnabled`, `SetNestedJiggleSettings`, `GetNestedJiggleSettings`, `SetNestedVisibility`, `GetNestedVisibility`, `SetNestedIdleFrames`, `GetNestedIdleFrames`, `ClearNestedIdleFrames`, `BatchSetNestedTexturesAllViews`, `DuplicateNestedElement`, `SyncNestedToAllViews` | Nested element management per slot + batch operations |
 
 ### Creating the EUW Blueprint
 
@@ -724,7 +726,38 @@ The `UFaceParallaxEditorWidget` adds a **Nested Art** category with 23 BP functi
 | `SetNestedVisibility` / `GetNestedVisibility` | Per-view visibility |
 | `SetNestedIdleFrames` / `GetNestedIdleFrames` / `ClearNestedIdleFrames` | Idle animation frames |
 
-The Widget API table in the previous section now has **14 categories** (Nested Art added).
+The Widget API table in the previous section now has **17 categories** (Nested Art + 3D Pin added).
+
+---
+
+## Deployment
+
+### Python — Editor Asset Creation (`deploy.py`)
+
+Runs **inside** the Unreal Editor Python console (or headless via `-run=pythonscript`) once the C++ code has compiled successfully. Creates the binary assets that can't be generated from text files:
+
+1. **`M_FaceParallax_Master`** — master material with all parameters declared and wired:
+   - Crossfade: `AlbedoTexture`/`NormalTexture`/`DepthTexture` lerped with `StateBlendAlpha` against `*Prev` counterparts
+   - UV chain: `TextureCoordinate` → `+ArtPosition` → `*ArtScale` → `+ParallaxOffset`
+   - Parameters: `ArtPivot`, `NestedAnimFrame`, `ExpressionBlendAlpha`, `Expression*Prev`, `DepthIntensity`, `DebugDepth`, `IsTopDown`, `IsTopView`, `ArtRotation`
+2. **Material Instances** — one `MI_FaceParallax_{LayerTag}` per layer, parented to master
+3. **`DA_FaceParallax_Default`** — `UFaceParallaxPreset` Data Asset with `ViewAssignments` populated as a `TMap<EFaceAngleState, FFaceViewStateLayerSet>` for all 10 states and all configured layers
+4. **`BP_FaceParallaxCharacter`** — Character Blueprint with `FaceParallaxComponent` attached, `HeadBoneName` and `LayerDefinitions` pre-configured, `ActivePreset` assigned
+
+**Usage:**
+```python
+# In-editor Python console:
+exec(open(r"D:\Projects\YourProject\deploy.py").read())
+
+# Or headless:
+UnrealEditor-Cmd.exe "D:\Projects\YourProject\YourProject.uproject" -run=pythonscript -script="deploy.py"
+```
+
+**Post-deployment manual steps:**
+- Import your Albedo/Normal/Depth textures
+- Assign them into each Material Instance
+- Place the face-layer quad meshes on the skeleton
+- Verify `ArtPivot`, `ExpressionBlendAlpha`, and `NestedAnimFrame` parameter bindings if your materials use nested art, expression crossfade, or idle animation
 
 ---
 
@@ -740,15 +773,16 @@ The Widget API table in the previous section now has **14 categories** (Nested A
 ## Project Files
 
 ```
-FaceParallaxTypes.h             — Shared types (EFaceAngleState, FFaceTextureSet, FFaceViewStateLayerSet, FFaceArtTransform, FFaceArtSlot, FFaceJiggleSettings, FFaceNestedArt)
-FaceParallaxComponent.h/.cpp    — Core parallax component with preset + transform support
+FaceParallaxTypes.h             — Shared types (EFaceAngleState, FFaceTextureSet, FFaceViewStateLayerSet, FFaceArtTransform, FFaceArtSlot, FFaceJiggleSettings, FFaceNestedArt, FFaceProfile3D, FFacePin3D)
+FaceParallaxComponent.h/.cpp    — Core parallax component with preset + transform + 3D pin projection support
 FaceParallaxPreset.h/.cpp       — DataAsset for storing texture + transform assignments per view state × layer
 DepthDebugVisualizerComponent.h/.cpp  — Procedural depth mesh visualizer
 FaceParallaxPreviewActor.h/.cpp       — Preview actor with scene capture, orbit camera, and part transform access
-FaceParallaxEditorWidget.h/.cpp — Editor widget with 14 categories of bindable Blueprint functions for every setting (includes Nested Art)
+FaceParallaxEditorWidget.h/.cpp — Editor widget with 17 categories of bindable Blueprint functions for every setting (includes Nested Art + 3D pin)
+deploy.py                       — UE Editor Python script: creates master material, instances, preset, and character Blueprint
 
 Tests/
-  ParallaxMathTests.cpp       — Standalone C++ tests for state machine, transforms, edge cases (no UE)
+  ParallaxMathTests.cpp       — Standalone C++ tests for state machine, transforms, edge cases, nested art, 3D pin projection (no UE)
   SyntaxValidator.py          — Python script validating all .h/.cpp for brace/macro/syntax issues
   run_tests.ps1               — PowerShell runner that compiles C++ tests + runs Python validator
 ```

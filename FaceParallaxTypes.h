@@ -192,6 +192,37 @@ struct FFaceJiggleSettings
 };
 
 USTRUCT(BlueprintType)
+struct FFaceProfile3D
+{
+    GENERATED_BODY()
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Profile",
+        meta = (ClampMin = "0.01"))
+    float FaceHalfWidth = 1.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Profile",
+        meta = (ClampMin = "0.01"))
+    float FaceHalfDepth = 1.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Profile",
+        meta = (ClampMin = "0.01"))
+    float FaceHalfHeight = 1.0f;
+};
+
+USTRUCT(BlueprintType)
+struct FFacePin3D
+{
+    GENERATED_BODY()
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Pin")
+    bool bPinned = false;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Pin",
+        meta = (EditCondition = "bPinned", ClampMin = "-1.0", ClampMax = "1.0"))
+    FVector Position3D = FVector(0.0f, 0.0f, 0.0f);
+};
+
+USTRUCT(BlueprintType)
 struct FFaceNestedArt
 {
     GENERATED_BODY()
@@ -208,6 +239,10 @@ struct FFaceNestedArt
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Nested Art",
         meta = (ClampMin = "0.0", ClampMax = "1.0"))
     FVector2D PivotPoint = FVector2D(0.5f, 0.5f);
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Nested Art",
+        meta = (DisplayName = "3D Pin (overrides PivotPoint when pinned)"))
+    FFacePin3D Pin3D;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Nested Art",
         meta = (DisplayName = "Jiggle Enabled"))
