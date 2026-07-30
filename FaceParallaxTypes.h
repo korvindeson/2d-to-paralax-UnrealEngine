@@ -366,12 +366,20 @@ struct FFaceArtSlot
     TMap<EExpression, FFaceTextureSet> ExpressionTextures;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Art Slot",
+        meta = (DisplayName = "Named Expression Textures (extensible via FName)"))
+    TMap<FName, FFaceTextureSet> NamedExpressionTextures;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Art Slot",
         meta = (DisplayName = "Blink Animation Frames"))
     TArray<FFaceTextureSet> BlinkFrames;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Art Slot",
         meta = (DisplayName = "Viseme Frame Sets (Expression > Viseme > Frames)"))
     TMap<EExpression, FFaceExpressionVisemeMap> VisemeFrameSets;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Art Slot",
+        meta = (DisplayName = "Named Viseme Frames (extensible viseme name → frames)"))
+    TMap<FName, FFaceVisemeFrameArray> NamedVisemeFrames;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Art Slot",
         meta = (DisplayName = "Swoosh Frames (per-target-state)"))

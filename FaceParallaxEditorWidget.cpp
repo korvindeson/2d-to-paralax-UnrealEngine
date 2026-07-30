@@ -2,6 +2,7 @@
 #include "FaceParallaxPreviewActor.h"
 #include "FaceParallaxComponent.h"
 #include "FaceParallaxPreset.h"
+#include "FaceParallaxDataModel.h"
 #include "DepthDebugVisualizerComponent.h"
 #include "Engine/Texture2D.h"
 #include "Engine/TextureRenderTarget2D.h"
@@ -903,6 +904,69 @@ TArray<EExpression> UFaceParallaxEditorWidget::GetAssignedExpressions(EFaceAngle
     return Result;
 }
 
+void UFaceParallaxEditorWidget::SetExpressionByName(FName NewExpressionName)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->SetExpressionByName(NewExpressionName);
+}
+
+FName UFaceParallaxEditorWidget::GetExpressionByName() const
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    return Comp ? Comp->CurrentNamedExpression : NAME_None;
+}
+
+bool UFaceParallaxEditorWidget::IsNamedExpressionValid() const
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    return Comp && Comp->CurrentNamedExpression != NAME_None;
+}
+
+void UFaceParallaxEditorWidget::SetNamedExpressionTextures(EFaceAngleState State, FName LayerTag,
+    FName ExpressionName, const FFaceTextureSet& Textures)
+{
+    if (!ValidatePreset()) return;
+    FFaceArtSlot ArtSlot = ActivePreset->GetSlot(State, LayerTag);
+    ArtSlot.NamedExpressionTextures.Add(ExpressionName, Textures);
+    ActivePreset->SetSlot(State, LayerTag, ArtSlot);
+}
+
+FFaceTextureSet UFaceParallaxEditorWidget::GetNamedExpressionTextures(EFaceAngleState State,
+    FName LayerTag, FName ExpressionName) const
+{
+    if (!ValidatePreset()) return FFaceTextureSet();
+    const FFaceArtSlot& ArtSlot = ActivePreset->GetSlot(State, LayerTag);
+    const FFaceTextureSet* Found = ArtSlot.NamedExpressionTextures.Find(ExpressionName);
+    return Found ? *Found : FFaceTextureSet();
+}
+
+bool UFaceParallaxEditorWidget::HasNamedExpressionTextures(EFaceAngleState State,
+    FName LayerTag, FName ExpressionName) const
+{
+    if (!ValidatePreset()) return false;
+    const FFaceArtSlot& ArtSlot = ActivePreset->GetSlot(State, LayerTag);
+    return ArtSlot.NamedExpressionTextures.Contains(ExpressionName);
+}
+
+TArray<FName> UFaceParallaxEditorWidget::GetAssignedNamedExpressions(EFaceAngleState State,
+    FName LayerTag) const
+{
+    if (!ValidatePreset()) return TArray<FName>();
+    const FFaceArtSlot& ArtSlot = ActivePreset->GetSlot(State, LayerTag);
+    TArray<FName> Result;
+    ArtSlot.NamedExpressionTextures.GetKeys(Result);
+    return Result;
+}
+
+void UFaceParallaxEditorWidget::ClearNamedExpressionTextures(EFaceAngleState State, FName LayerTag,
+    FName ExpressionName)
+{
+    if (!ValidatePreset()) return;
+    FFaceArtSlot ArtSlot = ActivePreset->GetSlot(State, LayerTag);
+    ArtSlot.NamedExpressionTextures.Remove(ExpressionName);
+    ActivePreset->SetSlot(State, LayerTag, ArtSlot);
+}
+
 FName UFaceParallaxEditorWidget::GetExpressionBlendParamName() const
 {
     UFaceParallaxComponent* Comp = GetParallaxComponent();
@@ -1057,6 +1121,90 @@ void UFaceParallaxEditorWidget::ClearAllVisemes(EFaceAngleState State, FName Lay
     if (!ValidatePreset()) return;
     FFaceArtSlot ArtSlot = ActivePreset->GetSlot(State, LayerTag);
     ArtSlot.VisemeFrameSets.Remove(Expression);
+    ActivePreset->SetSlot(State, LayerTag, ArtSlot);
+}
+
+void UFaceParallaxEditorWidget::PlayVisemeByName(FName NewVisemeName)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->PlayVisemeByName(NewVisemeName);
+}
+
+FName UFaceParallaxEditorWidget::GetVisemeByName() const
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    return Comp ? Comp->CurrentNamedViseme : NAME_None;
+}
+
+bool UFaceParallaxEditorWidget::IsNamedVisemeValid() const
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    return Comp && Comp->CurrentNamedViseme != NAME_None;
+}
+
+int32 UFaceParallaxEditorWidget::GetNamedVisemeFrameCount(EFaceAngleState State, FName LayerTag,
+    FName VisemeName) const
+{
+    if (!ValidatePreset()) return 0;
+    const FFaceArtSlot& ArtSlot = ActivePreset->GetSlot(State, LayerTag);
+    const FFaceVisemeFrameArray* Found = ArtSlot.NamedVisemeFrames.Find(VisemeName);
+    return Found ? Found->Frames.Num() : 0;
+}
+
+void UFaceParallaxEditorWidget::SetNamedVisemeFrameTextures(EFaceAngleState State, FName LayerTag,
+    FName VisemeName, int32 FrameIndex, const FFaceTextureSet& Textures)
+{
+    if (!ValidatePreset()) return;
+    FFaceArtSlot ArtSlot = ActivePreset->GetSlot(State, LayerTag);
+    FFaceVisemeFrameArray& Frames = ArtSlot.NamedVisemeFrames.FindOrAdd(VisemeName);
+    if (FrameIndex >= 0 && FrameIndex < Frames.Frames.Num())
+    {
+        Frames.Frames[FrameIndex] = Textures;
+    }
+    else if (FrameIndex >= 0 && FrameIndex == Frames.Frames.Num())
+    {
+        Frames.Frames.Add(Textures);
+    }
+    ActivePreset->SetSlot(State, LayerTag, ArtSlot);
+}
+
+FFaceTextureSet UFaceParallaxEditorWidget::GetNamedVisemeFrameTextures(EFaceAngleState State,
+    FName LayerTag, FName VisemeName, int32 FrameIndex) const
+{
+    if (!ValidatePreset()) return FFaceTextureSet();
+    const FFaceArtSlot& ArtSlot = ActivePreset->GetSlot(State, LayerTag);
+    const FFaceVisemeFrameArray* Found = ArtSlot.NamedVisemeFrames.Find(VisemeName);
+    if (Found && FrameIndex >= 0 && FrameIndex < Found->Frames.Num())
+    {
+        return Found->Frames[FrameIndex];
+    }
+    return FFaceTextureSet();
+}
+
+TArray<FName> UFaceParallaxEditorWidget::GetAssignedNamedVisemes(EFaceAngleState State,
+    FName LayerTag) const
+{
+    if (!ValidatePreset()) return TArray<FName>();
+    const FFaceArtSlot& ArtSlot = ActivePreset->GetSlot(State, LayerTag);
+    TArray<FName> Result;
+    ArtSlot.NamedVisemeFrames.GetKeys(Result);
+    return Result;
+}
+
+void UFaceParallaxEditorWidget::ClearNamedVisemeFrames(EFaceAngleState State, FName LayerTag,
+    FName VisemeName)
+{
+    if (!ValidatePreset()) return;
+    FFaceArtSlot ArtSlot = ActivePreset->GetSlot(State, LayerTag);
+    ArtSlot.NamedVisemeFrames.Remove(VisemeName);
+    ActivePreset->SetSlot(State, LayerTag, ArtSlot);
+}
+
+void UFaceParallaxEditorWidget::ClearAllNamedVisemes(EFaceAngleState State, FName LayerTag)
+{
+    if (!ValidatePreset()) return;
+    FFaceArtSlot ArtSlot = ActivePreset->GetSlot(State, LayerTag);
+    ArtSlot.NamedVisemeFrames.Empty();
     ActivePreset->SetSlot(State, LayerTag, ArtSlot);
 }
 
@@ -3805,6 +3953,80 @@ void UFaceParallaxEditorWidget::RunDiagnostics()
     }
 
     LogDiagnostic(TEXT("--- Diagnostics complete ---"));
+
+    ValidateMaterialParameters();
+}
+
+void UFaceParallaxEditorWidget::ValidateMaterialParameters()
+{
+    if (!DiagnosticLog.IsValid() || !PreviewActor || !PreviewActor->PreviewMesh) return;
+
+    UMaterialInterface* Mat = PreviewActor->PreviewMesh->GetMaterial(0);
+    if (!Mat)
+    {
+        LogDiagnostic(TEXT("[WARN] Preview mesh has no material on slot 0."));
+        return;
+    }
+
+    // Expected parameter names from UFaceParallaxComponent
+    TArray<FName> Expected = {
+        TEXT("StateBlendAlpha"), TEXT("ParallaxOffset"), TEXT("DepthIntensity"),
+        TEXT("DebugDepth"), TEXT("IsTopDown"), TEXT("IsTopView"),
+        TEXT("ArtPosition"), TEXT("ArtScale"), TEXT("ArtRotation"), TEXT("ArtPivot"),
+        TEXT("NestedAnimFrame"), TEXT("AlbedoTexture"), TEXT("NormalTexture"),
+        TEXT("DepthTexture"), TEXT("AlbedoTexturePrev"), TEXT("NormalTexturePrev"),
+        TEXT("DepthTexturePrev"), TEXT("ExpressionBlendAlpha"),
+        TEXT("ExpressionAlbedoPrev"), TEXT("ExpressionNormalPrev"),
+        TEXT("ExpressionDepthPrev"), TEXT("ParamBlendAlpha"),
+        TEXT("AltAlbedoTexture"), TEXT("AltNormalTexture"), TEXT("AltDepthTexture"),
+        TEXT("SwooshLayerBlend"), TEXT("SwooshIntensity"), TEXT("SwooshAngle"),
+        TEXT("SwooshSize"), TEXT("SwooshTexture")
+    };
+
+    TArray<FName> ExpectedTextureParams = {
+        TEXT("AlbedoTexture"), TEXT("NormalTexture"), TEXT("DepthTexture"),
+        TEXT("AlbedoTexturePrev"), TEXT("NormalTexturePrev"), TEXT("DepthTexturePrev"),
+        TEXT("ExpressionAlbedoPrev"), TEXT("ExpressionNormalPrev"), TEXT("ExpressionDepthPrev"),
+        TEXT("AltAlbedoTexture"), TEXT("AltNormalTexture"), TEXT("AltDepthTexture"),
+        TEXT("SwooshTexture")
+    };
+
+    // Check scalar parameters
+    int32 FoundScalar = 0, MissingScalar = 0;
+    for (FName Param : Expected)
+    {
+        if (ExpectedTextureParams.Contains(Param)) continue; // skip texture-only params
+        float Val;
+        bool bExists = Mat->GetScalarParameterValue(Param, Val);
+        if (bExists)
+            FoundScalar++;
+        else
+            MissingScalar++;
+    }
+
+    // Check texture parameters
+    int32 FoundTex = 0, MissingTex = 0;
+    for (FName Param : ExpectedTextureParams)
+    {
+        UTexture* Val = nullptr;
+        bool bExists = Mat->GetTextureParameterValue(Param, Val);
+        if (bExists)
+            FoundTex++;
+        else
+            MissingTex++;
+    }
+
+    if (MissingScalar > 0 || MissingTex > 0)
+    {
+        LogDiagnostic(FString::Printf(TEXT("[WARN] Material missing %d scalar + %d texture params (out of %d expected scalar, %d texture)"),
+            MissingScalar, MissingTex, FoundScalar + MissingScalar, FoundTex + MissingTex));
+        LogDiagnostic(TEXT("  Update your master material to expose missing parameters."));
+    }
+    else
+    {
+        LogDiagnostic(FString::Printf(TEXT("[OK] Material has all %d expected parameters (%d scalar, %d texture)."),
+            FoundScalar + FoundTex, FoundScalar, FoundTex));
+    }
 }
 
 #endif // WITH_EDITOR

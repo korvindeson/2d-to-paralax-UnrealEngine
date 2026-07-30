@@ -28,6 +28,14 @@ struct FFaceLayerDef
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Layer")
     bool bInvertParallax = false;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Layer",
+        meta = (ClampMin = "-1.0", ClampMax = "1.0"))
+    float DepthMin = 0.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Layer",
+        meta = (ClampMin = "-1.0", ClampMax = "1.0"))
+    float DepthMax = 1.0f;
 };
 
 UCLASS(ClassGroup=(Custom), meta=(BlueprintSpawnableComponent))
@@ -290,6 +298,23 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Face Parallax|Nested Art")
     FVector2D GetNestedEffectivePivot(EFaceAngleState State, FName LayerTag, int32 Index) const;
 
+    // --- OUTLINE ART CONCEPT ---
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Outline",
+        meta = (DisplayName = "Outline View States (used for 3D profile extraction)"))
+    TArray<EFaceAngleState> OutlineViewStates;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Outline")
+    void SetOutlineViewState(EFaceAngleState State);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Outline")
+    void ClearOutlineViewStates();
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Outline")
+    bool IsOutlineViewState(EFaceAngleState State) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Outline")
+    TArray<EFaceAngleState> GetOutlineViewStates() const;
+
     // --- PARAMETER SYSTEM ---
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Parameters")
     bool bParamsEnabled = true;
@@ -392,6 +417,12 @@ public:
     void RemoveLayerDefinition(int32 Index);
 
     UFUNCTION(BlueprintCallable, Category = "Face Parallax|Parallax")
+    float GetLayerDepthMin(int32 LayerIndex) const;
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Parallax")
+    float GetLayerDepthMax(int32 LayerIndex) const;
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Parallax")
+    void SetLayerDepthRange(int32 LayerIndex, float Min, float Max);
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Parallax")
     FVector2D GetLayerParallaxOffset(int32 LayerIndex) const;
     UFUNCTION(BlueprintCallable, Category = "Face Parallax|Parallax")
     TArray<FVector2D> GetAllLayerParallaxOffsets() const { return LayerParallaxOffsets; }
@@ -411,6 +442,23 @@ public:
     void SetDepthMapIntensity(float Intensity) { DepthMapIntensity = FMath::Max(0.0f, Intensity); }
     UFUNCTION(BlueprintCallable, Category = "Face Parallax|Depth Maps")
     float GetDepthMapIntensity() const { return DepthMapIntensity; }
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Depth Maps",
+        meta = (DisplayName = "Depth Min Param Name"))
+    FName DepthMinParamName = "DepthMin";
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Depth Maps",
+        meta = (DisplayName = "Depth Max Param Name"))
+    FName DepthMaxParamName = "DepthMax";
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Depth Maps")
+    void SetDepthMinParamName(FName Name) { DepthMinParamName = Name; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Depth Maps")
+    FName GetDepthMinParamName() const { return DepthMinParamName; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Depth Maps")
+    void SetDepthMaxParamName(FName Name) { DepthMaxParamName = Name; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Depth Maps")
+    FName GetDepthMaxParamName() const { return DepthMaxParamName; }
 
     // --- MATERIAL TEXTURE PARAMETERS ---
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Material Texture Params")
@@ -577,6 +625,10 @@ public:
     EExpression CurrentExpression = EExpression::Neutral;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Expression",
+        meta = (DisplayName = "Current Named Expression (extensible)"))
+    FName CurrentNamedExpression;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Expression",
         meta = (ClampMin = "0.01", ClampMax = "5.0"))
     float ExpressionCrossfadeDuration = 0.3f;
 
@@ -594,6 +646,15 @@ public:
 
     UFUNCTION(BlueprintCallable, Category = "Face Parallax|Expression")
     bool IsExpressionTransitioning() const { return bExpressionTransitioning; }
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Expression")
+    void SetExpressionByName(FName NewExpressionName);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Expression")
+    FName GetExpressionByName() const { return CurrentNamedExpression; }
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Expression")
+    bool IsNamedExpressionValid() const { return CurrentNamedExpression != NAME_None; }
 
     // --- VISEME SYSTEM ---
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Viseme")
@@ -614,6 +675,19 @@ public:
 
     UFUNCTION(BlueprintCallable, Category = "Face Parallax|Viseme")
     EViseme GetCurrentViseme() const { return CurrentViseme; }
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Viseme",
+        meta = (DisplayName = "Current Named Viseme (extensible)"))
+    FName CurrentNamedViseme;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Viseme")
+    void PlayVisemeByName(FName NewVisemeName);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Viseme")
+    FName GetVisemeByName() const { return CurrentNamedViseme; }
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Viseme")
+    bool IsNamedVisemeValid() const { return CurrentNamedViseme != NAME_None; }
 
     UFUNCTION(BlueprintCallable, Category = "Face Parallax|Viseme")
     void SetVisemeEnabled(bool bEnabled) { bVisemeEnabled = bEnabled; }
@@ -922,6 +996,8 @@ private:
     void UpdateVisemeTick(float DeltaTime);
     void UpdateSwooshTick(float DeltaTime);
     void ApplyExpressionTextures(EFaceAngleState State);
+    const FFaceTextureSet* ResolveExpressionTextureSet(const FFaceArtSlot& Slot) const;
+    const FFaceVisemeFrameArray* ResolveVisemeFrames(const FFaceArtSlot& Slot) const;
 
     void InitializeMaterials();
     void UpdateMaterialParameters();

@@ -239,7 +239,8 @@ void UDepthDebugVisualizerComponent::BuildDebugMesh()
     VertexColors.Reserve(VertexCount);
     Triangles.Reserve(TriangleCount * 3);
 
-    float HalfSize = MeshSize * 0.5f;
+    float EffectiveMeshSize = (ProfileHalfWidth > 0.0f) ? (2.0f * ProfileHalfWidth) : MeshSize;
+    float EffectiveHeightScale = (ProfileHalfDepth > 0.0f) ? ProfileHalfDepth : HeightScale;
 
     for (int32 Gy = 0; Gy < Res; ++Gy)
     {
@@ -248,12 +249,12 @@ void UDepthDebugVisualizerComponent::BuildDebugMesh()
             float U = (float)Gx / (float)(Res - 1);
             float V = (float)Gy / (float)(Res - 1);
 
-            float X = (U - 0.5f) * MeshSize;
-            float Y = (V - 0.5f) * MeshSize;
+            float X = (U - 0.5f) * EffectiveMeshSize;
+            float Y = (V - 0.5f) * EffectiveMeshSize;
 
             int32 SampleIdx = Gy * Res + Gx;
             float Depth = CachedDepthSamples[SampleIdx];
-            float Z = Depth * HeightScale;
+            float Z = Depth * EffectiveHeightScale;
 
             Vertices.Add(FVector(X, Y, Z));
             UVs.Add(FVector2D(U, V));
@@ -321,6 +322,20 @@ FLinearColor UDepthDebugVisualizerComponent::DepthToColor(float Depth) const
 
 void UDepthDebugVisualizerComponent::UpdateWireframeMode()
 {
+    if (!DebugMesh) return;
+
+    if (bShowWireframe && WireframeMaterial)
+    {
+        DebugMesh->SetMaterial(0, WireframeMaterial);
+    }
+    else if (DebugMaterialInstance)
+    {
+        DebugMesh->SetMaterial(0, DebugMaterialInstance);
+    }
+    else if (DepthDebugMaterial)
+    {
+        DebugMesh->SetMaterial(0, DepthDebugMaterial);
+    }
 }
 
 void UDepthDebugVisualizerComponent::OnStateChanged()

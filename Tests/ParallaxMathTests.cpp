@@ -40,6 +40,20 @@ enum class EFaceAngleState : unsigned char {
 };
 
 // --- Replicated FFaceArtTransform ---
+struct FFaceLayerDef {
+    double DepthScale = 0.5;
+    double DepthMapIntensity = 1.0;
+    double DepthMin = 0.0;
+    double DepthMax = 1.0;
+    bool bInvertParallax = false;
+
+    double GetRemappedDepth(double DepthSample) const {
+        double Range = DepthMax - DepthMin;
+        if (std::abs(Range) < 1e-9) return DepthMin;
+        return DepthMin + DepthSample * Range;
+    }
+};
+
 struct FFaceArtTransform {
     FVector2D Position;
     FVector2D Scale;
@@ -601,8 +615,8 @@ void TestStateBoundaryPrecision() {
         int s = (int)DetermineStateFromAngles((double)yaw, 0);
         if (s != lastState) { transitions++; lastState = s; }
     }
-    // Should have 8 transitions across full range: Front↔3Q↔ProR↔BackR↔Back (×2)
-    TEST("Transitions across full range", transitions > 3);
+    // Should have 9 transitions across full range: (-1→Back, Back↔BackL↔ProL↔3QL↔Front↔3QR↔ProR↔BackR↔Back)
+    TEST("Transitions across full range", transitions >= 9);
 
     // Every state enum value is reachable
     TEST("MAX not reachable", DetermineStateFromAngles(0, 0) != EFaceAngleState::MAX);
@@ -618,9 +632,8 @@ void TestHysteresisJitter() {
         double jitter = (i % 3 == 0) ? 23.0 : 22.4;
         sm.Update(jitter, 0);
     }
-    // Should not flicker between states every frame
-    TEST("Jitter stability", sm.CurrentState == EFaceAngleState::ThreeQuarterRight ||
-                              sm.CurrentState == EFaceAngleState::Front);
+    // Hysteresis prevents flicker; jitter on boundary never builds 2 consecutive same PendingState
+    TEST("Jitter stability settles to Front", sm.CurrentState == EFaceAngleState::Front);
 
     // Rapid state hopping (front <-> 3Q <-> profile)
     StateMachine sm2;
@@ -628,8 +641,8 @@ void TestHysteresisJitter() {
     for (double a : angles) {
         sm2.Update(a, 0);
     }
-    // Should not crash or produce invalid state
-    TEST("Rapid hop valid state", (int)sm2.CurrentState < (int)EFaceAngleState::MAX);
+    // Rapid hops never satisfy hysteresis so state stays Front
+    TEST("Rapid hop ends in Front", sm2.CurrentState == EFaceAngleState::Front);
 }
 
 void TestZoneCenterCalculations() {
@@ -1728,9 +1741,11 @@ void TestSwooshTransition() {
             return Peaks;
         };
         double peaksLow = CountPeaks(0.0);
-        TEST("Busyness=0 → 1 intensity peak", peaksLow >= 0 && peaksLow <= 2);
+        // |sin(π·t/4)| at t=0..4: values 0, 0.35, 0.5, 0.35, 0 → 2 descending steps
+        TEST("Busyness=0 → 2 descending steps", peaksLow == 2);
         double peaksHigh = CountPeaks(1.0);
-        TEST("Busyness=1 → more peaks than low", peaksHigh > peaksLow);
+        // |sin(π·t/3)| at t=0..12: 4 half-sine lobes → 4 descending steps
+        TEST("Busyness=1 → 4 descending steps", peaksHigh == 4);
     }
 
     // ── Control: SwooshSize scales intensity ──
@@ -2355,8 +2370,8 @@ void TestNestedArtSystem() {
         double Pos1 = S.PosX;
         for (int i = 0; i < 50; ++i) SimulateJiggle(S, J, 0.0, 0.0, 0.016);
         double Pos2 = S.PosX;
-        bool oscillated = (Pos1 > 0 && Pos2 < 0) || (Pos1 < 0 && Pos2 > 0) || fabs(Pos2) > 0.0;
-        TEST("Zero damping oscillates", oscillated);
+        // Undamped spring sustains oscillation long after impulse (50+ steps)
+        TEST("Zero damping oscillates", fabs(Pos2) > 0.001);
     }
 
     // 6. Axis-limited jiggle
@@ -3561,6 +3576,1057 @@ void TestStatusMatrix() {
     printf("  [Status Matrix: 17 tests]\n");
 }
 
+// ====================================================================
+// FNAME EXPRESSION/VISEME RESOLUTION TESTS (G9)
+// ====================================================================
+
+void TestFNameExpressionViseme() {
+    printf("\n=== FName Expression/Viseme Resolution (G9) ===\n");
+
+    // Mock types replicating ResolveExpressionTextureSet / ResolveVisemeFrames logic
+    struct FMockTextureSet { int ID = 0; bool bValid = false; };
+    struct FMockSlot {
+        // Named expression textures (simulates TMap<FName, FFaceTextureSet>)
+        struct { std::string Name; FMockTextureSet Tex; } NamedExpr[8];
+        int NamedExprCount = 0;
+        FMockTextureSet ExprTextures[5]; // enum-based fallback
+
+        // Named viseme frames (simulates TMap<FName, int>)
+        struct { std::string Name; int Frames; } NamedVis[8];
+        int NamedVisCount = 0;
+        int VisemeFrameSets[5] = {};
+
+        FMockSlot() {
+            for (int i = 0; i < 5; ++i) VisemeFrameSets[i] = (i + 1) * 5;
+        }
+    };
+
+    auto ResolveExpr = [](const std::string& name, const FMockSlot& slot, int enumIdx) -> FMockTextureSet {
+        for (int i = 0; i < slot.NamedExprCount; ++i)
+            if (slot.NamedExpr[i].Name == name) return slot.NamedExpr[i].Tex;
+        if (enumIdx >= 0 && enumIdx < 5) return slot.ExprTextures[enumIdx];
+        return {};
+    };
+
+    auto ResolveVis = [](const std::string& name, const FMockSlot& slot, int enumIdx) -> int {
+        for (int i = 0; i < slot.NamedVisCount; ++i)
+            if (slot.NamedVis[i].Name == name) return slot.NamedVis[i].Frames;
+        if (enumIdx >= 0 && enumIdx < 5) return slot.VisemeFrameSets[enumIdx];
+        return 0;
+    };
+
+    // 1. Named wins over enum when both are set
+    {
+        FMockSlot slot;
+        slot.ExprTextures[0] = {100, true};
+        slot.NamedExpr[0] = {"Smile", {200, true}};
+        slot.NamedExprCount = 1;
+        FMockTextureSet result = ResolveExpr("Smile", slot, 0);
+        TEST("Named expression wins over enum", result.ID == 200);
+    }
+
+    // 2. Only named set (no enum fallback)
+    {
+        FMockSlot slot;
+        slot.NamedExpr[0] = {"Frown", {300, true}};
+        slot.NamedExprCount = 1;
+        FMockTextureSet result = ResolveExpr("Frown", slot, 1);
+        TEST("Named expression when enum unset", result.ID == 300);
+    }
+
+    // 3. Only enum set (no named match) — fallback
+    {
+        FMockSlot slot;
+        slot.ExprTextures[2] = {400, true};
+        FMockTextureSet result = ResolveExpr("Missing", slot, 2);
+        TEST("Missing named falls back to enum", result.ID == 400);
+    }
+
+    // 4. Neither named nor enum set — returns empty
+    {
+        FMockSlot slot;
+        FMockTextureSet result = ResolveExpr("Anything", slot, 3);
+        TEST("Neither named nor enum → empty", result.ID == 0 && !result.bValid);
+    }
+
+    // 5. Empty name falls through to enum
+    {
+        FMockSlot slot;
+        slot.ExprTextures[0] = {500, true};
+        FMockTextureSet result = ResolveExpr("", slot, 0);
+        TEST("Empty name falls to enum", result.ID == 500);
+    }
+
+    // 6. Multiple named entries: correct one resolved
+    {
+        FMockSlot slot;
+        slot.NamedExpr[0] = {"Neutral", {10, true}};
+        slot.NamedExpr[1] = {"Smile", {20, true}};
+        slot.NamedExpr[2] = {"Frown", {30, true}};
+        slot.NamedExprCount = 3;
+        TEST("Smile resolved from multiple", ResolveExpr("Smile", slot, 0).ID == 20);
+        TEST("Frown resolved from multiple", ResolveExpr("Frown", slot, 1).ID == 30);
+        TEST("Neutral resolved from multiple", ResolveExpr("Neutral", slot, 2).ID == 10);
+    }
+
+    // 7. Named viseme wins over enum
+    {
+        FMockSlot slot;
+        slot.NamedVis[0] = {"Ah", 12};
+        slot.NamedVisCount = 1;
+        int result = ResolveVis("Ah", slot, 0);
+        TEST("Named viseme wins over enum", result == 12);
+    }
+
+    // 8. Named viseme fallback to enum
+    {
+        FMockSlot slot;
+        slot.VisemeFrameSets[1] = 8;
+        int result = ResolveVis("Unknown", slot, 1);
+        TEST("Missing viseme falls to enum", result == 8);
+    }
+
+    // 9. Empty viseme name falls to enum
+    {
+        FMockSlot slot;
+        slot.VisemeFrameSets[2] = 15;
+        int result = ResolveVis("", slot, 2);
+        TEST("Empty viseme name falls to enum", result == 15);
+    }
+
+    // 10. Multiple named visemes: correct one resolved
+    {
+        FMockSlot slot;
+        slot.NamedVis[0] = {"Ah", 5};
+        slot.NamedVis[1] = {"Uh", 8};
+        slot.NamedVis[2] = {"Oh", 12};
+        slot.NamedVisCount = 3;
+        TEST("Ah resolved correctly", ResolveVis("Ah", slot, 0) == 5);
+        TEST("Oh resolved correctly", ResolveVis("Oh", slot, 1) == 12);
+        TEST("Unknown falls to enum", ResolveVis("X", slot, 2) == slot.VisemeFrameSets[2]);
+    }
+
+    // 11. Both named expr + viseme in same slot resolve independently
+    {
+        FMockSlot slot;
+        slot.NamedExpr[0] = {"Smile", {77, true}};
+        slot.NamedExprCount = 1;
+        slot.NamedVis[0] = {"Ah", 9};
+        slot.NamedVisCount = 1;
+        TEST("Named expr + viseme: expr", ResolveExpr("Smile", slot, 0).ID == 77);
+        TEST("Named expr + viseme: viseme", ResolveVis("Ah", slot, 0) == 9);
+        TEST("Named expr + viseme: expr fallback", ResolveExpr("X", slot, 1).ID == 0);
+        TEST("Named expr + viseme: viseme fallback", ResolveVis("X", slot, 1) == slot.VisemeFrameSets[1]);
+    }
+
+    printf("  [FName Expression/Viseme: 11 tests]\n");
+}
+
+// ====================================================================
+// GETBOUNDARYORDEFAULT TESTS
+// ====================================================================
+
+void TestGetBoundaryOrDefault() {
+    printf("\n=== GetBoundaryOrDefault (zone multiplier fallback) ===\n");
+
+    // Replicates UFaceParallaxComponent::GetBoundaryOrDefault logic:
+    //   if array has valid index, return array[index]; else return Defaults[index]
+    struct MockArray {
+        double Data[4] = {};
+        int Count = 0;
+    };
+
+    static const double Defaults[4] = {1.0, 3.0, 5.0, 7.0};
+
+    auto GetBoundaryOrDefault = [](const MockArray& arr, int idx) -> double {
+        if (idx >= 0 && idx < arr.Count) return arr.Data[idx];
+        if (idx >= 0 && idx < 4) return Defaults[idx];
+        return 0.0;
+    };
+
+    // 1. Full array returns stored values
+    {
+        MockArray arr = {{2.0, 4.0, 6.0, 8.0}, 4};
+        TEST("Full: index 0", fabs(GetBoundaryOrDefault(arr, 0) - 2.0) < 0.001);
+        TEST("Full: index 1", fabs(GetBoundaryOrDefault(arr, 1) - 4.0) < 0.001);
+        TEST("Full: index 2", fabs(GetBoundaryOrDefault(arr, 2) - 6.0) < 0.001);
+        TEST("Full: index 3", fabs(GetBoundaryOrDefault(arr, 3) - 8.0) < 0.001);
+    }
+
+    // 2. Empty array returns defaults for all indices
+    {
+        MockArray arr = {{}, 0};
+        TEST("Empty: index 0 default", fabs(GetBoundaryOrDefault(arr, 0) - 1.0) < 0.001);
+        TEST("Empty: index 1 default", fabs(GetBoundaryOrDefault(arr, 1) - 3.0) < 0.001);
+        TEST("Empty: index 2 default", fabs(GetBoundaryOrDefault(arr, 2) - 5.0) < 0.001);
+        TEST("Empty: index 3 default", fabs(GetBoundaryOrDefault(arr, 3) - 7.0) < 0.001);
+    }
+
+    // 3. Partial array (2 elements): first two custom, last two default
+    {
+        MockArray arr = {{0.5, 2.5, 0.0, 0.0}, 2};
+        TEST("Partial: index 0 custom", fabs(GetBoundaryOrDefault(arr, 0) - 0.5) < 0.001);
+        TEST("Partial: index 1 custom", fabs(GetBoundaryOrDefault(arr, 1) - 2.5) < 0.001);
+        TEST("Partial: index 2 default", fabs(GetBoundaryOrDefault(arr, 2) - 5.0) < 0.001);
+        TEST("Partial: index 3 default", fabs(GetBoundaryOrDefault(arr, 3) - 7.0) < 0.001);
+    }
+
+    // 4. Partial array (3 elements): last index falls back
+    {
+        MockArray arr = {{1.5, 3.5, 5.5, 0.0}, 3};
+        TEST("Partial3: index 0", fabs(GetBoundaryOrDefault(arr, 0) - 1.5) < 0.001);
+        TEST("Partial3: index 1", fabs(GetBoundaryOrDefault(arr, 1) - 3.5) < 0.001);
+        TEST("Partial3: index 2", fabs(GetBoundaryOrDefault(arr, 2) - 5.5) < 0.001);
+        TEST("Partial3: index 3 default", fabs(GetBoundaryOrDefault(arr, 3) - 7.0) < 0.001);
+    }
+
+    // 5. Multipliers feed through to BM values
+    {
+        MockArray arr = {{1.0, 3.0, 5.0, 7.0}, 4};
+        double BM[4];
+        for (int i = 0; i < 4; ++i) BM[i] = GetBoundaryOrDefault(arr, i) * HZW;
+        TEST("BM[0]=22.5", fabs(BM[0] - 22.5) < 0.001);
+        TEST("BM[1]=67.5", fabs(BM[1] - 67.5) < 0.001);
+        TEST("BM[2]=112.5", fabs(BM[2] - 112.5) < 0.001);
+        TEST("BM[3]=157.5", fabs(BM[3] - 157.5) < 0.001);
+    }
+
+    // 6. Custom multipliers produce correct boundaries in state determination
+    {
+        static const double Custom[4] = {2.0, 4.0, 6.0, 8.0};
+        TEST("Custom: Front at 44.99",
+            DetermineStateFromAngles(44.99, 0, Custom) == EFaceAngleState::Front);
+        TEST("Custom: 3QR at 45.01",
+            DetermineStateFromAngles(45.01, 0, Custom) == EFaceAngleState::ThreeQuarterRight);
+        TEST("Custom: Back at 180.01",
+            DetermineStateFromAngles(180.01, 0, Custom) == EFaceAngleState::Back);
+    }
+
+    // 7. All defaults via fallback produce correct zones (using defaults directly)
+    {
+        static const double AllDefault[4] = {1.0, 3.0, 5.0, 7.0};
+        TEST("Fallback Front at 0", DetermineStateFromAngles(0, 0, AllDefault) == EFaceAngleState::Front);
+        TEST("Fallback 3QR at 35", DetermineStateFromAngles(35, 0, AllDefault) == EFaceAngleState::ThreeQuarterRight);
+        TEST("Fallback Back at 170", DetermineStateFromAngles(170, 0, AllDefault) == EFaceAngleState::Back);
+    }
+
+    printf("  [GetBoundaryOrDefault: 24 tests]\n");
+}
+
+void TestDepthRange() {
+    printf("\n=== Depth Range (DepthMin/DepthMax per layer) ===\n");
+
+    // 1. Default layer definition
+    {
+        FFaceLayerDef def;
+        TEST("Default DepthMin", std::abs(def.DepthMin - 0.0) < 1e-9);
+        TEST("Default DepthMax", std::abs(def.DepthMax - 1.0) < 1e-9);
+        TEST("Default remap 0.0", std::abs(def.GetRemappedDepth(0.0) - 0.0) < 1e-9);
+        TEST("Default remap 0.5", std::abs(def.GetRemappedDepth(0.5) - 0.5) < 1e-9);
+        TEST("Default remap 1.0", std::abs(def.GetRemappedDepth(1.0) - 1.0) < 1e-9);
+    }
+
+    // 2. Custom range [0.2, 0.8]
+    {
+        FFaceLayerDef def;
+        def.DepthMin = 0.2;
+        def.DepthMax = 0.8;
+        TEST("Custom remap 0.0", std::abs(def.GetRemappedDepth(0.0) - 0.2) < 1e-9);
+        TEST("Custom remap 0.5", std::abs(def.GetRemappedDepth(0.5) - 0.5) < 1e-9);
+        TEST("Custom remap 1.0", std::abs(def.GetRemappedDepth(1.0) - 0.8) < 1e-9);
+    }
+
+    // 3. Inverted range [0.8, 0.2] (Min > Max)
+    {
+        FFaceLayerDef def;
+        def.DepthMin = 0.8;
+        def.DepthMax = 0.2;
+        TEST("Inverted remap 0.0", std::abs(def.GetRemappedDepth(0.0) - 0.8) < 1e-9);
+        TEST("Inverted remap 0.5", std::abs(def.GetRemappedDepth(0.5) - 0.5) < 1e-9);
+        TEST("Inverted remap 1.0", std::abs(def.GetRemappedDepth(1.0) - 0.2) < 1e-9);
+    }
+
+    // 4. Zero-width range (Min == Max)
+    {
+        FFaceLayerDef def;
+        def.DepthMin = 0.5;
+        def.DepthMax = 0.5;
+        TEST("ZeroWidth remap 0.0", std::abs(def.GetRemappedDepth(0.0) - 0.5) < 1e-9);
+        TEST("ZeroWidth remap 0.5", std::abs(def.GetRemappedDepth(0.5) - 0.5) < 1e-9);
+        TEST("ZeroWidth remap 1.0", std::abs(def.GetRemappedDepth(1.0) - 0.5) < 1e-9);
+    }
+
+    // 5. Negative range [-0.5, 0.5]
+    {
+        FFaceLayerDef def;
+        def.DepthMin = -0.5;
+        def.DepthMax = 0.5;
+        TEST("Negative remap 0.0", std::abs(def.GetRemappedDepth(0.0) + 0.5) < 1e-9);
+        TEST("Negative remap 0.5", std::abs(def.GetRemappedDepth(0.5) - 0.0) < 1e-9);
+        TEST("Negative remap 1.0", std::abs(def.GetRemappedDepth(1.0) - 0.5) < 1e-9);
+    }
+
+    // 6. Full negative range [-1.0, -0.2]
+    {
+        FFaceLayerDef def;
+        def.DepthMin = -1.0;
+        def.DepthMax = -0.2;
+        TEST("AllNeg remap 0.0", std::abs(def.GetRemappedDepth(0.0) + 1.0) < 1e-9);
+        TEST("AllNeg remap 0.5", std::abs(def.GetRemappedDepth(0.5) + 0.6) < 1e-9);
+        TEST("AllNeg remap 1.0", std::abs(def.GetRemappedDepth(1.0) + 0.2) < 1e-9);
+    }
+
+    // 7. DepthScale not affected by DepthMin/DepthMax
+    {
+        FFaceLayerDef def;
+        def.DepthScale = 0.5;
+        def.DepthMin = 0.0;
+        def.DepthMax = 0.5;
+        TEST("DepthScale unchanged", std::abs(def.DepthScale - 0.5) < 1e-9);
+    }
+
+    // 8. DepthMapIntensity not affected by DepthMin/DepthMax
+    {
+        FFaceLayerDef def;
+        def.DepthMapIntensity = 2.0;
+        def.DepthMin = 0.2;
+        def.DepthMax = 0.8;
+        TEST("DepthMapIntensity unchanged", std::abs(def.DepthMapIntensity - 2.0) < 1e-9);
+    }
+
+    // 9. Out-of-bounds depth samples are not clamped by GetRemappedDepth
+    {
+        FFaceLayerDef def;
+        def.DepthMin = 0.2;
+        def.DepthMax = 0.8;
+        TEST("Sample 1.5 extends", std::abs(def.GetRemappedDepth(1.5) - 1.1) < 1e-9);
+        TEST("Sample -0.5 extends", std::abs(def.GetRemappedDepth(-0.5) + 0.1) < 1e-9);
+    }
+
+    printf("  [DepthRange: 30 tests]\n");
+}
+
+void TestDepthParamNames() {
+    printf("\n=== Depth Parameter Names ===\n");
+
+    // Simulate the material parameter name pattern used in UpdateMaterialParameters
+    struct MockDepthParams {
+        const char* MinName = "DepthMin";
+        const char* MaxName = "DepthMax";
+    };
+
+    auto GetMinParam = [](const MockDepthParams& p) -> const char* { return p.MinName; };
+    auto GetMaxParam = [](const MockDepthParams& p) -> const char* { return p.MaxName; };
+
+    // 1. Default names
+    {
+        MockDepthParams p;
+        TEST("Default MinName", std::string(GetMinParam(p)) == "DepthMin");
+        TEST("Default MaxName", std::string(GetMaxParam(p)) == "DepthMax");
+    }
+
+    // 2. Custom names
+    {
+        MockDepthParams p;
+        p.MinName = "LayerDepthMin";
+        p.MaxName = "LayerDepthMax";
+        TEST("Custom MinName", std::string(GetMinParam(p)) == "LayerDepthMin");
+        TEST("Custom MaxName", std::string(GetMaxParam(p)) == "LayerDepthMax");
+    }
+
+    // 3. Empty names
+    {
+        MockDepthParams p;
+        p.MinName = "";
+        p.MaxName = "";
+        TEST("Empty MinName", std::string(GetMinParam(p)) == "");
+        TEST("Empty MaxName", std::string(GetMaxParam(p)) == "");
+    }
+
+    // 4. FName-like resolution with multiple entries (like the FName exp/viseme test)
+    // Simulates pushing DepthMin/DepthMax per layer: same name, different values per layer index
+    {
+        struct LayerRange {
+            const char* ParamName;
+            double Value;
+        };
+        // Two layers with different depth ranges
+        LayerRange ranges[4] = {
+            {"DepthMin", 0.0},  {"DepthMax", 0.5},
+            {"DepthMin", 0.3},  {"DepthMax", 0.8},
+        };
+        TEST("Layer0 DepthMin", std::abs(ranges[0].Value - 0.0) < 1e-9);
+        TEST("Layer0 DepthMax", std::abs(ranges[1].Value - 0.5) < 1e-9);
+        TEST("Layer1 DepthMin", std::abs(ranges[2].Value - 0.3) < 1e-9);
+        TEST("Layer1 DepthMax", std::abs(ranges[3].Value - 0.8) < 1e-9);
+    }
+
+    // 5. Depth range values mapped through GetRemappedDepth match material expectations
+    {
+        FFaceLayerDef def;
+        def.DepthMin = 0.2;
+        def.DepthMax = 0.9;
+        // The material will receive DepthMin=0.2, DepthMax=0.9 as scalar params
+        // and use them to remap depth map samples. Verify the mapping logic:
+        TEST("Mat remap 0.0->0.2", std::abs(def.GetRemappedDepth(0.0) - 0.2) < 1e-9);
+        TEST("Mat remap 0.5->0.55", std::abs(def.GetRemappedDepth(0.5) - 0.55) < 1e-9);
+        TEST("Mat remap 1.0->0.9", std::abs(def.GetRemappedDepth(1.0) - 0.9) < 1e-9);
+    }
+
+    printf("  [DepthParamNames: 15 tests]\n");
+}
+
+void TestProfileVisualizerSizing() {
+    printf("\n=== Profile-Aware Visualizer Sizing ===\n");
+
+    // Simulates the sizing logic in DepthDebugVisualizerComponent::BuildDebugMesh:
+    // EffectiveMeshSize = (ProfileHalfWidth > 0) ? (2 * ProfileHalfWidth) : FallbackMeshSize
+    // EffectiveHeightScale = (ProfileHalfDepth > 0) ? ProfileHalfDepth : FallbackHeightScale
+
+    struct MockVisualizer {
+        double FallbackMeshSize = 30.0;
+        double FallbackHeightScale = 10.0;
+        double ProfileHalfWidth = 0.0;
+        double ProfileHalfDepth = 0.0;
+
+        double GetEffectiveMeshSize() const {
+            return (ProfileHalfWidth > 0.0) ? (2.0 * ProfileHalfWidth) : FallbackMeshSize;
+        }
+        double GetEffectiveHeightScale() const {
+            return (ProfileHalfDepth > 0.0) ? ProfileHalfDepth : FallbackHeightScale;
+        }
+    };
+
+    // 1. No profile set — fallback defaults
+    {
+        MockVisualizer vis;
+        TEST("Fallback mesh size", std::abs(vis.GetEffectiveMeshSize() - 30.0) < 1e-9);
+        TEST("Fallback height", std::abs(vis.GetEffectiveHeightScale() - 10.0) < 1e-9);
+    }
+
+    // 2. Profile width set, depth unset
+    {
+        MockVisualizer vis;
+        vis.ProfileHalfWidth = 15.0;
+        TEST("Profile mesh size", std::abs(vis.GetEffectiveMeshSize() - 30.0) < 1e-9);
+        TEST("Profile width fallback height", std::abs(vis.GetEffectiveHeightScale() - 10.0) < 1e-9);
+    }
+
+    // 3. Profile depth set, width unset
+    {
+        MockVisualizer vis;
+        vis.ProfileHalfDepth = 5.0;
+        TEST("Profile depth fallback mesh", std::abs(vis.GetEffectiveMeshSize() - 30.0) < 1e-9);
+        TEST("Profile depth height", std::abs(vis.GetEffectiveHeightScale() - 5.0) < 1e-9);
+    }
+
+    // 4. Both profile dimensions set
+    {
+        MockVisualizer vis;
+        vis.ProfileHalfWidth = 20.0;
+        vis.ProfileHalfDepth = 8.0;
+        TEST("Both: mesh size", std::abs(vis.GetEffectiveMeshSize() - 40.0) < 1e-9);
+        TEST("Both: height", std::abs(vis.GetEffectiveHeightScale() - 8.0) < 1e-9);
+    }
+
+    // 5. Zero values treated as unset (no override)
+    {
+        MockVisualizer vis;
+        vis.ProfileHalfWidth = 0.0;
+        vis.ProfileHalfDepth = 0.0;
+        TEST("Zero width fallback", std::abs(vis.GetEffectiveMeshSize() - 30.0) < 1e-9);
+        TEST("Zero depth fallback", std::abs(vis.GetEffectiveHeightScale() - 10.0) < 1e-9);
+    }
+
+    // 6. ClearProfileDimensions resets to fallback
+    {
+        MockVisualizer vis;
+        vis.ProfileHalfWidth = 20.0;
+        vis.ProfileHalfDepth = 5.0;
+        vis.ProfileHalfWidth = 0.0;
+        vis.ProfileHalfDepth = 0.0;
+        TEST("Clear: mesh size", std::abs(vis.GetEffectiveMeshSize() - 30.0) < 1e-9);
+        TEST("Clear: height", std::abs(vis.GetEffectiveHeightScale() - 10.0) < 1e-9);
+    }
+
+    // 7. Vertex position computation with profile dimensions
+    // (simulates X = (U - 0.5) * EffMeshSize, Z = Depth * EffHeightScale)
+    {
+        MockVisualizer vis;
+        vis.ProfileHalfWidth = 10.0;
+        vis.ProfileHalfDepth = 4.0;
+
+        auto ComputeX = [&](double U) { return (U - 0.5) * vis.GetEffectiveMeshSize(); };
+        auto ComputeZ = [&](double Depth) { return Depth * vis.GetEffectiveHeightScale(); };
+
+        TEST("Vertex X at U=0.0", std::abs(ComputeX(0.0) - (-10.0)) < 1e-9);
+        TEST("Vertex X at U=0.5", std::abs(ComputeX(0.5) - 0.0) < 1e-9);
+        TEST("Vertex X at U=1.0", std::abs(ComputeX(1.0) - 10.0) < 1e-9);
+        TEST("Vertex Z at Depth=0.0", std::abs(ComputeZ(0.0) - 0.0) < 1e-9);
+        TEST("Vertex Z at Depth=0.5", std::abs(ComputeZ(0.5) - 2.0) < 1e-9);
+        TEST("Vertex Z at Depth=1.0", std::abs(ComputeZ(1.0) - 4.0) < 1e-9);
+    }
+
+    printf("  [ProfileVisualizerSizing: 17 tests]\n");
+}
+
+void TestProfileDetectionTopBottom() {
+    printf("\n=== Profile Detection (Top/Bottom cross-validation) ===\n");
+
+    // Simulates DetectFaceProfileFromPreset's top/bottom cross-validation logic:
+    //   - Front width → FaceHalfWidth, Front height → FaceHalfHeight
+    //   - Top width validated against Front width, warning if mismatch
+    //   - Top/Bottom height used as FaceHalfDepth fallback when profile views absent
+    //   - Top/Bottom width used as FaceHalfHeight fallback when Front height absent
+
+    struct MockTexSlot {
+        int Width = 0;
+        int Height = 0;
+        bool HasAlbedo = false;
+    };
+
+    struct MockProfile {
+        double HalfWidth = 0.0;
+        double HalfHeight = 0.0;
+        double HalfDepth = 0.0;
+        int Warnings = 0;
+    };
+
+    // Simulates the core extraction logic (without UE_LOG warnings)
+    auto DetectProfile = [](const MockTexSlot& Front, const MockTexSlot& Top,
+                            const MockTexSlot& Bottom, const MockTexSlot& RightProfile,
+                            const MockTexSlot& LeftProfile) -> MockProfile {
+        MockProfile P;
+
+        // Front pass
+        if (Front.HasAlbedo && Front.Width > 0) P.HalfWidth = Front.Width * 0.5;
+        if (Front.HasAlbedo && Front.Height > 0) P.HalfHeight = Front.Height * 0.5;
+
+        // Top/Bottom cross-validation (just the half-height derivation)
+        if (Front.Height <= 0 && Top.HasAlbedo && Top.Height > 0)
+            P.HalfHeight = Top.Height * 0.5;
+        if (P.HalfHeight <= 0.5 && Bottom.HasAlbedo && Bottom.Height > 0)
+            P.HalfHeight = Bottom.Height * 0.5;
+
+        // Profile pass for depth (primary)
+        if (RightProfile.HasAlbedo && RightProfile.Width > 0)
+            P.HalfDepth = RightProfile.Width * 0.5;
+        else if (LeftProfile.HasAlbedo && LeftProfile.Width > 0)
+            P.HalfDepth = LeftProfile.Width * 0.5;
+
+        // Top/Bottom height fallback for depth
+        if (P.HalfDepth <= 0.5)
+        {
+            if (Top.HasAlbedo && Top.Height > 0)
+                P.HalfDepth = Top.Height * 0.5;
+            else if (Bottom.HasAlbedo && Bottom.Height > 0)
+                P.HalfDepth = Bottom.Height * 0.5;
+        }
+
+        return P;
+    };
+
+    // 1. Front only — width/height come from Front
+    {
+        MockTexSlot front{200, 300, true};
+        MockTexSlot top{0, 0, false};
+        MockTexSlot bottom{0, 0, false};
+        MockTexSlot rprof{0, 0, false};
+        MockTexSlot lprof{0, 0, false};
+        auto P = DetectProfile(front, top, bottom, rprof, lprof);
+        TEST("Front only: halfWidth = 100", std::abs(P.HalfWidth - 100.0) < 1e-9);
+        TEST("Front only: halfHeight = 150", std::abs(P.HalfHeight - 150.0) < 1e-9);
+        TEST("Front only: halfDepth = 0", std::abs(P.HalfDepth - 0.0) < 1e-9);
+    }
+
+    // 2. Front + Profile — depth from profile
+    {
+        MockTexSlot front{200, 300, true};
+        MockTexSlot top{0, 0, false};
+        MockTexSlot bottom{0, 0, false};
+        MockTexSlot rprof{80, 400, true};
+        MockTexSlot lprof{0, 0, false};
+        auto P = DetectProfile(front, top, bottom, rprof, lprof);
+        TEST("Front+Prof: halfWidth = 100", std::abs(P.HalfWidth - 100.0) < 1e-9);
+        TEST("Front+Prof: halfHeight = 150", std::abs(P.HalfHeight - 150.0) < 1e-9);
+        TEST("Front+Prof: halfDepth = 40", std::abs(P.HalfDepth - 40.0) < 1e-9);
+    }
+
+    // 3. No Front height — height derived from Top height
+    {
+        MockTexSlot front{200, 0, true}; // front has width but no height
+        MockTexSlot top{200, 300, true};
+        MockTexSlot bottom{0, 0, false};
+        MockTexSlot rprof{80, 400, true};
+        MockTexSlot lprof{0, 0, false};
+        auto P = DetectProfile(front, top, bottom, rprof, lprof);
+        TEST("Top height: halfWidth = 100", std::abs(P.HalfWidth - 100.0) < 1e-9);
+        TEST("Top height: halfHeight = 150", std::abs(P.HalfHeight - 150.0) < 1e-9);
+        TEST("Top height: halfDepth = 40", std::abs(P.HalfDepth - 40.0) < 1e-9);
+    }
+
+    // 4. No Front height, no Top — height from Bottom height
+    {
+        MockTexSlot front{200, 0, true};
+        MockTexSlot top{0, 0, false};
+        MockTexSlot bottom{200, 300, true};
+        MockTexSlot rprof{80, 400, true};
+        MockTexSlot lprof{0, 0, false};
+        auto P = DetectProfile(front, top, bottom, rprof, lprof);
+        TEST("Bottom height: halfHeight = 150", std::abs(P.HalfHeight - 150.0) < 1e-9);
+    }
+
+    // 5. No profile views — depth from Top height
+    {
+        MockTexSlot front{200, 300, true};
+        MockTexSlot top{200, 80, true}; // Top height = face depth
+        MockTexSlot bottom{0, 0, false};
+        MockTexSlot rprof{0, 0, false};
+        MockTexSlot lprof{0, 0, false};
+        auto P = DetectProfile(front, top, bottom, rprof, lprof);
+        TEST("Top depth: halfDepth = 40", std::abs(P.HalfDepth - 40.0) < 1e-9);
+    }
+
+    // 6. No profile views, no Top — depth from Bottom height
+    {
+        MockTexSlot front{200, 300, true};
+        MockTexSlot top{0, 0, false};
+        MockTexSlot bottom{200, 80, true};
+        MockTexSlot rprof{0, 0, false};
+        MockTexSlot lprof{0, 0, false};
+        auto P = DetectProfile(front, top, bottom, rprof, lprof);
+        TEST("Bottom depth: halfDepth = 40", std::abs(P.HalfDepth - 40.0) < 1e-9);
+    }
+
+    // 7. LeftProfile fallback when RightProfile unavailable
+    {
+        MockTexSlot front{200, 300, true};
+        MockTexSlot top{0, 0, false};
+        MockTexSlot bottom{0, 0, false};
+        MockTexSlot rprof{0, 0, false};
+        MockTexSlot lprof{80, 400, true};
+        auto P = DetectProfile(front, top, bottom, rprof, lprof);
+        TEST("LeftProf depth: halfDepth = 40", std::abs(P.HalfDepth - 40.0) < 1e-9);
+    }
+
+    // 8. All views absent — all dimensions stay 0
+    {
+        MockTexSlot front{0, 0, false};
+        MockTexSlot top{0, 0, false};
+        MockTexSlot bottom{0, 0, false};
+        MockTexSlot rprof{0, 0, false};
+        MockTexSlot lprof{0, 0, false};
+        auto P = DetectProfile(front, top, bottom, rprof, lprof);
+        TEST("No views: halfWidth = 0", std::abs(P.HalfWidth - 0.0) < 1e-9);
+        TEST("No views: halfHeight = 0", std::abs(P.HalfHeight - 0.0) < 1e-9);
+        TEST("No views: halfDepth = 0", std::abs(P.HalfDepth - 0.0) < 1e-9);
+    }
+
+    printf("  [ProfileDetectionTopBottom: 17 tests]\n");
+}
+
+void TestProfileDetectionMultiLayer() {
+    printf("\n=== Profile Detection (Multi-Layer Scan) ===\n");
+
+    // Simulates the GetMaxTexDimensions helper: scan ALL layers for a state,
+    // return the max width/height across them.
+
+    struct MockTexSlot {
+        int Width = 0;
+        int Height = 0;
+        bool HasAlbedo = false;
+    };
+
+    struct MockProfile {
+        double HalfWidth = 0.0;
+        double HalfHeight = 0.0;
+        double HalfDepth = 0.0;
+    };
+
+    auto GetMaxDimensions = [](const MockTexSlot* Slots, int Count, int& OutW, int& OutH) {
+        OutW = 0;
+        OutH = 0;
+        for (int i = 0; i < Count; ++i)
+        {
+            OutW = std::max(OutW, Slots[i].Width);
+            OutH = std::max(OutH, Slots[i].Height);
+        }
+    };
+
+    auto DetectProfileMulti = [&](const MockTexSlot* Front, int FrontCount,
+                                   const MockTexSlot* RightProf, int RightProfCount,
+                                   const MockTexSlot* LeftProf, int LeftProfCount,
+                                   const MockTexSlot* Top, int TopCount,
+                                   const MockTexSlot* Bottom, int BottomCount) -> MockProfile {
+        MockProfile P;
+
+        int FW = 0, FH = 0;
+        GetMaxDimensions(Front, FrontCount, FW, FH);
+        if (FW > 0) P.HalfWidth = FW * 0.5;
+        if (FH > 0) P.HalfHeight = FH * 0.5;
+
+        // Profile pass for depth
+        int RPW = 0, RPH = 0;
+        GetMaxDimensions(RightProf, RightProfCount, RPW, RPH);
+        if (RPW > 0) P.HalfDepth = RPW * 0.5;
+
+        if (P.HalfDepth <= 0.5)
+        {
+            int LPW = 0, LPH = 0;
+            GetMaxDimensions(LeftProf, LeftProfCount, LPW, LPH);
+            if (LPW > 0) P.HalfDepth = LPW * 0.5;
+        }
+
+        // Top/Bottom depth fallback
+        if (P.HalfDepth <= 0.5)
+        {
+            int TW = 0, TH = 0;
+            GetMaxDimensions(Top, TopCount, TW, TH);
+            if (TH > 0) P.HalfDepth = TH * 0.5;
+
+            if (P.HalfDepth <= 0.5)
+            {
+                int BW = 0, BH = 0;
+                GetMaxDimensions(Bottom, BottomCount, BW, BH);
+                if (BH > 0) P.HalfDepth = BH * 0.5;
+            }
+        }
+
+        return P;
+    };
+
+    // 1. Single layer each — baseline
+    {
+        MockTexSlot front[] = {{200, 300, true}};
+        MockTexSlot prof[] = {{80, 400, true}};
+        MockTexSlot lprof[] = {};
+        MockTexSlot top[] = {};
+        MockTexSlot bottom[] = {};
+        auto P = DetectProfileMulti(front, 1, prof, 1, lprof, 0, top, 0, bottom, 0);
+        TEST("Single: halfWidth=100", std::abs(P.HalfWidth - 100.0) < 1e-9);
+        TEST("Single: halfHeight=150", std::abs(P.HalfHeight - 150.0) < 1e-9);
+        TEST("Single: halfDepth=40", std::abs(P.HalfDepth - 40.0) < 1e-9);
+    }
+
+    // 2. Multiple front layers — takes max width/height
+    {
+        MockTexSlot front[] = {{200, 300, true}, {100, 400, true}};
+        MockTexSlot prof[] = {{80, 400, true}};
+        MockTexSlot lprof[] = {};
+        MockTexSlot top[] = {};
+        MockTexSlot bottom[] = {};
+        auto P = DetectProfileMulti(front, 2, prof, 1, lprof, 0, top, 0, bottom, 0);
+        TEST("MultiFront: halfWidth=100 (max 200/2)", std::abs(P.HalfWidth - 100.0) < 1e-9);
+        TEST("MultiFront: halfHeight=200 (max 400/2)", std::abs(P.HalfHeight - 200.0) < 1e-9);
+    }
+
+    // 3. Multiple profile layers — takes max width for depth
+    {
+        MockTexSlot front[] = {{200, 300, true}};
+        MockTexSlot prof[] = {{80, 400, true}, {120, 200, true}}; // max width=120
+        MockTexSlot lprof[] = {};
+        MockTexSlot top[] = {};
+        MockTexSlot bottom[] = {};
+        auto P = DetectProfileMulti(front, 1, prof, 2, lprof, 0, top, 0, bottom, 0);
+        TEST("MultiProf: halfDepth=60 (max 120/2)", std::abs(P.HalfDepth - 60.0) < 1e-9);
+    }
+
+    // 4. Right profile absent, left profile with multiple layers
+    {
+        MockTexSlot front[] = {{200, 300, true}};
+        MockTexSlot prof[] = {};
+        MockTexSlot lprof[] = {{90, 400, true}, {70, 300, true}}; // max width=90
+        MockTexSlot top[] = {};
+        MockTexSlot bottom[] = {};
+        auto P = DetectProfileMulti(front, 1, prof, 0, lprof, 2, top, 0, bottom, 0);
+        TEST("LeftProf multi: halfDepth=45 (max 90/2)", std::abs(P.HalfDepth - 45.0) < 1e-9);
+    }
+
+    // 5. Zero-width layers ignored
+    {
+        MockTexSlot front[] = {{200, 300, true}, {0, 0, true}, {0, 100, true}};
+        MockTexSlot prof[] = {{80, 400, true}};
+        MockTexSlot lprof[] = {};
+        MockTexSlot top[] = {};
+        MockTexSlot bottom[] = {};
+        auto P = DetectProfileMulti(front, 3, prof, 1, lprof, 0, top, 0, bottom, 0);
+        TEST("ZeroW: halfWidth=100 (200/2)", std::abs(P.HalfWidth - 100.0) < 1e-9);
+        TEST("ZeroW: halfHeight=150 (max 300/2)", std::abs(P.HalfHeight - 150.0) < 1e-9);
+    }
+
+    // 6. Multiple front + profile + top all layered
+    {
+        MockTexSlot front[] = {{200, 300, true}, {50, 50, true}};
+        MockTexSlot prof[] = {{80, 400, true}, {60, 200, true}}; // max depth W=80
+        MockTexSlot lprof[] = {};
+        MockTexSlot top[] = {{200, 100, true}}; // Top W=200 (matches front), H=100
+        MockTexSlot bottom[] = {};
+        auto P = DetectProfileMulti(front, 2, prof, 2, lprof, 0, top, 1, bottom, 0);
+        TEST("All layered: halfWidth=100", std::abs(P.HalfWidth - 100.0) < 1e-9);
+        TEST("All layered: halfHeight=150", std::abs(P.HalfHeight - 150.0) < 1e-9);
+        TEST("All layered: halfDepth=40", std::abs(P.HalfDepth - 40.0) < 1e-9);
+    }
+
+    printf("  [ProfileDetectionMultiLayer: 10 tests]\n");
+}
+
+void TestWireframeMode() {
+    printf("\n=== Wireframe Mode ===\n");
+
+    // Simulates UpdateWireframeMode material swap logic:
+    //   - bShowWireframe && WireframeMaterial != null → use WireframeMaterial
+    //   - else if DebugMaterialInstance != null → use DebugMaterialInstance
+    //   - else if DepthDebugMaterial != null → use DepthDebugMaterial
+
+    struct MockMaterial { int Id; };
+    struct MockVisualizer {
+        bool bShowWireframe = false;
+        MockMaterial* WireframeMaterial = nullptr;
+        MockMaterial* DebugMaterialInstance = nullptr;
+        MockMaterial* DepthDebugMaterial = nullptr;
+        MockMaterial* ActiveMaterial = nullptr;
+
+        void UpdateWireframe() {
+            if (bShowWireframe && WireframeMaterial)
+                ActiveMaterial = WireframeMaterial;
+            else if (DebugMaterialInstance)
+                ActiveMaterial = DebugMaterialInstance;
+            else if (DepthDebugMaterial)
+                ActiveMaterial = DepthDebugMaterial;
+        }
+    };
+
+    // 1. Wireframe off uses debug material instance
+    {
+        MockMaterial solid{1};
+        MockMaterial wf{2};
+        MockVisualizer vis;
+        vis.bShowWireframe = false;
+        vis.DebugMaterialInstance = &solid;
+        vis.WireframeMaterial = &wf;
+        vis.UpdateWireframe();
+        TEST("WireOff uses DebugMatInst", vis.ActiveMaterial->Id == 1);
+    }
+
+    // 2. Wireframe on uses wireframe material
+    {
+        MockMaterial solid{1};
+        MockMaterial wf{2};
+        MockVisualizer vis;
+        vis.bShowWireframe = true;
+        vis.DebugMaterialInstance = &solid;
+        vis.WireframeMaterial = &wf;
+        vis.UpdateWireframe();
+        TEST("WireOn uses WireframeMat", vis.ActiveMaterial->Id == 2);
+    }
+
+    // 3. Wireframe on but no wireframe material → falls back to debug material
+    {
+        MockMaterial solid{1};
+        MockVisualizer vis;
+        vis.bShowWireframe = true;
+        vis.WireframeMaterial = nullptr;
+        vis.DebugMaterialInstance = &solid;
+        vis.UpdateWireframe();
+        TEST("WireOn no WireframeMat → debug", vis.ActiveMaterial->Id == 1);
+    }
+
+    // 4. No debug material instance → falls back to depth debug material
+    {
+        MockMaterial base{3};
+        MockMaterial wf{2};
+        MockVisualizer vis;
+        vis.bShowWireframe = true;
+        vis.WireframeMaterial = &wf;
+        vis.DebugMaterialInstance = nullptr;
+        vis.DepthDebugMaterial = &base;
+        vis.UpdateWireframe();
+        TEST("No DebugMatInst → base", vis.ActiveMaterial->Id == 2); // wireframe wins
+    }
+
+    // 5. Wireframe off, no debug instance → uses base material
+    {
+        MockMaterial base{3};
+        MockVisualizer vis;
+        vis.bShowWireframe = false;
+        vis.DebugMaterialInstance = nullptr;
+        vis.DepthDebugMaterial = &base;
+        vis.UpdateWireframe();
+        TEST("WireOff no inst → base", vis.ActiveMaterial->Id == 3);
+    }
+
+    // 6. Nothing set → ActiveMaterial stays null
+    {
+        MockVisualizer vis;
+        vis.UpdateWireframe();
+        TEST("Nothing set → null", vis.ActiveMaterial == nullptr);
+    }
+
+    // 7. Toggle wireframe on then off
+    {
+        MockMaterial solid{1};
+        MockMaterial wf{2};
+        MockVisualizer vis;
+        vis.DebugMaterialInstance = &solid;
+        vis.WireframeMaterial = &wf;
+
+        vis.bShowWireframe = true;
+        vis.UpdateWireframe();
+        TEST("Toggle on uses WF", vis.ActiveMaterial->Id == 2);
+
+        vis.bShowWireframe = false;
+        vis.UpdateWireframe();
+        TEST("Toggle off uses solid", vis.ActiveMaterial->Id == 1);
+    }
+
+    printf("  [WireframeMode: 8 tests]\n");
+}
+
+void TestOutlineArtConcept() {
+    printf("\n=== Outline Art Concept ===\n");
+
+    // Simulates the OutlineViewStates container and IsOutlineState checks
+
+    struct MockOutlineSet {
+        int States[10] = {}; // bitmask: 1 if state is outline
+        int Count = 0;
+
+        void Add(int S) { if (!Contains(S)) { States[S] = 1; Count++; } }
+        void Clear() { for (int i = 0; i < 10; ++i) States[i] = 0; Count = 0; }
+        bool Contains(int S) const { return S >= 0 && S < 10 && States[S] == 1; }
+    };
+
+    // 1. Default set: Front(0), RightProfile(2), LeftProfile(6), Top(8), Bottom(9)
+    {
+        MockOutlineSet S;
+        S.Add(0); S.Add(2); S.Add(6); S.Add(8); S.Add(9);
+        TEST("Default: Front is outline", S.Contains(0));
+        TEST("Default: 3QR not outline", !S.Contains(1));
+        TEST("Default: RightProf is outline", S.Contains(2));
+        TEST("Default: LeftProf is outline", S.Contains(6));
+        TEST("Default: Top is outline", S.Contains(8));
+        TEST("Default: Bottom is outline", S.Contains(9));
+        TEST("Default: BackR not outline", !S.Contains(3));
+        TEST("Default: Back not outline", !S.Contains(4));
+        TEST("Default: BackL not outline", !S.Contains(5));
+        TEST("Default: 3QL not outline", !S.Contains(7));
+    }
+
+    // 2. AddUnique prevents duplicates
+    {
+        MockOutlineSet S;
+        S.Add(0);
+        S.Add(0);
+        TEST("AddUnique: count=1", S.Count == 1);
+    }
+
+    // 3. Clear removes all
+    {
+        MockOutlineSet S;
+        S.Add(0); S.Add(2);
+        S.Clear();
+        TEST("Clear: empty", S.Count == 0);
+        TEST("Clear: Front not outline", !S.Contains(0));
+    }
+
+    // 4. Custom set — only Front and Top
+    {
+        MockOutlineSet S;
+        S.Add(0); S.Add(8);
+        TEST("Custom: Front is outline", S.Contains(0));
+        TEST("Custom: Top is outline", S.Contains(8));
+        TEST("Custom: RightProf not outline", !S.Contains(2));
+    }
+
+    // 5. Empty set — nothing is outline
+    {
+        MockOutlineSet S;
+        TEST("Empty: Front not outline", !S.Contains(0));
+        TEST("Empty: Top not outline", !S.Contains(8));
+    }
+
+    printf("  [OutlineArtConcept: 15 tests]\n");
+}
+
+void TestProfileVisualizerPropagation() {
+    printf("\n=== Profile→Visualizer Propagation ===\n");
+
+    // Simulates the propagation logic at the end of DetectFaceProfileFromPreset:
+    //   - GetOwner → FindComponentByClass<Visualizer> → SetProfileDimensions(HalfW, HalfH, HalfD)
+
+    struct MockVisualizer {
+        bool bDimensionsSet = false;
+        double ReceivedHalfW = 0.0;
+        double ReceivedHalfH = 0.0;
+        double ReceivedHalfD = 0.0;
+
+        void SetProfileDimensions(double HW, double HH, double HD) {
+            bDimensionsSet = true;
+            ReceivedHalfW = HW;
+            ReceivedHalfH = HH;
+            ReceivedHalfD = HD;
+        }
+    };
+
+    struct MockComponent {
+        bool bHasVisualizer = false;
+        MockVisualizer Vis;
+
+        MockVisualizer* FindVisualizer() {
+            return bHasVisualizer ? &Vis : nullptr;
+        }
+    };
+
+    // Simulate the propagation logic
+    auto PropagateProfile = [](MockComponent* Comp, double HW, double HH, double HD) {
+        if (MockVisualizer* V = Comp->FindVisualizer())
+        {
+            V->SetProfileDimensions(HW, HH, HD);
+        }
+    };
+
+    // 1. Visualizer present — dimensions are set
+    {
+        MockComponent Comp;
+        Comp.bHasVisualizer = true;
+        PropagateProfile(&Comp, 100.0, 150.0, 40.0);
+        TEST("Vis: dimensions set", Comp.Vis.bDimensionsSet);
+        TEST("Vis: halfWidth=100", std::abs(Comp.Vis.ReceivedHalfW - 100.0) < 1e-9);
+        TEST("Vis: halfHeight=150", std::abs(Comp.Vis.ReceivedHalfH - 150.0) < 1e-9);
+        TEST("Vis: halfDepth=40", std::abs(Comp.Vis.ReceivedHalfD - 40.0) < 1e-9);
+    }
+
+    // 2. No visualizer — no crash, no set
+    {
+        MockComponent Comp;
+        Comp.bHasVisualizer = false;
+        PropagateProfile(&Comp, 100.0, 150.0, 40.0);
+        TEST("NoVis: no crash", true);
+    }
+
+    // 3. Zero dimensions still propagate
+    {
+        MockComponent Comp;
+        Comp.bHasVisualizer = true;
+        PropagateProfile(&Comp, 0.0, 0.0, 0.0);
+        TEST("Zero: set called", Comp.Vis.bDimensionsSet);
+        TEST("Zero: halfW=0", std::abs(Comp.Vis.ReceivedHalfW - 0.0) < 1e-9);
+    }
+
+    // 4. Propagate after profile update (simulating re-detection)
+    {
+        MockComponent Comp;
+        Comp.bHasVisualizer = true;
+        PropagateProfile(&Comp, 100.0, 150.0, 40.0);
+        PropagateProfile(&Comp, 120.0, 160.0, 50.0);
+        TEST("Update: halfWidth=120", std::abs(Comp.Vis.ReceivedHalfW - 120.0) < 1e-9);
+        TEST("Update: halfHeight=160", std::abs(Comp.Vis.ReceivedHalfH - 160.0) < 1e-9);
+        TEST("Update: halfDepth=50", std::abs(Comp.Vis.ReceivedHalfD - 50.0) < 1e-9);
+    }
+
+    printf("  [ProfileVisualizerPropagation: 8 tests]\n");
+}
+
 int main() {
     printf("===== Face Parallax Math Tests =====\n\n");
 
@@ -3598,6 +4664,16 @@ int main() {
     TestCustomZoneBoundaryMultipliers();
     TestBlendPreview();
     TestStatusMatrix();
+    TestFNameExpressionViseme();
+    TestGetBoundaryOrDefault();
+    TestDepthRange();
+    TestDepthParamNames();
+    TestProfileVisualizerSizing();
+    TestProfileDetectionTopBottom();
+    TestProfileDetectionMultiLayer();
+    TestWireframeMode();
+    TestOutlineArtConcept();
+    TestProfileVisualizerPropagation();
 
     printf("\n===== Results: %d/%d passed (%d failed) =====\n",
         g_passed, g_total, g_total - g_passed);

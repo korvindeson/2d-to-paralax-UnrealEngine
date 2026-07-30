@@ -14,7 +14,9 @@
 | `DepthDebugVisualizerComponent.h/.cpp` | Procedural depth mesh from depth map texture |
 | `FaceParallaxPreviewActor.h/.cpp` | Preview actor with scene capture, orbit camera, part transform access |
 | `FaceParallaxEditorWidget.h/.cpp` | Editor widget — 221 UFUNCTIONs across 17 categories. Slate `RebuildWidget()` with inline lambdas (no string-dispatch). |
-| `Tests/ParallaxMathTests.cpp` | Standalone C++17 tests (no UE dep) — state machine, transforms, blink/expression/viseme, swoosh, parameters, nested art + jiggle, 3D pin projection, batch ops, zone multipliers (577 tests) |
+| `FaceParallaxDataModel.h/.cpp` | Shared data model — extracts preset mutation state from the widget for use by other systems. 90+ UFUNCTIONs. |
+| `FaceParallaxEditorSubsystem.h/.cpp` | Editor subsystem — toolbar registration, asset creation (material, MI, preset, BP), deploy pipeline. `UEditorSubsystem` subclass. |
+| `Tests/ParallaxMathTests.cpp` | Standalone C++17 tests (no UE dep) — state machine, transforms, blink/expression/viseme, swoosh, parameters, nested art + jiggle, 3D pin projection, batch ops, zone multipliers, FName exp/viseme resolution, GetBoundaryOrDefault (621 tests) |
 | `Tests/SyntaxValidator.py` | Python syntax validator — brace/macro balance, include guards |
 | `Tests/run_tests.ps1` | Master test runner — syntax validator + C++ math tests + optional UE build test |
 | `Tests/ue_build_test.ps1` | UE build test — compiles SAMPLES project with Build.bat, verifies DLL |
@@ -47,6 +49,8 @@
 | **`deploy.py` asset creation** — Python logic never run by tests | Material/instance/BP/preset creation, module registration, toolbar registration may regress |
 | **Runtime `TickComponent`** — requires UE session | Crossfades, parallax offsets, material param pushes, jiggle physics, idle animation untested |
 | **Crossfade animation timings** — no timing assertions | Fade curve precision, sync, or clipping could regress |
+| **`FaceParallaxEditorSubsystem` asset creation** — C++ compiled but never called in test | Master material, MI, preset, BP creation, toolbar registration path untested at runtime |
+| **`UFaceParallaxDataModel`** — compiles but never instantiated in test | Preset mutation, delegate broadcast, async load enqueue untested |
 
 ## Verify Your Changes
 

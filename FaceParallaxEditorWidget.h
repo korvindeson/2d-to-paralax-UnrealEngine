@@ -23,6 +23,7 @@
 class AFaceParallaxPreviewActor;
 class UFaceParallaxPreset;
 class UFaceParallaxComponent;
+class UFaceParallaxDataModel;
 
 UCLASS(BlueprintType, Blueprintable)
 class UFaceParallaxEditorWidget : public UUserWidget
@@ -40,6 +41,10 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Editor|Targets",
         meta = (DisplayName = "Active Preset"))
     TObjectPtr<UFaceParallaxPreset> ActivePreset;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Editor|Targets",
+        meta = (DisplayName = "Data Model"))
+    TObjectPtr<UFaceParallaxDataModel> DataModel;
 
     // ===== PRESET =====
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Preset")
@@ -406,6 +411,30 @@ public:
     TArray<EExpression> GetAssignedExpressions(EFaceAngleState State, FName LayerTag) const;
 
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Expression")
+    void SetExpressionByName(FName NewExpressionName);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Expression")
+    FName GetExpressionByName() const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Expression")
+    bool IsNamedExpressionValid() const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Expression")
+    void SetNamedExpressionTextures(EFaceAngleState State, FName LayerTag, FName ExpressionName, const FFaceTextureSet& Textures);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Expression")
+    FFaceTextureSet GetNamedExpressionTextures(EFaceAngleState State, FName LayerTag, FName ExpressionName) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Expression")
+    bool HasNamedExpressionTextures(EFaceAngleState State, FName LayerTag, FName ExpressionName) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Expression")
+    TArray<FName> GetAssignedNamedExpressions(EFaceAngleState State, FName LayerTag) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Expression")
+    void ClearNamedExpressionTextures(EFaceAngleState State, FName LayerTag, FName ExpressionName);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Expression")
     void SetExpressionBlendParamName(FName Name);
 
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Expression")
@@ -473,6 +502,33 @@ public:
 
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Viseme")
     void ClearAllVisemes(EFaceAngleState State, FName LayerTag, EExpression Expression);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Viseme")
+    void PlayVisemeByName(FName NewVisemeName);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Viseme")
+    FName GetVisemeByName() const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Viseme")
+    bool IsNamedVisemeValid() const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Viseme")
+    int32 GetNamedVisemeFrameCount(EFaceAngleState State, FName LayerTag, FName VisemeName) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Viseme")
+    void SetNamedVisemeFrameTextures(EFaceAngleState State, FName LayerTag, FName VisemeName, int32 FrameIndex, const FFaceTextureSet& Textures);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Viseme")
+    FFaceTextureSet GetNamedVisemeFrameTextures(EFaceAngleState State, FName LayerTag, FName VisemeName, int32 FrameIndex) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Viseme")
+    TArray<FName> GetAssignedNamedVisemes(EFaceAngleState State, FName LayerTag) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Viseme")
+    void ClearNamedVisemeFrames(EFaceAngleState State, FName LayerTag, FName VisemeName);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Viseme")
+    void ClearAllNamedVisemes(EFaceAngleState State, FName LayerTag);
 
     // ===== PARAMETER =====
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Parameter")
@@ -788,6 +844,7 @@ private:
 
     void LogDiagnostic(const FString& Message);
     void RunDiagnostics();
+    void ValidateMaterialParameters();
 
     bool ValidatePreset() const;
     bool ValidatePreviewActor() const;

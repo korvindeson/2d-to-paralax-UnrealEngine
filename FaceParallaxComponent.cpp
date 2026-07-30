@@ -49,6 +49,12 @@ UFaceParallaxComponent::UFaceParallaxComponent()
     DefaultLayer.DepthScale = 1.0f;
     DefaultLayer.bInvertParallax = false;
     LayerDefinitions.Add(DefaultLayer);
+
+    OutlineViewStates.Add(EFaceAngleState::Front);
+    OutlineViewStates.Add(EFaceAngleState::RightProfile);
+    OutlineViewStates.Add(EFaceAngleState::LeftProfile);
+    OutlineViewStates.Add(EFaceAngleState::Top);
+    OutlineViewStates.Add(EFaceAngleState::Bottom);
 }
 
 void UFaceParallaxComponent::BeginPlay()
@@ -698,6 +704,7 @@ void UFaceParallaxComponent::UpdateMaterialParameters()
         MPCInstance->SetScalarParameterValue(FName("DebugDepth"), bEnableMaterialDebugMode ? 1.0f : 0.0f);
         MPCInstance->SetScalarParameterValue(FName("IsTopDown"), bAnyTopOrBottom ? 1.0f : 0.0f);
         MPCInstance->SetScalarParameterValue(FName("IsTopView"), bIsTop ? 1.0f : 0.0f);
+        // DepthMin/DepthMax pushed per-MID below (per-layer values don't apply to shared MPC)
     }
 
     int32 GlobalLayerIdx = 0;
@@ -759,6 +766,17 @@ void UFaceParallaxComponent::UpdateMaterialParameters()
 
             Mat->SetVectorParameterValue(FName("ParallaxOffset"),
                 FLinearColor(BlendedOffset.X, BlendedOffset.Y, 0.0f, 0.0f));
+
+            // Per-layer depth range bounds for material-side depth map interpretation
+            float LayerDepthMin = 0.0f;
+            float LayerDepthMax = 1.0f;
+            if (GlobalLayerIdx < LayerDefinitions.Num())
+            {
+                LayerDepthMin = LayerDefinitions[GlobalLayerIdx].DepthMin;
+                LayerDepthMax = LayerDefinitions[GlobalLayerIdx].DepthMax;
+            }
+            Mat->SetScalarParameterValue(DepthMinParamName, LayerDepthMin);
+            Mat->SetScalarParameterValue(DepthMaxParamName, LayerDepthMax);
 
             // Previous state textures for crossfade blending
             if (PrevTexSet && PrevTexSet->IsValid())
@@ -823,18 +841,13 @@ void UFaceParallaxComponent::UpdateMaterialParameters()
             if (bIsVisemePlaying && ActivePreset)
             {
                 const FFaceArtSlot& VisemeSlot = ActivePreset->GetSlot(CurrentState, LayerTag);
-                const FFaceExpressionVisemeMap* ExprVisemes =
-                    VisemeSlot.VisemeFrameSets.Find(CurrentExpression);
-                if (ExprVisemes)
+                const FFaceVisemeFrameArray* VisemeFrames = ResolveVisemeFrames(VisemeSlot);
+                if (VisemeFrames && VisemeFrameIndex >= 0 && VisemeFrameIndex < VisemeFrames->Frames.Num())
                 {
-                    const FFaceVisemeFrameArray* VisemeFrames = ExprVisemes->Visemes.Find(CurrentViseme);
-                    if (VisemeFrames && VisemeFrameIndex >= 0 && VisemeFrameIndex < VisemeFrames->Frames.Num())
-                    {
-                        const FFaceTextureSet& VisemeFrame = VisemeFrames->Frames[VisemeFrameIndex];
-                        if (VisemeFrame.Albedo) Mat->SetTextureParameterValue(AlbedoParamName, VisemeFrame.Albedo);
-                        if (VisemeFrame.Normal) Mat->SetTextureParameterValue(NormalParamName, VisemeFrame.Normal);
-                        if (VisemeFrame.Depth)  Mat->SetTextureParameterValue(DepthParamName, VisemeFrame.Depth);
-                    }
+                    const FFaceTextureSet& VisemeFrame = VisemeFrames->Frames[VisemeFrameIndex];
+                    if (VisemeFrame.Albedo) Mat->SetTextureParameterValue(AlbedoParamName, VisemeFrame.Albedo);
+                    if (VisemeFrame.Normal) Mat->SetTextureParameterValue(NormalParamName, VisemeFrame.Normal);
+                    if (VisemeFrame.Depth)  Mat->SetTextureParameterValue(DepthParamName, VisemeFrame.Depth);
                 }
             }
 
@@ -1011,7 +1024,7 @@ void UFaceParallaxComponent::SetStateTextures(EFaceAngleState State)
         const FFaceArtSlot& Slot = ActivePreset->GetSlot(State, LayerTag);
 
         // Use expression texture variant if available for current expression
-        const FFaceTextureSet* ExprTex = Slot.ExpressionTextures.Find(CurrentExpression);
+        const FFaceTextureSet* ExprTex = ResolveExpressionTextureSet(Slot);
         const FFaceTextureSet& TexSet = ExprTex ? *ExprTex : Slot.Textures;
         if (!TexSet.IsValid()) continue;
 
@@ -1115,8 +1128,21 @@ void UFaceParallaxComponent::StopViseme()
     bIsVisemePlaying = false;
     VisemeFrameIndex = 0;
     VisemeFrameTimer = 0.0f;
+    CurrentNamedViseme = NAME_None;
 
     OnVisemeCompleted.Broadcast(CurrentState, PreviousState);
+}
+
+void UFaceParallaxComponent::PlayVisemeByName(FName NewVisemeName)
+{
+    if (!ActivePreset || !bVisemeEnabled) return;
+
+    CurrentNamedViseme = NewVisemeName;
+    VisemeFrameIndex = 0;
+    VisemeFrameTimer = 0.0f;
+    bIsVisemePlaying = true;
+
+    OnVisemeStarted.Broadcast(CurrentState, PreviousState);
 }
 
 void UFaceParallaxComponent::UpdateVisemeTick(float DeltaTime)
@@ -1138,15 +1164,10 @@ void UFaceParallaxComponent::UpdateVisemeTick(float DeltaTime)
     for (const auto& LayerPair : FaceMaterialsByLayer)
     {
         const FFaceArtSlot& Slot = ActivePreset->GetSlot(CurrentState, LayerPair.Key);
-        const FFaceExpressionVisemeMap* ExprVisemes =
-            Slot.VisemeFrameSets.Find(CurrentExpression);
-        if (ExprVisemes)
+        const FFaceVisemeFrameArray* VisemeFrames = ResolveVisemeFrames(Slot);
+        if (VisemeFrames)
         {
-            const FFaceVisemeFrameArray* VisemeFrames = ExprVisemes->Visemes.Find(CurrentViseme);
-            if (VisemeFrames)
-            {
-                MaxFrames = FMath::Max(MaxFrames, VisemeFrames->Frames.Num());
-            }
+            MaxFrames = FMath::Max(MaxFrames, VisemeFrames->Frames.Num());
         }
     }
 
@@ -1317,7 +1338,7 @@ void UFaceParallaxComponent::SetExpression(EExpression NewExpression)
     {
         FName LayerTag = LayerPair.Key;
         const FFaceArtSlot& Slot = ActivePreset->GetSlot(CurrentState, LayerTag);
-        const FFaceTextureSet* ExprTex = Slot.ExpressionTextures.Find(CurrentExpression);
+        const FFaceTextureSet* ExprTex = ResolveExpressionTextureSet(Slot);
         if (ExprTex && ExprTex->IsValid())
         {
             ExpressionPreviousTextureSets.Add(LayerTag, *ExprTex);
@@ -1330,10 +1351,42 @@ void UFaceParallaxComponent::SetExpression(EExpression NewExpression)
 
     PreviousExpression = CurrentExpression;
     CurrentExpression = NewExpression;
+    CurrentNamedExpression = NAME_None;
     ExpressionBlendAlpha = 0.0f;
     bExpressionTransitioning = true;
 
     // Push new expression textures
+    ApplyExpressionTextures(CurrentState);
+
+    OnExpressionChanged.Broadcast(CurrentState, PreviousState);
+}
+
+void UFaceParallaxComponent::SetExpressionByName(FName NewExpressionName)
+{
+    if (NewExpressionName == CurrentNamedExpression && !bExpressionTransitioning) return;
+
+    if (!ActivePreset) return;
+
+    ExpressionPreviousTextureSets.Reset();
+    for (const auto& LayerPair : FaceMaterialsByLayer)
+    {
+        FName LayerTag = LayerPair.Key;
+        const FFaceArtSlot& Slot = ActivePreset->GetSlot(CurrentState, LayerTag);
+        const FFaceTextureSet* ExprTex = ResolveExpressionTextureSet(Slot);
+        if (ExprTex && ExprTex->IsValid())
+        {
+            ExpressionPreviousTextureSets.Add(LayerTag, *ExprTex);
+        }
+        else if (Slot.Textures.IsValid())
+        {
+            ExpressionPreviousTextureSets.Add(LayerTag, Slot.Textures);
+        }
+    }
+
+    CurrentNamedExpression = NewExpressionName;
+    ExpressionBlendAlpha = 0.0f;
+    bExpressionTransitioning = true;
+
     ApplyExpressionTextures(CurrentState);
 
     OnExpressionChanged.Broadcast(CurrentState, PreviousState);
@@ -1368,7 +1421,7 @@ void UFaceParallaxComponent::ApplyExpressionTextures(EFaceAngleState State)
         FName LayerTag = LayerPair.Key;
         const FFaceArtSlot& Slot = ActivePreset->GetSlot(State, LayerTag);
 
-        const FFaceTextureSet* ExprTex = Slot.ExpressionTextures.Find(CurrentExpression);
+        const FFaceTextureSet* ExprTex = ResolveExpressionTextureSet(Slot);
         const FFaceTextureSet& TexSet = ExprTex ? *ExprTex : Slot.Textures;
 
         if (!TexSet.IsValid()) continue;
@@ -1383,6 +1436,30 @@ void UFaceParallaxComponent::ApplyExpressionTextures(EFaceAngleState State)
                 Mat->SetTextureParameterValue(DepthParamName, TexSet.Depth);
         }
     }
+}
+
+const FFaceTextureSet* UFaceParallaxComponent::ResolveExpressionTextureSet(const FFaceArtSlot& Slot) const
+{
+    if (CurrentNamedExpression != NAME_None)
+    {
+        const FFaceTextureSet* Found = Slot.NamedExpressionTextures.Find(CurrentNamedExpression);
+        if (Found) return Found;
+    }
+    return Slot.ExpressionTextures.Find(CurrentExpression);
+}
+
+const FFaceVisemeFrameArray* UFaceParallaxComponent::ResolveVisemeFrames(const FFaceArtSlot& Slot) const
+{
+    if (CurrentNamedViseme != NAME_None)
+    {
+        return Slot.NamedVisemeFrames.Find(CurrentNamedViseme);
+    }
+    const FFaceExpressionVisemeMap* ExprVisemes = Slot.VisemeFrameSets.Find(CurrentExpression);
+    if (ExprVisemes)
+    {
+        return ExprVisemes->Visemes.Find(CurrentViseme);
+    }
+    return nullptr;
 }
 
 // ====================================================================
@@ -1866,6 +1943,25 @@ void UFaceParallaxComponent::RemoveLayerDefinition(int32 Index)
         LayerDefinitions.RemoveAt(Index);
 }
 
+float UFaceParallaxComponent::GetLayerDepthMin(int32 LayerIndex) const
+{
+    if (LayerIndex < 0 || LayerIndex >= LayerDefinitions.Num()) return 0.0f;
+    return LayerDefinitions[LayerIndex].DepthMin;
+}
+
+float UFaceParallaxComponent::GetLayerDepthMax(int32 LayerIndex) const
+{
+    if (LayerIndex < 0 || LayerIndex >= LayerDefinitions.Num()) return 1.0f;
+    return LayerDefinitions[LayerIndex].DepthMax;
+}
+
+void UFaceParallaxComponent::SetLayerDepthRange(int32 LayerIndex, float Min, float Max)
+{
+    if (LayerIndex < 0 || LayerIndex >= LayerDefinitions.Num()) return;
+    LayerDefinitions[LayerIndex].DepthMin = FMath::Clamp(Min, -1.0f, 1.0f);
+    LayerDefinitions[LayerIndex].DepthMax = FMath::Clamp(Max, -1.0f, 1.0f);
+}
+
 FVector2D UFaceParallaxComponent::GetLayerParallaxOffset(int32 LayerIndex) const
 {
     if (LayerIndex < 0 || LayerIndex >= LayerParallaxOffsets.Num()) return FVector2D::ZeroVector;
@@ -1928,6 +2024,25 @@ void UFaceParallaxComponent::DetectFaceProfileFromPreset()
 {
     if (!ActivePreset) return;
 
+    // Helper: scan all layers for a state, return max width/height
+    auto GetMaxTexDimensions = [this](EFaceAngleState State, int32& OutMaxW, int32& OutMaxH) {
+        OutMaxW = 0;
+        OutMaxH = 0;
+        if (!ActivePreset->HasState(State)) return;
+        TArray<FName> Tags = ActivePreset->GetAllLayerTags(State);
+        for (FName Tag : Tags)
+        {
+            const FFaceArtSlot& Slot = ActivePreset->GetSlot(State, Tag);
+            OutMaxW = FMath::Max(OutMaxW, Slot.Textures.SourceTexWidth);
+            OutMaxH = FMath::Max(OutMaxH, Slot.Textures.SourceTexHeight);
+        }
+    };
+
+    // Helper: check if a state should be considered for profile extraction
+    auto IsOutlineState = [this](EFaceAngleState S) -> bool {
+        return OutlineViewStates.Contains(S);
+    };
+
     TArray<EFaceAngleState> AllStates = {
         EFaceAngleState::Front, EFaceAngleState::ThreeQuarterRight,
         EFaceAngleState::RightProfile, EFaceAngleState::BackRight,
@@ -1937,54 +2052,86 @@ void UFaceParallaxComponent::DetectFaceProfileFromPreset()
     };
 
     // First pass: use Front state for width/height, RightProfile/LeftProfile for depth
-    TArray<FName> FrontLayers = ActivePreset->GetAllLayerTags(EFaceAngleState::Front);
-    if (FrontLayers.Num() > 0)
+    int32 FrontWidth = 0, FrontHeight = 0;
+    if (IsOutlineState(EFaceAngleState::Front))
     {
-        const FFaceArtSlot& Slot = ActivePreset->GetSlot(EFaceAngleState::Front, FrontLayers[0]);
-        if (Slot.Textures.Albedo || Slot.Textures.SoftAlbedo.IsValid())
+        GetMaxTexDimensions(EFaceAngleState::Front, FrontWidth, FrontHeight);
+        if (FrontWidth > 0) FaceProfile.FaceHalfWidth = (float)FrontWidth * 0.5f;
+        if (FrontHeight > 0) FaceProfile.FaceHalfHeight = (float)FrontHeight * 0.5f;
+    }
+
+    // Cross-reference Top/Bottom views for height and depth validation
+    int32 TopW = 0, TopH = 0;
+    if (IsOutlineState(EFaceAngleState::Top))
+    {
+        GetMaxTexDimensions(EFaceAngleState::Top, TopW, TopH);
+        if (TopW > 0 && FrontWidth > 0 && FMath::Abs(FrontWidth - TopW) > 1)
         {
-            int32 TexW = Slot.Textures.SourceTexWidth;
-            int32 TexH = Slot.Textures.SourceTexHeight;
-            if (TexW > 0) FaceProfile.FaceHalfWidth = (float)TexW * 0.5f;
-            if (TexH > 0) FaceProfile.FaceHalfHeight = (float)TexH * 0.5f;
+            UE_LOG(LogTemp, Warning,
+                TEXT("[DetectFaceProfile] Front width %d differs from Top width %d — art may be misaligned."),
+                FrontWidth, TopW);
+        }
+        if (FrontHeight <= 0 && TopH > 0)
+        {
+            FaceProfile.FaceHalfHeight = (float)TopH * 0.5f;
         }
     }
 
-    TArray<FName> ProfileLayers = ActivePreset->GetAllLayerTags(EFaceAngleState::RightProfile);
-    if (ProfileLayers.Num() > 0)
+    int32 BotW = 0, BotH = 0;
+    if (IsOutlineState(EFaceAngleState::Bottom))
     {
-        const FFaceArtSlot& Slot = ActivePreset->GetSlot(EFaceAngleState::RightProfile, ProfileLayers[0]);
-        int32 TexW = Slot.Textures.SourceTexWidth;
-        if (TexW > 0) FaceProfile.FaceHalfDepth = (float)TexW * 0.5f;
+        GetMaxTexDimensions(EFaceAngleState::Bottom, BotW, BotH);
+        if (BotW > 0 && FrontWidth > 0 && FMath::Abs(FrontWidth - BotW) > 1)
+        {
+            UE_LOG(LogTemp, Warning,
+                TEXT("[DetectFaceProfile] Front width %d differs from Bottom width %d — art may be misaligned."),
+                FrontWidth, BotW);
+        }
+        if (BotH > 0 && FrontHeight > 0 && FMath::Abs(FrontHeight - BotH) > 1)
+        {
+            UE_LOG(LogTemp, Warning,
+                TEXT("[DetectFaceProfile] Front height %d differs from Bottom height %d — art may be misaligned."),
+                FrontHeight, BotH);
+        }
+        if (FrontHeight <= 0 && BotH > 0 && FaceProfile.FaceHalfHeight <= 0.5f)
+        {
+            FaceProfile.FaceHalfHeight = (float)BotH * 0.5f;
+        }
     }
 
+    // Depth from profile views (scan all layers)
+    if (IsOutlineState(EFaceAngleState::RightProfile))
+    {
+        int32 RightProfW = 0, RightProfH = 0;
+        GetMaxTexDimensions(EFaceAngleState::RightProfile, RightProfW, RightProfH);
+        if (RightProfW > 0) FaceProfile.FaceHalfDepth = (float)RightProfW * 0.5f;
+    }
+
+    if (FaceProfile.FaceHalfDepth <= 0.5f && IsOutlineState(EFaceAngleState::LeftProfile))
+    {
+        int32 LeftProfW = 0, LeftProfH = 0;
+        GetMaxTexDimensions(EFaceAngleState::LeftProfile, LeftProfW, LeftProfH);
+        if (LeftProfW > 0) FaceProfile.FaceHalfDepth = (float)LeftProfW * 0.5f;
+    }
+
+    // Depth fallback from Top/Bottom height
     if (FaceProfile.FaceHalfDepth <= 0.5f)
     {
-        TArray<FName> LeftProfileLayers = ActivePreset->GetAllLayerTags(EFaceAngleState::LeftProfile);
-        if (LeftProfileLayers.Num() > 0)
-        {
-            const FFaceArtSlot& Slot = ActivePreset->GetSlot(EFaceAngleState::LeftProfile, LeftProfileLayers[0]);
-            int32 TexW = Slot.Textures.SourceTexWidth;
-            if (TexW > 0) FaceProfile.FaceHalfDepth = (float)TexW * 0.5f;
-        }
+        if (TopH > 0) FaceProfile.FaceHalfDepth = (float)TopH * 0.5f;
+        else if (BotH > 0) FaceProfile.FaceHalfDepth = (float)BotH * 0.5f;
     }
 
-    // Fallback: scan all states for max dimensions
+    // Fallback: scan outline states for max dimensions
     if (FaceProfile.FaceHalfWidth <= 0.5f || FaceProfile.FaceHalfHeight <= 0.5f)
     {
         float MaxWidth = 0.0f, MaxHeight = 0.0f;
         for (EFaceAngleState S : AllStates)
         {
-            if (!ActivePreset->HasState(S)) continue;
-            TArray<FName> Tags = ActivePreset->GetAllLayerTags(S);
-            for (FName Tag : Tags)
-            {
-                const FFaceArtSlot& Slot = ActivePreset->GetSlot(S, Tag);
-                int32 TexW = Slot.Textures.SourceTexWidth;
-                int32 TexH = Slot.Textures.SourceTexHeight;
-                if (TexW > 0) MaxWidth = FMath::Max(MaxWidth, (float)TexW);
-                if (TexH > 0) MaxHeight = FMath::Max(MaxHeight, (float)TexH);
-            }
+            if (!IsOutlineState(S)) continue;
+            int32 S_W = 0, S_H = 0;
+            GetMaxTexDimensions(S, S_W, S_H);
+            if (S_W > 0) MaxWidth = FMath::Max(MaxWidth, (float)S_W);
+            if (S_H > 0) MaxHeight = FMath::Max(MaxHeight, (float)S_H);
         }
         if (MaxWidth > 0.0f && FaceProfile.FaceHalfWidth <= 0.5f)
             FaceProfile.FaceHalfWidth = MaxWidth * 0.5f;
@@ -1992,6 +2139,16 @@ void UFaceParallaxComponent::DetectFaceProfileFromPreset()
             FaceProfile.FaceHalfHeight = MaxHeight * 0.5f;
         if (MaxWidth > 0.0f && FaceProfile.FaceHalfDepth <= 0.5f)
             FaceProfile.FaceHalfDepth = MaxWidth * 0.5f;
+    }
+
+    // Propagate profile to depth debug visualizer if present
+    if (AActor* Owner = GetOwner())
+    {
+        UDepthDebugVisualizerComponent* Vis = Owner->FindComponentByClass<UDepthDebugVisualizerComponent>();
+        if (Vis)
+        {
+            Vis->SetProfileDimensions(FaceProfile.FaceHalfWidth, FaceProfile.FaceHalfHeight, FaceProfile.FaceHalfDepth);
+        }
     }
 }
 
@@ -2017,6 +2174,31 @@ FVector2D UFaceParallaxComponent::GetNestedEffectivePivot(EFaceAngleState State,
     const FFaceArtSlot& Slot = ActivePreset->GetSlot(State, LayerTag);
     if (Index < 0 || Index >= Slot.NestedElements.Num()) return FVector2D(0.5f, 0.5f);
     return GetEffectivePivot(Slot.NestedElements[Index]);
+}
+
+// --- OUTLINE ART CONCEPT ---
+
+void UFaceParallaxComponent::SetOutlineViewState(EFaceAngleState State)
+{
+    OutlineViewStates.AddUnique(State);
+}
+
+void UFaceParallaxComponent::ClearOutlineViewStates()
+{
+    OutlineViewStates.Empty();
+}
+
+bool UFaceParallaxComponent::IsOutlineViewState(EFaceAngleState State) const
+{
+    return OutlineViewStates.Contains(State);
+}
+
+TArray<EFaceAngleState> UFaceParallaxComponent::GetOutlineViewStates() const
+{
+    TArray<EFaceAngleState> Result;
+    for (const auto& E : OutlineViewStates)
+        Result.Add(E);
+    return Result;
 }
 
 // ====================================================================
@@ -2203,6 +2385,23 @@ void UFaceParallaxComponent::AsyncLoadSlotTextures(EFaceAngleState State, FName 
         QueuePath(ExprPair.Value.SoftAlbedo);
         QueuePath(ExprPair.Value.SoftNormal);
         QueuePath(ExprPair.Value.SoftDepth);
+    }
+
+    for (const auto& NamedExprPair : Slot.NamedExpressionTextures)
+    {
+        QueuePath(NamedExprPair.Value.SoftAlbedo);
+        QueuePath(NamedExprPair.Value.SoftNormal);
+        QueuePath(NamedExprPair.Value.SoftDepth);
+    }
+
+    for (const auto& VisemePair : Slot.NamedVisemeFrames)
+    {
+        for (const FFaceTextureSet& FT : VisemePair.Value.Frames)
+        {
+            QueuePath(FT.SoftAlbedo);
+            QueuePath(FT.SoftNormal);
+            QueuePath(FT.SoftDepth);
+        }
     }
 
     if (PathsToLoad.Num() > 0)

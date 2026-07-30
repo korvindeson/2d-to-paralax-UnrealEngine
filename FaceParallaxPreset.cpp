@@ -22,7 +22,9 @@ FFaceArtSlot UFaceParallaxPreset::GetSlot(EFaceAngleState State, FName LayerTag)
 void UFaceParallaxPreset::SetSlot(EFaceAngleState State, FName LayerTag, const FFaceArtSlot& Slot)
 {
     FFaceViewStateLayerSet& StateSet = ViewAssignments.FindOrAdd(State);
-    StateSet.Layers.Add(LayerTag, Slot);
+    FFaceArtSlot& Added = StateSet.Layers.FindOrAdd(LayerTag);
+    Added = Slot;
+    Added.Textures.SyncSoftRefs();
 }
 
 FFaceTextureSet UFaceParallaxPreset::GetTexturesForSlot(EFaceAngleState State, FName LayerTag) const
@@ -43,6 +45,7 @@ void UFaceParallaxPreset::SetTexturesForSlot(EFaceAngleState State, FName LayerT
     FFaceArtSlot& Slot = StateSet.Layers.FindOrAdd(LayerTag);
     Slot.Textures = Textures;
     Slot.Textures.CaptureSourceSize();
+    Slot.Textures.SyncSoftRefs();
 
     if (bAutoFitOnAssign && Slot.CanonicalTransform.IsIdentity())
     {

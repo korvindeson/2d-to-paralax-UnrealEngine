@@ -23,6 +23,12 @@ public:
     void SetVisualizerEnabled(bool bEnabled);
 
     UFUNCTION(BlueprintCallable, Category = "Depth Debug Visualizer")
+    void SetWireframeEnabled(bool bEnabled) { bShowWireframe = bEnabled; UpdateWireframeMode(); }
+
+    UFUNCTION(BlueprintCallable, Category = "Depth Debug Visualizer")
+    bool GetWireframeEnabled() const { return bShowWireframe; }
+
+    UFUNCTION(BlueprintCallable, Category = "Depth Debug Visualizer")
     void RebuildMeshFromDepthMap(UTexture2D* DepthMapTexture);
 
 protected:
@@ -37,17 +43,37 @@ public:
         meta = (ClampMin = "8", ClampMax = "256", UIMin = "8", UIMax = "256"))
     int32 GridResolution = 48;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Depth Debug Visualizer|Settings")
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Depth Debug Visualizer|Settings",
+        meta = (DisplayName = "Fallback Mesh Size (used when no profile set)"))
     float MeshSize = 30.0f;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Depth Debug Visualizer|Settings")
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Depth Debug Visualizer|Settings",
+        meta = (DisplayName = "Fallback Height Scale (used when no profile set)"))
     float HeightScale = 10.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Depth Debug Visualizer|Settings",
+        meta = (DisplayName = "Profile Half Width (0=use Fallback Mesh)"))
+    float ProfileHalfWidth = 0.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Depth Debug Visualizer|Settings",
+        meta = (DisplayName = "Profile Half Depth (0=use Fallback Height)"))
+    float ProfileHalfDepth = 0.0f;
+
+    UFUNCTION(BlueprintCallable, Category = "Depth Debug Visualizer|Settings")
+    void SetProfileDimensions(float HalfWidth, float HalfHeight, float HalfDepth) { ProfileHalfWidth = HalfWidth; ProfileHalfDepth = HalfDepth; }
+
+    UFUNCTION(BlueprintCallable, Category = "Depth Debug Visualizer|Settings")
+    void ClearProfileDimensions() { ProfileHalfWidth = 0.0f; ProfileHalfDepth = 0.0f; }
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Depth Debug Visualizer|Settings")
     FVector LocalOffset = FVector(0.0f, 0.0f, 25.0f);
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Depth Debug Visualizer|Settings")
     bool bShowWireframe = false;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Depth Debug Visualizer|Settings",
+        meta = (EditCondition = "bShowWireframe"))
+    UMaterialInterface* WireframeMaterial = nullptr;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Depth Debug Visualizer|Settings")
     bool bUseVertexColors = true;
