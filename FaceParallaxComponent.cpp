@@ -177,6 +177,14 @@ void UFaceParallaxComponent::TickComponent(float DeltaTime, ELevelTick TickType,
     PreviousFramePitch = DeltaPitch;
 
     UpdateStateMachine(DeltaYaw, DeltaPitch, DeltaTime, AngularVelocity);
+
+    // Blend preview override: force BlendAlpha when editor preview is active
+    if (bBlendPreviewOverride)
+    {
+        BlendAlpha = BlendPreviewAlpha;
+        bIsInTransition = true;
+    }
+
     UpdateParallaxOffsets(DeltaTime);
     UpdateBlinkTick(DeltaTime);
     UpdateExpressionTick(DeltaTime);
@@ -1557,7 +1565,23 @@ FFaceArtTransform UFaceParallaxComponent::ComputeNestedEffectiveTransform(
     const FFaceNestedArt& Element, const FFaceArtTransform& ParentTransform, const FVector2D& JiggleOffset) const
 {
     FFaceArtTransform Result;
-    Result.Position = ParentTransform.Position + Element.RelativeTransform.Position + JiggleOffset;
+    FVector2D BasePos = ParentTransform.Position + Element.RelativeTransform.Position;
+    FVector2D PinOffset = FVector2D::ZeroVector;
+
+    // When pinned, project the 3D pin at the live camera angle and compute
+    // a position offset that keeps the element attached to the 3D point.
+    if (Element.Pin3D.bPinned)
+    {
+        FVector2D PinnedUV = ProjectPinToUVInternal(Element.Pin3D.Position3D, CurrentState);
+        // Reference: the unpinned pivot is the element's PivotPoint (0..1).
+        // Map UV delta to a position offset relative to canvas size.
+        FVector2D UVDelta = PinnedUV - Element.PivotPoint;
+        float CanvasW = ActivePreset ? ActivePreset->CanvasSize.X : 512.0f;
+        float CanvasH = ActivePreset ? ActivePreset->CanvasSize.Y : 512.0f;
+        PinOffset = FVector2D(UVDelta.X * CanvasW, UVDelta.Y * CanvasH);
+    }
+
+    Result.Position = BasePos + PinOffset + JiggleOffset;
     Result.Scale = ParentTransform.Scale * Element.RelativeTransform.Scale;
     Result.Rotation = ParentTransform.Rotation + Element.RelativeTransform.Rotation;
     return Result;
@@ -1653,6 +1677,17 @@ void UFaceParallaxComponent::SetLayerDefinition(int32 Index, const FFaceLayerDef
     LayerDefinitions[Index] = Def;
 }
 
+void UFaceParallaxComponent::AddLayerDefinition(const FFaceLayerDef& Def)
+{
+    LayerDefinitions.Add(Def);
+}
+
+void UFaceParallaxComponent::RemoveLayerDefinition(int32 Index)
+{
+    if (Index >= 0 && Index < LayerDefinitions.Num())
+        LayerDefinitions.RemoveAt(Index);
+}
+
 FVector2D UFaceParallaxComponent::GetLayerParallaxOffset(int32 LayerIndex) const
 {
     if (LayerIndex < 0 || LayerIndex >= LayerParallaxOffsets.Num()) return FVector2D::ZeroVector;
@@ -1672,8 +1707,10 @@ FVector2D UFaceParallaxComponent::GetEffectivePivot(const FFaceNestedArt& Elemen
 
 FVector2D UFaceParallaxComponent::ProjectPinToUVInternal(const FVector& Pin3D, EFaceAngleState ViewState) const
 {
-    float YawDeg = GetZoneCenterYaw(ViewState);
-    float PitchDeg = GetZoneCenterPitch(ViewState);
+    // Use live camera angle for continuous tracking; fall back to zone center
+    // for the public BP API (which passes a specific state).
+    float YawDeg = CurrentYaw;
+    float PitchDeg = CurrentPitch;
 
     float YawRad = FMath::DegreesToRadians(YawDeg);
     float CosY = FMath::Cos(YawRad);
@@ -1777,4 +1814,148 @@ FVector2D UFaceParallaxComponent::GetNestedEffectivePivot(EFaceAngleState State,
     const FFaceArtSlot& Slot = ActivePreset->GetSlot(State, LayerTag);
     if (Index < 0 || Index >= Slot.NestedElements.Num()) return FVector2D(0.5f, 0.5f);
     return GetEffectivePivot(Slot.NestedElements[Index]);
+}
+
+// ====================================================================
+// EDITOR BLEND PREVIEW
+// ====================================================================
+
+void UFaceParallaxComponent::SetBlendPreview(float Alpha)
+{
+    bBlendPreviewOverride = true;
+    BlendPreviewAlpha = FMath::Clamp(Alpha, 0.0f, 1.0f);
+}
+
+void UFaceParallaxComponent::ClearBlendPreview()
+{
+    bBlendPreviewOverride = false;
+    BlendPreviewAlpha = 0.5f;
+}
+
+// ====================================================================
+// ZONE MATH — editor-facing helpers
+// ====================================================================
+
+FName UFaceParallaxComponent::GetStateLabel(EFaceAngleState State)
+{
+    switch (State)
+    {
+        case EFaceAngleState::Front: return TEXT("Front");
+        case EFaceAngleState::ThreeQuarterRight: return TEXT("3/4 R");
+        case EFaceAngleState::RightProfile: return TEXT("Profile R");
+        case EFaceAngleState::BackRight: return TEXT("Back R");
+        case EFaceAngleState::Back: return TEXT("Back");
+        case EFaceAngleState::BackLeft: return TEXT("Back L");
+        case EFaceAngleState::LeftProfile: return TEXT("Profile L");
+        case EFaceAngleState::ThreeQuarterLeft: return TEXT("3/4 L");
+        case EFaceAngleState::Top: return TEXT("Top");
+        case EFaceAngleState::Bottom: return TEXT("Bottom");
+    }
+    return TEXT("?");
+}
+
+FLinearColor UFaceParallaxComponent::GetStateColor(EFaceAngleState State)
+{
+    switch (State)
+    {
+        case EFaceAngleState::Front: return FLinearColor(0.6f, 0.8f, 1.0f);
+        case EFaceAngleState::ThreeQuarterRight: return FLinearColor(0.5f, 0.7f, 1.0f);
+        case EFaceAngleState::RightProfile: return FLinearColor(0.4f, 0.6f, 1.0f);
+        case EFaceAngleState::BackRight: return FLinearColor(0.5f, 0.5f, 0.7f);
+        case EFaceAngleState::Back: return FLinearColor(0.4f, 0.4f, 0.6f);
+        case EFaceAngleState::BackLeft: return FLinearColor(0.5f, 0.5f, 0.7f);
+        case EFaceAngleState::LeftProfile: return FLinearColor(0.4f, 0.6f, 1.0f);
+        case EFaceAngleState::ThreeQuarterLeft: return FLinearColor(0.5f, 0.7f, 1.0f);
+        case EFaceAngleState::Top: return FLinearColor(0.6f, 1.0f, 0.6f);
+        case EFaceAngleState::Bottom: return FLinearColor(1.0f, 0.6f, 0.6f);
+    }
+    return FLinearColor(0.5f, 0.5f, 0.5f);
+}
+
+// ====================================================================
+// PARAM REFERENCE — find which slots use a given material param name
+// ====================================================================
+
+TArray<FString> UFaceParallaxComponent::FindParamNameReferences(FName ParamName) const
+{
+    TArray<FString> Results;
+
+    // Check component-level param names
+    struct FNamed { const FName& Name; const TCHAR* Desc; };
+    FNamed ToCheck[] = {
+        { AlbedoParamName, TEXT("AlbedoTexture") },
+        { NormalParamName, TEXT("NormalTexture") },
+        { DepthParamName, TEXT("DepthTexture") },
+        { AlbedoPrevParamName, TEXT("AlbedoPrev") },
+        { NormalPrevParamName, TEXT("NormalPrev") },
+        { DepthPrevParamName, TEXT("DepthPrev") },
+        { ArtPositionParamName, TEXT("ArtPosition") },
+        { ArtScaleParamName, TEXT("ArtScale") },
+        { ArtRotationParamName, TEXT("ArtRotation") },
+        { ExpressionBlendParamName, TEXT("ExpressionBlendAlpha") },
+        { ExpressionAlbedoPrevParamName, TEXT("ExpressionAlbedoPrev") },
+        { ExpressionNormalPrevParamName, TEXT("ExpressionNormalPrev") },
+        { ExpressionDepthPrevParamName, TEXT("ExpressionDepthPrev") },
+        { ParamBlendParamName, TEXT("ParamBlendAlpha") },
+        { ParamAltAlbedoParamName, TEXT("AltAlbedo") },
+        { ParamAltNormalParamName, TEXT("AltNormal") },
+        { ParamAltDepthParamName, TEXT("AltDepth") },
+        { ArtPivotParamName, TEXT("ArtPivot") },
+        { NestedAnimParamName, TEXT("NestedAnimFrame") },
+        { SwooshLayerBlendParamName, TEXT("SwooshLayerBlend") },
+        { SwooshIntensityParamName, TEXT("SwooshIntensity") },
+        { SwooshAngleParamName, TEXT("SwooshAngle") },
+        { SwooshSizeParamName, TEXT("SwooshSize") },
+        { SwooshTextureParamName, TEXT("SwooshTexture") },
+    };
+
+    for (const auto& Item : ToCheck)
+    {
+        if (Item.Name == ParamName)
+        {
+            Results.Add(FString::Printf(TEXT("[Component] %s"), Item.Desc));
+        }
+    }
+
+    // Check each slot in the preset
+    if (ActivePreset)
+    {
+        TArray<EFaceAngleState> States = {
+            EFaceAngleState::Front, EFaceAngleState::ThreeQuarterRight,
+            EFaceAngleState::RightProfile, EFaceAngleState::BackRight,
+            EFaceAngleState::Back, EFaceAngleState::BackLeft,
+            EFaceAngleState::LeftProfile, EFaceAngleState::ThreeQuarterLeft,
+            EFaceAngleState::Top, EFaceAngleState::Bottom
+        };
+        for (EFaceAngleState St : States)
+        {
+            TArray<FName> Tags = ActivePreset->GetLayerTagsForState(St);
+            for (FName Tag : Tags)
+            {
+                const FFaceArtSlot& Slot = ActivePreset->GetSlot(St, Tag);
+                for (const FFaceParamBinding& B : Slot.ParamBindings)
+                {
+                    if (B.ParamName == ParamName)
+                    {
+                        Results.Add(FString::Printf(TEXT("[Slot %s / %s] ParamBinding"),
+                            *UFaceParallaxComponent::GetStateLabel(St).ToString(), *Tag.ToString()));
+                    }
+                }
+                for (const FFaceNestedArt& N : Slot.NestedElements)
+                {
+                    for (const FFaceParamBinding& B : N.ParamBindings)
+                    {
+                        if (B.ParamName == ParamName)
+                        {
+                            Results.Add(FString::Printf(TEXT("[Nested %s / %s / %s] ParamBinding"),
+                                *UFaceParallaxComponent::GetStateLabel(St).ToString(),
+                                *Tag.ToString(), *N.ElementName.ToString()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return Results;
 }

@@ -4,15 +4,18 @@
 #include "Blueprint/UserWidget.h"
 
 #include "Styling/SlateBrush.h"
+#include "Styling/SlateColor.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Input/SSlider.h"
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Input/SSearchBox.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SScrollBox.h"
 #include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SGridPanel.h"
 #include "Widgets/Layout/SWidgetSwitcher.h"
 #include "Widgets/SBoxPanel.h"
 #include "FaceParallaxTypes.h"
@@ -737,6 +740,38 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Face Editor|UI")
     class UTexture2D* GetSelectedContentBrowserTexture();
 
+    // ===== ZONE DIAGRAM =====
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|UI")
+    void SetBlendPreview(float Alpha);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|UI")
+    void ClearBlendPreview();
+
+    // ===== STATUS MATRIX =====
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Status")
+    TArray<EFaceAngleState> GetMissingStates() const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Status")
+    TArray<FName> GetMissingLayers(EFaceAngleState State) const;
+
+    // ===== CROSS-LAYER OVERLAY =====
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Status")
+    TArray<FString> GetAllLayerTransforms(EFaceAngleState State) const;
+
+    // ===== PARAM REFERENCE =====
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Status")
+    TArray<FString> FindParamUsages(FName ParamName) const;
+
+    // ===== SNAPSHOT / UNDO =====
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Preset")
+    void SnapshotPreset();
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Preset")
+    void RestoreSnapshot();
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Preset")
+    bool HasSnapshot() const;
+
 private:
     EFaceAngleState ActiveViewState = EFaceAngleState::Front;
     FName SelectedLayerName;
@@ -754,6 +789,7 @@ private:
     void RefreshTextureThumbs();
     void RefreshTimeline();
     void RefreshTransformSliders();
+    void RefreshConfigCheckboxes();
 
     FSlateBrush PreviewBrush;
     FSlateBrush ThumbBrushA;
@@ -777,4 +813,68 @@ private:
     TSharedPtr<SEditableTextBox> EditScaleX;
     TSharedPtr<SEditableTextBox> EditScaleY;
     TSharedPtr<SEditableTextBox> EditRot;
+
+    // Nested art pin sliders
+    TSharedPtr<SSlider> SliderPinX;
+    TSharedPtr<SSlider> SliderPinY;
+    TSharedPtr<SSlider> SliderPinZ;
+
+    // Config checkboxes
+    TSharedPtr<SCheckBox> CheckBlinking;
+    TSharedPtr<SCheckBox> CheckSwoosh;
+    TSharedPtr<SCheckBox> CheckNestedArt;
+    TSharedPtr<SCheckBox> CheckParams;
+    TSharedPtr<SCheckBox> CheckShowTextures;
+    TSharedPtr<SCheckBox> CheckDepthMesh;
+    TSharedPtr<SCheckBox> CheckWireframe;
+    TSharedPtr<SCheckBox> CheckColorByDepth;
+    TSharedPtr<SVerticalBox> CfgBox;
+
+    TSet<FName> HiddenLayers;
+
+    bool bLocalShowTextures = false;
+    bool bLocalShowDepthMesh = false;
+    bool bLocalShowWireframe = false;
+    bool bLocalColorByDepth = false;
+
+    // Help text popup
+    TSharedPtr<SWidget> HelpWindow;
+
+    // ===== ZONE DIAGRAM =====
+    TSharedPtr<SWidget> ZoneDiagramWidget;
+    TSharedPtr<STextBlock> ZoneYawLabel;
+    TSharedPtr<STextBlock> ZonePitchLabel;
+
+    // ===== BLEND PREVIEW =====
+    TSharedPtr<SSlider> BlendPreviewSlider;
+    TSharedPtr<STextBlock> BlendPreviewLabel;
+
+    // ===== STATUS MATRIX =====
+    TSharedPtr<SGridPanel> StatusMatrixGrid;
+    TSharedPtr<SScrollBox> StatusMatrixScroll;
+
+    // ===== CROSS-LAYER OVERLAY =====
+    TSharedPtr<SVerticalBox> CrossLayerBox;
+    TSharedPtr<SScrollBox> CrossLayerScroll;
+    TSharedPtr<STextBlock> TextCrossLayer;
+
+    // ===== SEARCH =====
+    TSharedPtr<SSearchBox> SearchBox;
+    FString SearchFilter;
+
+    // ===== PARAM REFERENCE =====
+    TSharedPtr<STextBlock> TextParamRefResults;
+    TSharedPtr<SEditableTextBox> EditParamRefName;
+
+    // ===== SNAPSHOT / UNDO =====
+    UPROPERTY()
+    TObjectPtr<UFaceParallaxPreset> SnapshotPresetBackup;
+
+    // ===== INTERNAL HELPERS =====
+    void RebuildZoneDiagram();
+    void RebuildStatusMatrix();
+    void RebuildCrossLayerPanel();
+    void ApplySearchFilter(const FString& Filter);
+
+    TSharedPtr<SScrollBox> PropScroll;
 };

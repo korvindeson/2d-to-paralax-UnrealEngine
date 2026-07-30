@@ -341,6 +341,10 @@ public:
     FFaceLayerDef GetLayerDefinition(int32 Index) const;
     UFUNCTION(BlueprintCallable, Category = "Face Parallax|Parallax")
     void SetLayerDefinition(int32 Index, const FFaceLayerDef& Def);
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Parallax")
+    void AddLayerDefinition(const FFaceLayerDef& Def);
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Parallax")
+    void RemoveLayerDefinition(int32 Index);
 
     UFUNCTION(BlueprintCallable, Category = "Face Parallax|Parallax")
     FVector2D GetLayerParallaxOffset(int32 LayerIndex) const;
@@ -715,6 +719,31 @@ public:
 
     UPROPERTY(BlueprintReadOnly, Category = "Face Parallax|Debug")
     bool bIsInTransition;
+
+    // --- EDITOR BLEND PREVIEW ---
+    UPROPERTY(BlueprintReadWrite, Category = "Face Parallax|Debug")
+    bool bBlendPreviewOverride = false;
+
+    UPROPERTY(BlueprintReadWrite, Category = "Face Parallax|Debug",
+        meta = (ClampMin = "0.0", ClampMax = "1.0"))
+    float BlendPreviewAlpha = 0.5f;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Debug")
+    void SetBlendPreview(float Alpha);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Debug")
+    void ClearBlendPreview();
+
+    // --- ZONE MATH (editor-facing) ---
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Debug")
+    static FName GetStateLabel(EFaceAngleState State);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Debug")
+    static FLinearColor GetStateColor(EFaceAngleState State);
+
+    // --- PARAM REFERENCE (editor-facing) ---
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Debug")
+    TArray<FString> FindParamNameReferences(FName ParamName) const;
 
     // --- ACCESSORS FOR EDITOR ---
     TMap<FName, TArray<UMaterialInstanceDynamic*>>& GetMaterialLayers() { return FaceMaterialsByLayer; }

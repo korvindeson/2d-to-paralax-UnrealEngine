@@ -448,56 +448,46 @@ The `AFaceParallaxPreviewActor` provides a self-contained, orbit-controlled prev
 
 ---
 
-## Editor Utility Widget (Blueprint Setup)
+## Editor Utility Widget (C++ RebuildWidget)
 
-The editor tool is built as an **Editor Utility Widget** (`.uasset` Blueprint) that uses the C++ systems above. It provides an RPG-style character menu interface for browsing, assigning, and verifying face art.
+The editor tool is a `UUserWidget` subclass (`UFaceParallaxEditorWidget`) that constructs its **entire UI layout in C++** via `RebuildWidget()`. No manual UMG Designer construction is needed — the widget builds a complete Slate tree with all tabs, layer lists, buttons, and controls at runtime.
 
 ### UI Layout
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
-│ [Preset: PA_MyCharacter]  [Save] [Save As] [New Preset]             │
-├─────────────────────────┬───────────────────────────────────────────┤
-│ VIEW CATEGORY TABS      │  3D PREVIEW (from Scene Capture)          │
-│ [Front][3/4R][ProR][Bk] │                                           │
-│ [3/4L][ProL][Top][Bot]  │       ┌───────────────────────┐           │
-│                         │       │                       │           │
-│ ART PIECES BY LAYER     │       │   Character Preview   │           │
-│ ┌──────────────────┐    │       │                       │           │
-│ │ Foreground       │    │       └───────────────────────┘           │
-│ │ ☑ Eyes: [thumb] │    │                                           │
-│ │ ☑ Nose: [thumb] │    │  CONTROLS                                 │
-│ │ ☑ Mouth:[thumb] │    │  ┌─Yaw:   ◄══════════► 45°──┐             │
-│ │──────────────────│    │  ├─Pitch: ◄══════════► 15°──┤            │
-│ │ Midground        │    │  ├─Zoom:  ◄═══►────────────┤             │
-│ │ ☑ Hair: [thumb] │    │  ├─☐ Auto-rotate           │             │
-│ │ ☑ Ears: [thumb] │    │  └──────────────────────────┘             │
-│ │──────────────────│    │                                          │
-│ │ Background       │    │  OVERLAYS                                │
-│ │ ☑ Outline:[thmb]│    │  ┌─☑ Show Textures───────────────────────│
-│ └──────────────────┘    │  ├─☐ Show Depth Mesh                     │
-│                         │  ├─☐ Wireframe                           │
-│ SLOT DETAILS            │  ├─☐ Color by Depth                      │
-│ Albedo: T_Front_Eyes    │  └────────────────────────────────────────│
-│ Normal: T_Front_Eyes_N  │                                           │
-│ Depth:  T_Front_Eyes_D  │                                           │
-│ [Assign...] [Clear]     │                                           │
-├─────────────────────────┴───────────────────────────────────────────┤
-│ Status: 8/10 states assigned | 3/4 layers active | 24 total slots   │
+│ [New Preset] [Save] [Import Art...]                          [Help] │
+├─────────────────────────────────────────────────────────────────────┤
+│ [Front][3/4R][ProR][BkR][Back][BkL][ProL][3/4L][Top][Bot]          │
+├──────────┬─────────────────────────┬───────────────────────────────┤
+│ LAYERS   │ PREVIEW + TEXTURES      │ PROPERTIES                    │
+│ ☑ Eyes   │ ┌─────────────────────┐ │ Transform: Pos X/Y/SX/SY/Rot │
+│ ☑ Hair   │ │  3D Preview Image   │ │ Camera: Yaw/Pitch/Dist       │
+│ Layer... │ │  Eyes               │ │ Config: 8 checkboxes         │
+│ + Add    │ │  [Albedo] [Normal]  │ │ Nested Art/Pins: X/Y/Z sliders│
+│          │ │  [Depth]  [Pick/Clear]│ │ [Detect Profile]            │
+│          │ │  Auto-Fit Reset Sync │ └───────────────────────────────┘│
+├──────────┴─────────────────────────┴───────────────────────────────┤
+│ TIMELINE / ART FRAMES                                               │
+│ Blink: [0] [1] [+]  Expression: [Neutral] [Smile] [Frown]          │
+│ Swoosh: [On] [0] [1] [2]                                            │
+├─────────────────────────────────────────────────────────────────────┤
+│ [Save Preset] [New Preset] [Clear State] [Clear All]  State: Front  │
+│  Layer: Eyes | Textures: 3                                          │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
-### Creating the EUW
+The widget reads layer definitions from `UFaceParallaxComponent::LayerDefinitions` and populates the layer list dynamically. Texture thumbnails update live when textures are assigned via the Content Browser picker. The timeline shows blink frames, expression buttons, and swoosh indicators per the selected layer and view state.
 
-1. Right-click in Content Browser → **Editor Utilities → Editor Utility Widget**.
-2. Name it `EUW_FaceParallaxEditor`.
-3. Add a `UFaceParallaxPreset` property to the widget Blueprint.
-4. In the widget's `Construct` event, spawn an `AFaceParallaxPreviewActor` in the current editor world.
-5. Connect the preview actor's render target to an `Image` widget for the 3D preview.
-6. Build the category tabs, layer lists, and assignment buttons.
-7. Wire the controls to the preview actor's camera and debug methods.
+### Creating the Widget
 
-### Widget API Reference
+1. Create a Blueprint class derived from `UFaceParallaxEditorWidget`.
+2. In the widget's `Construct` event, spawn an `AFaceParallaxPreviewActor` and assign it to the `PreviewActor` property.
+3. Assign a `UFaceParallaxPreset` DataAsset to the `ActivePreset` property.
+4. Call `SetRenderTarget(YourRenderTarget)` to connect the preview image.
+5. The widget's `RebuildWidget()` handles the full UI layout — no manual UMG construction needed.
+
+**All function categories are BlueprintCallable** — search for "Face Editor" in the Blueprint picker.
 
 The `UFaceParallaxEditorWidget` C++ class exposes every setting as a bindable Blueprint function, organized into categories:
 
@@ -519,21 +509,24 @@ The `UFaceParallaxEditorWidget` C++ class exposes every setting as a bindable Bl
 | **Parameter** | `SetParamsEnabled`, `GetParamsEnabled`, `DefineParameter`, `SetParameterValue`, `GetParameterValue`, `GetParameterNames`, `ResetAllParameters`, `SetParamSmoothingSpeed`, `GetParamSmoothingSpeed`, `SetParamBlendParamName`, `GetParamBlendParamName`, `SetParamAltAlbedoParamName`, `GetParamAltAlbedoParamName`, `SetParamAltNormalParamName`, `GetParamAltNormalParamName`, `SetParamAltDepthParamName`, `GetParamAltDepthParamName` | Component parameter system + alt texture param names |
 | **ParamBinding** | `GetParamBindings`, `SetParamBindings`, `GetAltTextures`, `SetAltTextures` | Per-slot parameter bindings + alt texture sets |
 | **Swoosh** | `SetSwooshEnabled`, `GetSwooshEnabled`, `SetSwooshSpeedThreshold`, `GetSwooshSpeedThreshold`, `SetSwooshBusyness`, `GetSwooshBusyness`, `SetSwooshSize`, `GetSwooshSize`, `ForceSwoosh`, `IsSwooshActive`, `GetSwooshFrameCount`, `SetSwooshFrameTextures`, `GetSwooshFrameTextures`, `ClearSwooshFrames`, `SetSwooshFrameDuration`, `GetSwooshFrameDuration`, `SetSwooshBlendOutDuration`, `GetSwooshBlendOutDuration`, `SetSwooshLayerBlendParamName`, `GetSwooshLayerBlendParamName`, `SetSwooshIntensityParamName`, `GetSwooshIntensityParamName`, `SetSwooshAngleParamName`, `GetSwooshAngleParamName`, `SetSwooshSizeParamName`, `GetSwooshSizeParamName`, `SetSwooshTextureParamName`, `GetSwooshTextureParamName` | Swoosh timing, texture frames, material param names |
-| **NestedArt** | `SetNestedArtEnabled`, `GetNestedArtEnabled`, `GetNestedElementCount`, `GetNestedElement`, `SetNestedElement`, `AddNestedElement`, `RemoveNestedElement`, `SetNestedTextures`, `GetNestedTextures`, `SetNestedTransform`, `GetNestedTransform`, `SetNestedPivot`, `GetNestedPivot`, `SetNestedJiggleEnabled`, `SetNestedJiggleSettings`, `GetNestedJiggleSettings`, `SetNestedVisibility`, `GetNestedVisibility`, `SetNestedIdleFrames`, `GetNestedIdleFrames`, `ClearNestedIdleFrames`, `BatchSetNestedTexturesAllViews`, `DuplicateNestedElement`, `SyncNestedToAllViews` | Nested element management per slot + batch operations |
+| **UI** | `SetRenderTarget`, `RefreshUI`, `SetSelectedLayer`, `GetSelectedContentBrowserTexture` | Render target connection, UI refresh, layer selection, texture picker |
+| **Targets** | `PreviewActor`, `ActivePreset` (UPROPERTY) | Preview actor and preset asset references |
+| **NestedArt** | `SetNestedArtEnabled`, `GetNestedArtEnabled`, `GetNestedElementCount`, `GetNestedElement`, `SetNestedElement`, `AddNestedElement`, `RemoveNestedElement`, `SetNestedTextures`, `GetNestedTextures`, `SetNestedTransform`, `GetNestedTransform`, `SetNestedPivot`, `GetNestedPivot`, `SetNestedJiggleEnabled`, `SetNestedJiggleSettings`, `GetNestedJiggleSettings`, `SetNestedVisibility`, `GetNestedVisibility`, `SetNestedIdleFrames`, `GetNestedIdleFrames`, `ClearNestedIdleFrames`, `BatchSetNestedTexturesAllViews`, `DuplicateNestedElement`, `SyncNestedToAllViews`, `GetNestedPin3D`, `SetNestedPin3D`, `GetNestedPinUV`, `SetNestedPinFromUV`, `GetNestedEffectivePivot`, `GetFaceProfile`, `SetFaceProfile`, `DetectFaceProfile` | Nested element management per slot, 3D pin projection, face profile |
 
 ### Creating the EUW Blueprint
 
-1. Create a Blueprint class derived from `UFaceParallaxEditorWidget` (or from `UEditorUtilityWidget` with the C++ class as a parent).
+1. Create a Blueprint class derived from `UFaceParallaxEditorWidget`.
 2. In the widget's `Construct` event, spawn an `AFaceParallaxPreviewActor` and assign it to the `PreviewActor` property.
 3. Assign a `UFaceParallaxPreset` DataAsset to the `ActivePreset` property.
-4. Build the UI layout matching the diagram above, calling the widget's functions from Blueprint nodes.
+4. Call `SetRenderTarget(YourRenderTarget)` to connect the preview image.
+5. The widget's `RebuildWidget()` constructs the complete Slate UI — no manual UMG Designer layout needed.
 
 **All function categories are BlueprintCallable** — search for "Face Editor" in the Blueprint picker.
 
 ### Prerequisites for the EUW
 
-- `Blutility` plugin enabled (for Editor Utility Widgets) — add to `Build.cs` if using the C++ widget as a base
-- `Editor Scripting Utilities` plugin enabled (for asset operations)
+- The C++ `UFaceParallaxEditorWidget` depends on editor modules: `ContentBrowser`, `AssetRegistry`, `EditorScriptingUtilities`, `UnrealEd`, `DesktopPlatform` — add these to your module's `Build.cs` in the editor-only section
+- `Blutility` plugin enabled (if using as a base for Editor Utility Widgets)
 - `Python Editor Scripting Plugin` (optional, for advanced automation)
 - The `AFaceParallaxPreviewActor` must be spawnable (place a Blueprint subclass or spawn from class)
 
@@ -710,7 +703,7 @@ The jiggle offset is additive to the child's position and only affects the eleme
 
 ### Widget API — Nested Art Category
 
-The `UFaceParallaxEditorWidget` adds a **Nested Art** category with 23 BP functions:
+The `UFaceParallaxEditorWidget` adds a **Nested Art** category with 27 BP functions:
 
 | Function | Purpose |
 |---|---|
@@ -725,8 +718,13 @@ The `UFaceParallaxEditorWidget` adds a **Nested Art** category with 23 BP functi
 | `SetNestedJiggleSettings` / `GetNestedJiggleSettings` | Jiggle physics params |
 | `SetNestedVisibility` / `GetNestedVisibility` | Per-view visibility |
 | `SetNestedIdleFrames` / `GetNestedIdleFrames` / `ClearNestedIdleFrames` | Idle animation frames |
+| `BatchSetNestedTexturesAllViews` / `DuplicateNestedElement` / `SyncNestedToAllViews` | Batch operations |
+| `GetNestedPin3D` / `SetNestedPin3D` | Pin 3D position on nested element |
+| `GetNestedPinUV` / `SetNestedPinFromUV` | Convert between pin position and UV |
+| `GetNestedEffectivePivot` | Effective pivot (pin or manual) |
+| `GetFaceProfile` / `SetFaceProfile` / `DetectFaceProfile` | 3D face profile for pin projection |
 
-The Widget API table in the previous section now has **17 categories** (Nested Art + 3D Pin added).
+The Widget API table in the previous section now has **19 categories**.
 
 ---
 
@@ -754,10 +752,10 @@ UnrealEditor-Cmd.exe "D:\Projects\YourProject\YourProject.uproject" -run=pythons
 ```
 
 **Post-deployment manual steps:**
-- Import your Albedo/Normal/Depth textures
-- Assign them into each Material Instance
 - Place the face-layer quad meshes on the skeleton
+- Tag each quad with the layer name (e.g., `EyesLayer`, `HairLayer`) matching `FFaceLayerDef.LayerTag`
 - Verify `ArtPivot`, `ExpressionBlendAlpha`, and `NestedAnimFrame` parameter bindings if your materials use nested art, expression crossfade, or idle animation
+- The editor widget's **Import Art...** button handles texture importing and assignment via the C++ RebuildWidget UI
 
 ---
 
@@ -765,8 +763,8 @@ UnrealEditor-Cmd.exe "D:\Projects\YourProject\YourProject.uproject" -run=pythons
 
 - **Unreal Engine 5.x** (tested with 5.3+)
 - **Modules**: `Core`, `CoreUObject`, `Engine`, `InputCore`
+- **Editor modules** (for `UFaceParallaxEditorWidget`): `ContentBrowser`, `AssetRegistry`, `EditorScriptingUtilities`, `UnrealEd`, `DesktopPlatform`
 - **Plugin** (required for debug visualizer): `ProceduralMeshComponent`
-- **Plugin** (recommended for editor utility widget): `Editor Scripting Utilities`
 
 ---
 
@@ -778,7 +776,7 @@ FaceParallaxComponent.h/.cpp    — Core parallax component with preset + transf
 FaceParallaxPreset.h/.cpp       — DataAsset for storing texture + transform assignments per view state × layer
 DepthDebugVisualizerComponent.h/.cpp  — Procedural depth mesh visualizer
 FaceParallaxPreviewActor.h/.cpp       — Preview actor with scene capture, orbit camera, and part transform access
-FaceParallaxEditorWidget.h/.cpp — Editor widget with 17 categories of bindable Blueprint functions for every setting (includes Nested Art + 3D pin)
+FaceParallaxEditorWidget.h/.cpp — Editor widget with 19 categories of bindable Blueprint functions for every setting (includes Nested Art + 3D pin + UI + Targets)
 deploy.py                       — UE Editor Python script: creates master material, instances, preset, and character Blueprint
 
 Tests/

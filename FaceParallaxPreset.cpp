@@ -148,7 +148,7 @@ void UFaceParallaxPreset::SyncCanonicalToAllViews(EFaceAngleState State, FName L
     FFaceArtSlot* SourceSlot = StateSet->Layers.Find(LayerTag);
     if (!SourceSlot) return;
 
-    FFaceArtTransform Canonical = SourceSlot->CanonicalTransform;
+    FFaceArtTransform SourceCanonical = SourceSlot->CanonicalTransform;
 
     for (auto& OtherStatePair : ViewAssignments)
     {
@@ -157,7 +157,17 @@ void UFaceParallaxPreset::SyncCanonicalToAllViews(EFaceAngleState State, FName L
         FFaceArtSlot* OtherSlot = OtherStatePair.Value.Layers.Find(LayerTag);
         if (!OtherSlot) continue;
 
-        OtherSlot->CanonicalTransform = Canonical;
+        // Store the source transform as a view override on each target state.
+        // This preserves the target state's canonical (which may have been
+        // positioned differently for perspective) but applies the source's
+        // adjustment as a relative delta.
+        FFaceArtTransform TargetCanonical = OtherSlot->CanonicalTransform;
+        FFaceArtTransform Override;
+        Override.Position = SourceCanonical.Position - TargetCanonical.Position;
+        Override.Scale.X = SourceCanonical.Scale.X / FMath::Max(TargetCanonical.Scale.X, KINDA_SMALL_NUMBER);
+        Override.Scale.Y = SourceCanonical.Scale.Y / FMath::Max(TargetCanonical.Scale.Y, KINDA_SMALL_NUMBER);
+        Override.Rotation = SourceCanonical.Rotation - TargetCanonical.Rotation;
+        OtherSlot->SetOverride(OtherStatePair.Key, Override);
     }
 }
 

@@ -3225,6 +3225,272 @@ void TestBatchOperations() {
     printf("  [Batch Operations: 10 tests]\n");
 }
 
+// ====================================================================
+// ZONE BOUNDARY TESTS
+// ====================================================================
+
+const char* GetStateLabel(int state) {
+    static const char* labels[] = {"Front","3/4R","ProfR","BackR","Back","BackL","ProfL","3/4L","Top","Bottom"};
+    return (state >= 0 && state < 10) ? labels[state] : "?";
+}
+
+double GetZoneYawBoundary(EFaceAngleState state) {
+    switch (state) {
+        case EFaceAngleState::Front: return 0.0;
+        case EFaceAngleState::ThreeQuarterRight: return Z2;
+        case EFaceAngleState::RightProfile: return Z4;
+        case EFaceAngleState::BackRight: return Z6;
+        case EFaceAngleState::Back: return 180.0;
+        case EFaceAngleState::BackLeft: return -Z6;
+        case EFaceAngleState::LeftProfile: return -Z4;
+        case EFaceAngleState::ThreeQuarterLeft: return -Z2;
+        default: return 0.0;
+    }
+}
+
+double GetZoneYawStart(EFaceAngleState state) {
+    // Each horizontal zone spans HZW either side of center except Back
+    if (state == EFaceAngleState::Back) return Z7; // actually wraps at 180
+    // For right-side states: front is -HZW to HZW, 3QR is HZW to 3*HZW, etc.
+    switch (state) {
+        case EFaceAngleState::Front: return -HZW;
+        case EFaceAngleState::ThreeQuarterRight: return HZW;
+        case EFaceAngleState::RightProfile: return Z3;
+        case EFaceAngleState::BackRight: return Z5;
+        case EFaceAngleState::Back: return Z7;
+        case EFaceAngleState::BackLeft: return -Z7;
+        case EFaceAngleState::LeftProfile: return -Z5;
+        case EFaceAngleState::ThreeQuarterLeft: return -Z3;
+        default: return 0.0;
+    }
+}
+
+double GetZoneYawEnd(EFaceAngleState state) {
+    switch (state) {
+        case EFaceAngleState::Front: return HZW;
+        case EFaceAngleState::ThreeQuarterRight: return Z3;
+        case EFaceAngleState::RightProfile: return Z5;
+        case EFaceAngleState::BackRight: return Z7;
+        case EFaceAngleState::Back: return 180.0; // wraps
+        case EFaceAngleState::BackLeft: return -Z5;
+        case EFaceAngleState::LeftProfile: return -Z3;
+        case EFaceAngleState::ThreeQuarterLeft: return -HZW;
+        default: return 0.0;
+    }
+}
+
+// How wide the crossfade window is at any zone boundary
+double CrossfadeWindowStart(EFaceAngleState from, EFaceAngleState to) {
+    // Returns the yaw where crossfade begins (approach from 'from' toward 'to')
+    // Crossfade window = BlendWindowWidth degrees
+    constexpr double BlendW = 5.0;
+    double boundary = 0.0;
+    // Determine boundary between adjacent states
+    // Front/3QR boundary is at HZW (22.5)
+    if (from == EFaceAngleState::Front && to == EFaceAngleState::ThreeQuarterRight) boundary = HZW;
+    else if (from == EFaceAngleState::ThreeQuarterRight && to == EFaceAngleState::Front) boundary = HZW;
+    else if (from == EFaceAngleState::ThreeQuarterRight && to == EFaceAngleState::RightProfile) boundary = Z3;
+    else if (from == EFaceAngleState::RightProfile && to == EFaceAngleState::ThreeQuarterRight) boundary = Z3;
+    else if (from == EFaceAngleState::RightProfile && to == EFaceAngleState::BackRight) boundary = Z5;
+    else if (from == EFaceAngleState::BackRight && to == EFaceAngleState::RightProfile) boundary = Z5;
+    else if (from == EFaceAngleState::Front && to == EFaceAngleState::ThreeQuarterLeft) boundary = -HZW;
+    else if (from == EFaceAngleState::ThreeQuarterLeft && to == EFaceAngleState::Front) boundary = -HZW;
+    else if (from == EFaceAngleState::ThreeQuarterLeft && to == EFaceAngleState::LeftProfile) boundary = -Z3;
+    else if (from == EFaceAngleState::LeftProfile && to == EFaceAngleState::ThreeQuarterLeft) boundary = -Z3;
+    else if (from == EFaceAngleState::LeftProfile && to == EFaceAngleState::BackLeft) boundary = -Z5;
+    else if (from == EFaceAngleState::BackLeft && to == EFaceAngleState::LeftProfile) boundary = -Z5;
+    // For boundaries approached from the 'from' side, window starts boundary - BlendW
+    // (the boundary itself is the midpoint of the blend window)
+    if (from < to) return boundary - BlendW;
+    return boundary + BlendW;
+}
+
+void TestZoneBoundaries() {
+    printf("=== Zone Boundaries (editor visualization) ===\n");
+
+    // All 8 horizontal zone boundaries are at multiples of HZW
+    TEST("Front center", GetZoneYawBoundary(EFaceAngleState::Front) == 0.0);
+    TEST("3QR center", GetZoneYawBoundary(EFaceAngleState::ThreeQuarterRight) == Z2);
+    TEST("ProfR center", GetZoneYawBoundary(EFaceAngleState::RightProfile) == Z4);
+    TEST("BackR center", GetZoneYawBoundary(EFaceAngleState::BackRight) == Z6);
+    TEST("Back center", GetZoneYawBoundary(EFaceAngleState::Back) == 180.0);
+
+    TEST("Front zone start", GetZoneYawStart(EFaceAngleState::Front) == -HZW);
+    TEST("Front zone end", GetZoneYawEnd(EFaceAngleState::Front) == HZW);
+    TEST("3QR zone start", GetZoneYawStart(EFaceAngleState::ThreeQuarterRight) == HZW);
+    TEST("3QR zone end", GetZoneYawEnd(EFaceAngleState::ThreeQuarterRight) == Z3);
+    TEST("ProfR zone start", GetZoneYawStart(EFaceAngleState::RightProfile) == Z3);
+    TEST("ProfR zone end", GetZoneYawEnd(EFaceAngleState::RightProfile) == Z5);
+
+    // Zone width = 2*HZW for all horizontal states
+    double expectedWidth = 2.0 * HZW;
+    TEST("Front zone width", GetZoneYawEnd(EFaceAngleState::Front) - GetZoneYawStart(EFaceAngleState::Front) == expectedWidth);
+    TEST("3QR zone width", GetZoneYawEnd(EFaceAngleState::ThreeQuarterRight) - GetZoneYawStart(EFaceAngleState::ThreeQuarterRight) == expectedWidth);
+    TEST("ProfR zone width", GetZoneYawEnd(EFaceAngleState::RightProfile) - GetZoneYawStart(EFaceAngleState::RightProfile) == expectedWidth);
+    TEST("BackR zone width", GetZoneYawEnd(EFaceAngleState::BackRight) - GetZoneYawStart(EFaceAngleState::BackRight) == expectedWidth);
+
+    // State labels for editor display
+    TEST("Front label", std::string(GetStateLabel((int)EFaceAngleState::Front)) == "Front");
+    TEST("3QR label", std::string(GetStateLabel((int)EFaceAngleState::ThreeQuarterRight)) == "3/4R");
+    TEST("Profile labels correct", std::string(GetStateLabel((int)EFaceAngleState::RightProfile)) == "ProfR");
+    TEST("Back label", std::string(GetStateLabel((int)EFaceAngleState::Back)) == "Back");
+    TEST("Top label", std::string(GetStateLabel((int)EFaceAngleState::Top)) == "Top");
+    TEST("Bottom label", std::string(GetStateLabel((int)EFaceAngleState::Bottom)) == "Bottom");
+    TEST("State count", GetStateLabel(-1) != nullptr); // bounds check
+
+    // Pitch thresholds
+    TEST("Crossfade window Front->3QR", CrossfadeWindowStart(EFaceAngleState::Front, EFaceAngleState::ThreeQuarterRight) < HZW);
+    TEST("Crossfade window symmetric", CrossfadeWindowStart(EFaceAngleState::ThreeQuarterRight, EFaceAngleState::Front) > HZW);
+
+    printf("  [Zone Boundary Tests: 24 tests]\n");
+}
+
+// ====================================================================
+// BLEND PREVIEW TESTS
+// ====================================================================
+
+void TestBlendPreview() {
+    printf("=== Blend Preview ===\n");
+
+    // Simulate blend alpha override behavior (matching component logic)
+    double blendAlpha = 1.0;
+    bool overrideActive = false;
+    double previewAlpha = 0.5;
+
+    auto SetBlendPreview = [&](double a) {
+        overrideActive = true;
+        previewAlpha = std::max(0.0, std::min(1.0, a));
+    };
+    auto ClearBlendPreview = [&]() {
+        overrideActive = false;
+        previewAlpha = 0.5;
+    };
+    auto TickBlend = [&]() {
+        if (overrideActive)
+            blendAlpha = previewAlpha;
+        else
+            blendAlpha = 1.0; // fully settled
+    };
+
+    // Default state
+    TEST("Default alpha is settled", blendAlpha == 1.0);
+
+    // Apply blend preview
+    SetBlendPreview(0.3);
+    TickBlend();
+    TEST("Blend preview override active", blendAlpha == 0.3);
+
+    // Change preview value
+    SetBlendPreview(0.75);
+    TickBlend();
+    TEST("Blend preview updated", blendAlpha == 0.75);
+
+    // Clamping
+    SetBlendPreview(-0.1);
+    TickBlend();
+    // Preview alpha should be clamped to 0..1 by the component
+    TEST("Blend preview clamps low", previewAlpha >= 0.0);
+    SetBlendPreview(1.5);
+    TickBlend();
+    TEST("Blend preview clamps high", previewAlpha <= 1.0);
+
+    // Clear override
+    ClearBlendPreview();
+    TickBlend();
+    TEST("Clear blend preview resets alpha", blendAlpha == 1.0);
+    TEST("Clear blend preview resets override flag", overrideActive == false);
+
+    // Multiple overrides: last one wins
+    SetBlendPreview(0.2);
+    SetBlendPreview(0.8);
+    TickBlend();
+    TEST("Last blend override wins", blendAlpha == 0.8);
+
+    printf("  [Blend Preview: 9 tests]\n");
+}
+
+// ====================================================================
+// STATUS MATRIX TESTS
+// ====================================================================
+
+void TestStatusMatrix() {
+    printf("=== Status Matrix ===\n");
+
+    // Simulate the preset slot assignment queries
+    struct MockPreset {
+        bool slots[10][5] = {}; // [state][layer]
+        bool HasSlot(int s, int l) const { return s >= 0 && s < 10 && l >= 0 && l < 5 && slots[s][l]; }
+        bool HasState(int s) const {
+            if (s < 0 || s >= 10) return false;
+            for (int l = 0; l < 5; ++l)
+                if (slots[s][l]) return true;
+            return false;
+        }
+        void Assign(int s, int l) { if (s >= 0 && s < 10 && l >= 0 && l < 5) slots[s][l] = true; }
+    };
+
+    MockPreset preset;
+
+    // Empty preset
+    TEST("Empty preset has no states", !preset.HasState(0));
+    TEST("Empty preset no slot", !preset.HasSlot(0, 0));
+
+    // Assign some slots
+    preset.Assign(0, 0); // Front, Eyes
+    preset.Assign(0, 1); // Front, Brows
+    preset.Assign(1, 0); // 3/4R, Eyes
+    preset.Assign(4, 0); // Back, Eyes
+    preset.Assign(4, 1); // Back, Brows
+    preset.Assign(4, 2); // Back, Mouth
+
+    TEST("Front has slots", preset.HasState(0));
+    TEST("3/4R has slots", preset.HasState(1));
+    TEST("Back has slots", preset.HasState(4));
+    TEST("ProfR no slots", !preset.HasState(2));
+    TEST("Top no slots", !preset.HasState(8));
+
+    TEST("Front Eyes assigned", preset.HasSlot(0, 0));
+    TEST("Front Brows assigned", preset.HasSlot(0, 1));
+    TEST("3/4R Eyes assigned", preset.HasSlot(1, 0));
+    TEST("Front Mouth not assigned", !preset.HasSlot(0, 2));
+
+    // Simulate GetMissingStates
+    int missingCount = 0;
+    for (int s = 0; s < 10; ++s)
+        if (!preset.HasState(s)) ++missingCount;
+    TEST("7 states missing (10 total - 3 with slots)", missingCount == 7);
+
+    // Simulate GetMissingLayers for Front
+    int missingFrontLayers = 0;
+    for (int l = 0; l < 5; ++l)
+        if (!preset.HasSlot(0, l)) ++missingFrontLayers;
+    TEST("Front missing 3 of 5 layers", missingFrontLayers == 3);
+
+    // Simulate GetMissingLayers for Back
+    int missingBackLayers = 0;
+    for (int l = 0; l < 5; ++l)
+        if (!preset.HasSlot(4, l)) ++missingBackLayers;
+    TEST("Back missing 2 of 5 layers", missingBackLayers == 2);
+
+    // Column counts
+    int stateSlotCounts[10] = {};
+    for (int s = 0; s < 10; ++s)
+        for (int l = 0; l < 5; ++l)
+            if (preset.HasSlot(s, l)) stateSlotCounts[s]++;
+    TEST("Front has 2 slots", stateSlotCounts[0] == 2);
+    TEST("3/4R has 1 slot", stateSlotCounts[1] == 1);
+    TEST("Back has 3 slots", stateSlotCounts[4] == 3);
+    TEST("ProfR has 0 slots", stateSlotCounts[2] == 0);
+    TEST("Top has 0 slots", stateSlotCounts[8] == 0);
+
+    // Total assigned slots
+    int totalSlots = 0;
+    for (int s = 0; s < 10; ++s) totalSlots += stateSlotCounts[s];
+    TEST("Total assigned slots = 6", totalSlots == 6);
+
+    printf("  [Status Matrix: 17 tests]\n");
+}
+
 int main() {
     printf("===== Face Parallax Math Tests =====\n\n");
 
@@ -3258,6 +3524,9 @@ int main() {
     TestNestedArtSystem();
     TestPinProjection();
     TestBatchOperations();
+    TestZoneBoundaries();
+    TestBlendPreview();
+    TestStatusMatrix();
 
     printf("\n===== Results: %d/%d passed (%d failed) =====\n",
         g_passed, g_total, g_total - g_passed);

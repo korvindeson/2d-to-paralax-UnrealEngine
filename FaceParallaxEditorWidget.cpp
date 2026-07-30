@@ -7,12 +7,23 @@
 #include "Engine/TextureRenderTarget2D.h"
 #include "UObject/SavePackage.h"
 #include "Styling/CoreStyle.h"
+#include "Widgets/Layout/SOverlay.h"
+#include "ContentBrowserModule.h"
+#include "IContentBrowserSingleton.h"
+#include "AssetRegistry/AssetRegistryModule.h"
+#include "DesktopPlatformModule.h"
+#include "EditorDirectories.h"
+#include "Misc/FileHelper.h"
+#include "Editor.h"
 
 bool UFaceParallaxEditorWidget::ValidatePreset() const
 {
     if (!ActivePreset)
     {
-        UE_LOG(LogTemp, Warning, TEXT("[FaceParallaxEditorWidget] No ActivePreset assigned."));
+        if (!HasAnyFlags(RF_ClassDefaultObject))
+        {
+            UE_LOG(LogTemp, Warning, TEXT("[FaceParallaxEditorWidget] No ActivePreset assigned."));
+        }
         return false;
     }
     return true;
@@ -22,7 +33,10 @@ bool UFaceParallaxEditorWidget::ValidatePreviewActor() const
 {
     if (!PreviewActor)
     {
-        UE_LOG(LogTemp, Warning, TEXT("[FaceParallaxEditorWidget] No PreviewActor assigned."));
+        if (!HasAnyFlags(RF_ClassDefaultObject))
+        {
+            UE_LOG(LogTemp, Warning, TEXT("[FaceParallaxEditorWidget] No PreviewActor assigned."));
+        }
         return false;
     }
     return true;
@@ -492,24 +506,28 @@ void UFaceParallaxEditorWidget::ResetCamera()
 
 void UFaceParallaxEditorWidget::ShowTextures(bool bVisible)
 {
+    bLocalShowTextures = bVisible;
     if (!ValidatePreviewActor()) return;
     PreviewActor->ShowTextures(bVisible);
 }
 
 void UFaceParallaxEditorWidget::ShowDepthMesh(bool bVisible)
 {
+    bLocalShowDepthMesh = bVisible;
     if (!ValidatePreviewActor()) return;
     PreviewActor->ShowDepthMesh(bVisible);
 }
 
 void UFaceParallaxEditorWidget::ShowWireframe(bool bVisible)
 {
+    bLocalShowWireframe = bVisible;
     if (!ValidatePreviewActor()) return;
     PreviewActor->ShowWireframe(bVisible);
 }
 
 void UFaceParallaxEditorWidget::ColorByDepth(bool bEnabled)
 {
+    bLocalColorByDepth = bEnabled;
     if (!ValidatePreviewActor()) return;
     PreviewActor->ColorByDepth(bEnabled);
 }
@@ -1834,6 +1852,37 @@ static FLinearColor EditorBg(float L) { return FLinearColor(L, L, L); }
 static FLinearColor AccentBlue() { return FLinearColor(0.35f, 0.55f, 1.0f); }
 static FLinearColor AccentGreen() { return FLinearColor(0.3f, 0.8f, 0.3f); }
 
+// Static helper functions — accessible from both RebuildWidget and Refresh* methods
+static TSharedRef<STextBlock> MakeLbl(const FString& T, int32 S, const FLinearColor& C = FLinearColor(0.8f,0.8f,0.8f))
+{
+    return SNew(STextBlock)
+        .Text(FText::FromString(T))
+        .Font(FCoreStyle::GetDefaultFontStyle("Regular", S))
+        .ColorAndOpacity(C);
+}
+
+static TSharedRef<SButton> MakeBtn(const FString& T, TFunction<void()>&& Fn,
+    const FLinearColor& FG = FLinearColor(0.85f,0.85f,0.85f),
+    const FLinearColor& BG = FLinearColor(0.15f,0.15f,0.15f))
+{
+    return SNew(SButton)
+        .OnClicked_Lambda([Fn = MoveTemp(Fn)](){ Fn(); return FReply::Handled(); })
+        .ButtonColorAndOpacity(BG)
+        .Content()
+        [SNew(STextBlock)
+            .Text(FText::FromString(T))
+            .Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
+            .ColorAndOpacity(FG)];
+}
+
+static TSharedRef<SCheckBox> MakeToggle(bool Def, TFunction<void(bool)>&& Fn)
+{
+    return SNew(SCheckBox)
+        .IsChecked(Def ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
+        .OnCheckStateChanged_Lambda([Fn = MoveTemp(Fn)](ECheckBoxState S)
+        { Fn(S == ECheckBoxState::Checked); });
+}
+
 static auto MakeSectionLbl(const FString& T, int32 S) -> TSharedRef<STextBlock>
 {
     return SNew(STextBlock)
@@ -1850,46 +1899,22 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
 {
     UFaceParallaxComponent* Comp = GetParallaxComponent();
     TArray<FName> LNames;
-    if (Comp) LNames = Comp->GetLayerTagNames();
+    if (Comp)
+    {
+        for (int32 i = 0; i < Comp->GetNumLayerDefinitions(); ++i)
+        {
+            FName Tag = Comp->GetLayerDefinition(i).LayerTag;
+            if (Tag.IsValid()) LNames.Add(Tag);
+        }
+    }
     if (LNames.Num() == 0)
         LNames = { FName("Eyes"), FName("Brows"), FName("Mouth"), FName("Hair") };
     if (!SelectedLayerName.IsValid() && LNames.Num() > 0) SelectedLayerName = LNames[0];
     LayerNames = LNames;
 
     // ========================
-    // LAMBDAS
+    // LAMBDAS (RebuildWidget-only helpers)
     // ========================
-
-    auto MakeLbl = [](const FString& T, int32 S, const FLinearColor& C = FLinearColor(0.8f,0.8f,0.8f))
-        -> TSharedRef<STextBlock>
-    {
-        return SNew(STextBlock)
-            .Text(FText::FromString(T))
-            .Font(FCoreStyle::GetDefaultFontStyle("Regular", S))
-            .ColorAndOpacity(C);
-    };
-
-    auto MakeBtn = [](const FString& T, TFunction<void()>&& Fn,
-        const FLinearColor& FG = FLinearColor(0.85f,0.85f,0.85f),
-        const FLinearColor& BG = FLinearColor(0.15f,0.15f,0.15f)) -> TSharedRef<SButton>
-    {
-        return SNew(SButton)
-            .OnClicked_Lambda([Fn = MoveTemp(Fn)](){ Fn(); return FReply::Handled(); })
-            .ButtonColorAndOpacity(BG)
-            .Content()
-            [SNew(STextBlock)
-                .Text(FText::FromString(T))
-                .Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
-                .ColorAndOpacity(FG)];
-    };
-
-    auto MakeToggle = [](bool Def, TFunction<void(bool)>&& Fn) -> TSharedRef<SCheckBox>
-    {
-        return SNew(SCheckBox)
-            .IsChecked(Def ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
-            .OnCheckStateChanged_Lambda([Fn = MoveTemp(Fn)](ECheckBoxState S)
-            { Fn(S == ECheckBoxState::Checked); });
-    };
 
     auto MakeSlider = [](float Val, TFunction<void(float)>&& Fn) -> TSharedRef<SSlider>
     {
@@ -1942,14 +1967,65 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
     {
         TSharedRef<SHorizontalBox> TB = SNew(SHorizontalBox);
         TB->AddSlot().Padding(FMargin(2)).AutoWidth()
-            [MakeBtn(TEXT("New Preset"), [this](){ CreateNewPreset(TEXT("NewPreset"), TEXT("/Game/FaceParallax/Presets")); RefreshUI(); }, FLinearColor(0.7f,0.9f,1.0f))];
+            [MakeBtn(TEXT("New Preset"), [this]()
+            {
+                FString AssetName = TEXT("MyPreset");
+                FString Path = TEXT("/Game/FaceParallax/Presets");
+                CreateNewPreset(*AssetName, *Path);
+                if (TextStatus.IsValid())
+                    TextStatus->SetText(FText::FromString(FString::Printf(TEXT("Created '%s'"), *AssetName)));
+                RefreshUI();
+            }, FLinearColor(0.7f,0.9f,1.0f))];
         TB->AddSlot().Padding(FMargin(2)).AutoWidth()
             [MakeBtn(TEXT("Save"), [this](){ SavePreset(); })];
         TB->AddSlot().Padding(FMargin(2)).AutoWidth()
-            [MakeBtn(TEXT("Import Art..."), [](){ UE_LOG(LogTemp, Log, TEXT("[FaceParallaxEditorWidget] Import Art — wire to OpenAssetDialog")); })];
+            [MakeBtn(TEXT("Import Art..."), [this]()
+            {
+                TArray<FString> OutFiles;
+                IDesktopPlatform* Platform = FDesktopPlatformModule::Get();
+                if (Platform)
+                {
+                    FString DefaultPath = FEditorDirectories::Get().GetLastDirectory(ELastDirectory::UNR);
+                    if (DefaultPath.IsEmpty()) DefaultPath = FPaths::ProjectContentDir();
+                    uint32 FilterFlags = 0;
+                    if (Platform->OpenFileDialog(nullptr, TEXT("Import Texture"),
+                        DefaultPath, TEXT(""),
+                        TEXT("Image files (*.png, *.jpg, *.tga)|*.png;*.jpg;*.tga|All files (*.*)|*.*"),
+                        FilterFlags, OutFiles))
+                    {
+                        if (OutFiles.Num() > 0)
+                        {
+                            FEditorDirectories::Get().SetLastDirectory(ELastDirectory::UNR, FPaths::GetPath(OutFiles[0]));
+                            FString Msg = FString::Printf(TEXT("Selected: %s"), *OutFiles[0]);
+                            UE_LOG(LogTemp, Log, TEXT("[FaceParallaxEditorWidget] %s"), *Msg);
+                            if (TextStatus.IsValid())
+                                TextStatus->SetText(FText::FromString(Msg));
+                        }
+                    }
+                }
+            })];
         TB->AddSlot().FillWidth(1.0f);
         TB->AddSlot().Padding(FMargin(2)).AutoWidth()
-            [MakeBtn(TEXT("?"), [](){ UE_LOG(LogTemp, Log, TEXT("[FaceParallaxEditorWidget] Help — show usage tips")); }, FLinearColor(0.7f,0.7f,0.7f))];
+            [MakeBtn(TEXT("?"), [this]()
+            {
+                FText Msg = FText::FromString(TEXT(
+                    "Face Parallax Editor\n\n"
+                    "1. Select a layer in the Layers panel.\n"
+                    "2. Assign textures via Pick Albedo/Normal/Depth buttons\n"
+                    "   (select a texture in Content Browser first).\n"
+                    "3. Adjust Position/Scale/Rotation in Properties.\n"
+                    "4. Use Timeline to author Blink/Swoosh animation frames.\n"
+                    "5. Save Preset when done.\n\n"
+                    "Nested Art pins: add nested elements, enable Pinned,\n"
+                    "set Pin X/Y/Z to define 3D attachment points."
+                ));
+                if (HelpWindow.IsValid())
+                    HelpWindow->SetVisibility(EVisibility::Collapsed);
+                else
+                    UE_LOG(LogTemp, Log, TEXT("[FaceParallaxEditorWidget] %s"), *Msg.ToString());
+                if (TextStatus.IsValid())
+                    TextStatus->SetText(Msg);
+            }, FLinearColor(0.7f,0.7f,0.7f))];
         Root->AddSlot().AutoHeight()
             [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("NoBorder"))
                 .BorderBackgroundColor(FLinearColor(0.12f,0.12f,0.12f))
@@ -1997,6 +2073,38 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
     }
 
     // ========================
+    // 2b. ZONE DIAGRAM
+    // ========================
+
+    {
+        TSharedRef<SVerticalBox> ZoneCol = SNew(SVerticalBox);
+        ZoneYawLabel = SNew(STextBlock)
+            .Text(FText::FromString(TEXT("Yaw: 0.0°")))
+            .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+            .ColorAndOpacity(FLinearColor(0.6f,0.6f,0.6f));
+        ZoneCol->AddSlot().AutoHeight().Padding(FMargin(2,0))
+            [ZoneYawLabel.ToSharedRef()];
+        ZonePitchLabel = SNew(STextBlock)
+            .Text(FText::FromString(TEXT("Pitch: 0.0°")))
+            .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+            .ColorAndOpacity(FLinearColor(0.6f,0.6f,0.6f));
+        ZoneCol->AddSlot().AutoHeight().Padding(FMargin(2,0))
+            [ZonePitchLabel.ToSharedRef()];
+
+        // Build zone diagram as colored horizontal strips
+        ZoneDiagramWidget = SNew(SBox).HeightOverride(20);
+        RebuildZoneDiagram();
+        ZoneCol->AddSlot().AutoHeight().Padding(FMargin(2,1))
+            [ZoneDiagramWidget.ToSharedRef()];
+
+        Root->AddSlot().AutoHeight()
+            [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("NoBorder"))
+                .BorderBackgroundColor(FLinearColor(0.08f,0.08f,0.08f))
+                .Padding(FMargin(4,2))
+                [ZoneCol]];
+    }
+
+    // ========================
     // 3. MAIN AREA: LAYERS | PREVIEW+TEXTURES | PROPERTIES
     // ========================
 
@@ -2015,7 +2123,17 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
         LayerPanel->AddSlot().AutoHeight().Padding(FMargin(4,2))
             [MakeBtn(TEXT("+ Add Layer"), [this]()
             {
-                UE_LOG(LogTemp, Log, TEXT("[FaceParallaxEditorWidget] Add Layer — wire to Preset AddLayer"));
+                UFaceParallaxComponent* Comp = GetParallaxComponent();
+                if (Comp)
+                {
+                    int32 N = Comp->GetNumLayerDefinitions();
+                    FName NewTag(*FString::Printf(TEXT("Layer_%d"), N));
+                    FFaceLayerDef NewDef;
+                    NewDef.LayerTag = NewTag;
+                    Comp->AddLayerDefinition(NewDef);
+                    LayerNames.Add(NewTag);
+                    SelectedLayerName = NewTag;
+                }
                 RefreshUI();
             }, FLinearColor(0.6f,0.8f,0.6f), FLinearColor(0.08f,0.08f,0.08f))];
     }
@@ -2044,8 +2162,8 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
             {
                 TSharedRef<SVerticalBox> Col = SNew(SVerticalBox);
                 TSharedRef<SImage> Thumb = SNew(SImage)
-                    .Image(bHasImage ? FCoreStyle::Get().GetBrush("WhiteBrush") : FCoreStyle::Get().GetBrush("WhiteBrush"));
-                Thumb->SetColorAndOpacity(FLinearColor(0.15f,0.15f,0.15f));
+                    .Image(FCoreStyle::Get().GetBrush("NoBorder"));
+                Thumb->SetColorAndOpacity(FLinearColor(0.08f,0.08f,0.08f));
                 ThumbOut = Thumb;
                 Col->AddSlot().AutoHeight().Padding(FMargin(2))
                     [SNew(SBox).WidthOverride(72).HeightOverride(72)[Thumb]];
@@ -2109,7 +2227,10 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
             ActRow->AddSlot().Padding(FMargin(2)).AutoWidth()
                 [MakeBtn(TEXT("Sync->All"), [this](){ SyncLayerToAllViews(ActiveViewState, SelectedLayerName); RefreshUI(); })];
             ActRow->AddSlot().Padding(FMargin(2)).AutoWidth()
-                [MakeToggle(bAutoFitOnAssign, [this](bool b){ bAutoFitOnAssign = b; SetAutoFitOnAssign(b); })
+                [SNew(SCheckBox)
+                    .IsChecked(bAutoFitOnAssign ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
+                    .OnCheckStateChanged_Lambda([this](ECheckBoxState S)
+                    { bool b = (S == ECheckBoxState::Checked); bAutoFitOnAssign = b; SetAutoFitOnAssign(b); })
                     [MakeLbl(TEXT("AF"), 9, FLinearColor(0.5f,0.7f,0.5f))]];
             CenterCol->AddSlot().AutoHeight().Padding(FMargin(2))
                 [ActRow];
@@ -2118,8 +2239,27 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
 
     // --- 3c. PROPERTIES PANEL (right) ---
     TSharedRef<SVerticalBox> PropPanel = SNew(SVerticalBox).Visibility(EVisibility::Visible);
-    TSharedRef<SScrollBox> PropScroll = SNew(SScrollBox).Orientation(Orient_Vertical);
+    PropScroll = SNew(SScrollBox).Orientation(Orient_Vertical);
     {
+        // Search bar
+        SearchBox = SNew(SSearchBox)
+            .HintText(FText::FromString(TEXT("Search settings...")))
+            .OnTextChanged_Lambda([this](const FText& T) { ApplySearchFilter(T.ToString()); });
+        PropScroll->AddSlot()
+            [MakeSectionBox(TEXT("Search"), SNew(SBox).HeightOverride(22)[SearchBox.ToSharedRef()])];
+
+        // Cross-layer overlay
+        CrossLayerBox = SNew(SVerticalBox);
+        CrossLayerScroll = SNew(SScrollBox).Orientation(Orient_Vertical);
+        CrossLayerScroll->AddSlot() [CrossLayerBox.ToSharedRef()];
+        TextCrossLayer = SNew(STextBlock)
+            .Text(FText::FromString(TEXT("Select a layer to show overlay")))
+            .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+            .ColorAndOpacity(FLinearColor(0.5f,0.5f,0.5f));
+        CrossLayerBox->AddSlot().AutoHeight().Padding(FMargin(2))
+            [TextCrossLayer.ToSharedRef()];
+        PropScroll->AddSlot()
+            [MakeSectionBox(TEXT("All Layers (current state)"), CrossLayerScroll.ToSharedRef())];
         // Transform section
         {
             TSharedRef<SVerticalBox> XForm = SNew(SVerticalBox);
@@ -2187,48 +2327,214 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
 
         // Config section
         {
-            TSharedRef<SVerticalBox> Cfg = SNew(SVerticalBox);
-            struct { const TCHAR* L; TFunction<void(bool)> Fn; } Checks[] = {
-                {TEXT("Blinking"), [this](bool b){ SetBlinkingEnabled(b); }},
-                {TEXT("Swoosh"), [this](bool b){ SetSwooshEnabled(b); }},
-                {TEXT("Nested Art"), [this](bool b){ SetNestedArtEnabled(b); }},
-                {TEXT("Params"), [this](bool b){ SetParamsEnabled(b); }},
-                {TEXT("Show Textures"), [this](bool b){ ShowTextures(b); }},
-                {TEXT("Depth Mesh"), [this](bool b){ ShowDepthMesh(b); }},
-                {TEXT("Wireframe"), [this](bool b){ ShowWireframe(b); }},
-                {TEXT("Color by Depth"), [this](bool b){ ColorByDepth(b); }},
-            };
-            for (auto& C : Checks)
+            CfgBox = SNew(SVerticalBox);
+
+            auto AddConfigCheck = [&](const FString& Label, bool bDef,
+                TSharedPtr<SCheckBox>& CheckOut,
+                TFunction<void(bool)>&& Fn)
             {
+                TSharedRef<SCheckBox> Ch = SNew(SCheckBox)
+                    .IsChecked(bDef ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
+                    .OnCheckStateChanged_Lambda([Fn = MoveTemp(Fn)](ECheckBoxState S)
+                    { Fn(S == ECheckBoxState::Checked); });
+                CheckOut = Ch;
                 TSharedRef<SHorizontalBox> R = SNew(SHorizontalBox);
-                R->AddSlot().Padding(FMargin(0,2)).AutoWidth()
-                    [SNew(SCheckBox).IsChecked(ECheckBoxState::Unchecked)
-                        .OnCheckStateChanged_Lambda([Fn = C.Fn](ECheckBoxState S){ Fn(S == ECheckBoxState::Checked); })];
+                R->AddSlot().Padding(FMargin(0,2)).AutoWidth()[Ch];
                 R->AddSlot().Padding(FMargin(4,2)).AutoWidth()
-                    [MakeLbl(C.L, 9)];
-                Cfg->AddSlot().AutoHeight()[R];
-            }
+                    [MakeLbl(Label, 9)];
+                CfgBox->AddSlot().AutoHeight()[R];
+            };
+
+            UFaceParallaxComponent* Comp2 = GetParallaxComponent();
+            bool bBlink = Comp2 ? Comp2->GetBlinkingEnabled() : false;
+            bool bSw = Comp2 ? Comp2->GetSwooshEnabled() : false;
+            bool bNA = Comp2 ? Comp2->GetNestedArtEnabled() : false;
+            bool bPar = Comp2 ? Comp2->GetParamsEnabled() : false;
+            // Debug overlay defaults: not exposed as bool properties on PreviewActor,
+            // tracked locally via the respective checkbox state.
+            bool bShowTex = bLocalShowTextures, bDepthMesh = bLocalShowDepthMesh;
+            bool bWire = bLocalShowWireframe, bColor = bLocalColorByDepth;
+
+            AddConfigCheck(TEXT("Blinking"), bBlink, CheckBlinking,
+                [this](bool b){ SetBlinkingEnabled(b); });
+            AddConfigCheck(TEXT("Swoosh"), bSw, CheckSwoosh,
+                [this](bool b){ SetSwooshEnabled(b); });
+            AddConfigCheck(TEXT("Nested Art"), bNA, CheckNestedArt,
+                [this](bool b){ SetNestedArtEnabled(b); });
+            AddConfigCheck(TEXT("Params"), bPar, CheckParams,
+                [this](bool b){ SetParamsEnabled(b); });
+            AddConfigCheck(TEXT("Show Textures"), bShowTex, CheckShowTextures,
+                [this](bool b){ ShowTextures(b); });
+            AddConfigCheck(TEXT("Depth Mesh"), bDepthMesh, CheckDepthMesh,
+                [this](bool b){ ShowDepthMesh(b); });
+            AddConfigCheck(TEXT("Wireframe"), bWire, CheckWireframe,
+                [this](bool b){ ShowWireframe(b); });
+            AddConfigCheck(TEXT("Color by Depth"), bColor, CheckColorByDepth,
+                [this](bool b){ ColorByDepth(b); });
+
             PropScroll->AddSlot()
-                [MakeSectionBox(TEXT("Config"), Cfg)];
+                [MakeSectionBox(TEXT("Config"), CfgBox.ToSharedRef())];
+        }
+
+        // Blend preview section
+        {
+            TSharedRef<SVerticalBox> BlendBox = SNew(SVerticalBox);
+            TSharedRef<SHorizontalBox> BlendRow = SNew(SHorizontalBox);
+            BlendRow->AddSlot().Padding(FMargin(0,2)).AutoWidth()
+                [SNew(SCheckBox).IsChecked(ECheckBoxState::Unchecked)
+                    .OnCheckStateChanged_Lambda([this](ECheckBoxState S)
+                    {
+                        if (S == ECheckBoxState::Checked)
+                        {
+                            float Val = BlendPreviewSlider.IsValid() ? BlendPreviewSlider->GetValue() : 0.5f;
+                            SetBlendPreview(Val);
+                        }
+                        else
+                        {
+                            ClearBlendPreview();
+                        }
+                        RefreshUI();
+                    })];
+            BlendRow->AddSlot().Padding(FMargin(4,2)).AutoWidth()
+                [MakeLbl(TEXT("Blend"), 9, FLinearColor(1.0f,0.8f,0.4f))];
+            BlendPreviewLabel = MakeLbl(TEXT("0.50"), 9, FLinearColor(0.8f,0.8f,0.8f));
+            BlendPreviewSlider = SNew(SSlider).Value(0.5f)
+                .OnValueChanged_Lambda([this](float V)
+                {
+                    if (BlendPreviewLabel.IsValid())
+                        BlendPreviewLabel->SetText(FText::FromString(FString::Printf(TEXT("%.2f"), V)));
+                    UFaceParallaxComponent* Comp = GetParallaxComponent();
+                    if (Comp) Comp->SetBlendPreview(V);
+                });
+            BlendRow->AddSlot().Padding(FMargin(4,2)).FillWidth(1.0f)
+                [BlendPreviewSlider.ToSharedRef()];
+            BlendRow->AddSlot().Padding(FMargin(2,2)).AutoWidth()
+                [BlendPreviewLabel.ToSharedRef()];
+            BlendBox->AddSlot().AutoHeight()[BlendRow];
+            PropScroll->AddSlot()
+                [MakeSectionBox(TEXT("Blend Preview"), BlendBox)];
+        }
+
+        // Param Reference section
+        {
+            TSharedRef<SVerticalBox> RefBox = SNew(SVerticalBox);
+            TSharedRef<SHorizontalBox> RefRow = SNew(SHorizontalBox);
+            EditParamRefName = SNew(SEditableTextBox)
+                .Text(FText::FromString(TEXT("AlbedoTexture")))
+                .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+                .HintText(FText::FromString(TEXT("Param name to search...")));
+            RefRow->AddSlot().Padding(FMargin(0,2)).FillWidth(1.0f)
+                [SNew(SBox).WidthOverride(100)[EditParamRefName.ToSharedRef()]];
+            RefRow->AddSlot().Padding(FMargin(4,2)).AutoWidth()
+                [MakeBtn(TEXT("Find"), [this]()
+                {
+                    if (!EditParamRefName.IsValid()) return;
+                    FName PName(*EditParamRefName->GetText().ToString());
+                    TArray<FString> Results = FindParamUsages(PName);
+                    if (TextParamRefResults.IsValid())
+                    {
+                        if (Results.Num() == 0)
+                            TextParamRefResults->SetText(FText::FromString(TEXT("No references found.")));
+                        else
+                        {
+                            FString Joined;
+                            for (int32 i = 0; i < Results.Num(); ++i)
+                            {
+                                Joined += Results[i];
+                                if (i < Results.Num() - 1) Joined += TEXT("\n");
+                            }
+                            TextParamRefResults->SetText(FText::FromString(Joined));
+                        }
+                    }
+                }, FLinearColor(0.6f,0.8f,1.0f))];
+            RefBox->AddSlot().AutoHeight()[RefRow];
+            TextParamRefResults = SNew(STextBlock)
+                .Text(FText::FromString(TEXT("Enter a param name and click Find.")))
+                .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+                .ColorAndOpacity(FLinearColor(0.5f,0.8f,0.5f))
+                .AutoWrapText(true);
+            RefBox->AddSlot().AutoHeight().Padding(FMargin(2,2))
+                [TextParamRefResults.ToSharedRef()];
+            PropScroll->AddSlot()
+                [MakeSectionBox(TEXT("Param Reference"), RefBox)];
         }
 
         // Nested Art / Pin section
         {
             TSharedRef<SVerticalBox> Pin = SNew(SVerticalBox);
-            auto AddPinRow = [&](const FString& Label, TFunction<void(float)>&& OnChange)
+            // bPinned toggle
+            TSharedRef<SHorizontalBox> PinnedRow = SNew(SHorizontalBox);
+            PinnedRow->AddSlot().Padding(FMargin(0,2)).AutoWidth()
+                [SNew(SCheckBox).IsChecked(ECheckBoxState::Unchecked)
+                    .OnCheckStateChanged_Lambda([this](ECheckBoxState S)
+                    {
+                        if (!SelectedLayerName.IsValid()) return;
+                        UFaceParallaxComponent* Comp = GetParallaxComponent();
+                        if (!Comp) return;
+                        bool bPinned = (S == ECheckBoxState::Checked);
+                        int32 N = Comp->GetNestedElementCount(ActiveViewState, SelectedLayerName);
+                        if (N > 0)
+                        {
+                            FFaceNestedArt El = Comp->GetNestedElement(ActiveViewState, SelectedLayerName, 0);
+                            El.Pin3D.bPinned = bPinned;
+                            Comp->SetNestedElement(ActiveViewState, SelectedLayerName, 0, El);
+                        }
+                    })];
+            PinnedRow->AddSlot().Padding(FMargin(4,2)).AutoWidth()
+                [MakeLbl(TEXT("Pinned"), 9, FLinearColor(0.6f,0.8f,1.0f))];
+            Pin->AddSlot().AutoHeight()[PinnedRow];
+
+            auto AddPinRow = [&](const FString& Label, TSharedPtr<SSlider>& SliderOut, TFunction<void(float)>&& OnChange)
             {
+                TSharedRef<SSlider> Sl = SNew(SSlider).Value(0.5f)
+                    .OnValueChanged_Lambda([Fn = MoveTemp(OnChange)](float V){ Fn(V * 4.0f - 2.0f); });
+                SliderOut = Sl;
                 TSharedRef<SHorizontalBox> R = SNew(SHorizontalBox);
                 R->AddSlot().Padding(FMargin(0,2)).AutoWidth()[MakeLbl(Label, 9)];
-                R->AddSlot().Padding(FMargin(4,2)).FillWidth(1.0f)
-                    [SNew(SSlider).Value(0.5f)
-                        .OnValueChanged_Lambda([Fn = MoveTemp(OnChange)](float V){ Fn(V * 4.0f - 2.0f); })];
+                R->AddSlot().Padding(FMargin(4,2)).FillWidth(1.0f)[Sl];
                 Pin->AddSlot().AutoHeight()[R];
             };
-            AddPinRow(TEXT("Pin X"), [](float V){ UE_LOG(LogTemp, Log, TEXT("PinX=%.2f"), V); });
-            AddPinRow(TEXT("Pin Y"), [](float V){ UE_LOG(LogTemp, Log, TEXT("PinY=%.2f"), V); });
-            AddPinRow(TEXT("Pin Z"), [](float V){ UE_LOG(LogTemp, Log, TEXT("PinZ=%.2f"), V); });
+            AddPinRow(TEXT("Pin X"), SliderPinX, [this](float V)
+            {
+                if (!SelectedLayerName.IsValid()) return;
+                UFaceParallaxComponent* Comp = GetParallaxComponent();
+                if (!Comp) return;
+                int32 N = Comp->GetNestedElementCount(ActiveViewState, SelectedLayerName);
+                if (N > 0)
+                {
+                    FFaceNestedArt El = Comp->GetNestedElement(ActiveViewState, SelectedLayerName, 0);
+                    El.Pin3D.Position3D.X = V;
+                    Comp->SetNestedElement(ActiveViewState, SelectedLayerName, 0, El);
+                }
+            });
+            AddPinRow(TEXT("Pin Y"), SliderPinY, [this](float V)
+            {
+                if (!SelectedLayerName.IsValid()) return;
+                UFaceParallaxComponent* Comp = GetParallaxComponent();
+                if (!Comp) return;
+                int32 N = Comp->GetNestedElementCount(ActiveViewState, SelectedLayerName);
+                if (N > 0)
+                {
+                    FFaceNestedArt El = Comp->GetNestedElement(ActiveViewState, SelectedLayerName, 0);
+                    El.Pin3D.Position3D.Y = V;
+                    Comp->SetNestedElement(ActiveViewState, SelectedLayerName, 0, El);
+                }
+            });
+            AddPinRow(TEXT("Pin Z"), SliderPinZ, [this](float V)
+            {
+                if (!SelectedLayerName.IsValid()) return;
+                UFaceParallaxComponent* Comp = GetParallaxComponent();
+                if (!Comp) return;
+                int32 N = Comp->GetNestedElementCount(ActiveViewState, SelectedLayerName);
+                if (N > 0)
+                {
+                    FFaceNestedArt El = Comp->GetNestedElement(ActiveViewState, SelectedLayerName, 0);
+                    El.Pin3D.Position3D.Z = V;
+                    Comp->SetNestedElement(ActiveViewState, SelectedLayerName, 0, El);
+                }
+            });
             Pin->AddSlot().AutoHeight().Padding(FMargin(0,2))
-                [MakeBtn(TEXT("Detect Profile"), [this](){ DetectFaceProfile(); })];
+                [MakeBtn(TEXT("Detect Profile"), [this](){ DetectFaceProfile(); RefreshUI(); })];
             PropScroll->AddSlot()
                 [MakeSectionBox(TEXT("Nested Art / Pins"), Pin)];
         }
@@ -2292,11 +2598,33 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
     // ========================
 
     {
+        TSharedRef<SVerticalBox> BotArea = SNew(SVerticalBox);
+
+        // Status matrix grid
+        StatusMatrixGrid = SNew(SGridPanel);
+        StatusMatrixScroll = SNew(SScrollBox).Orientation(Orient_Horizontal);
+        StatusMatrixScroll->AddSlot() [StatusMatrixGrid.ToSharedRef()];
+        RebuildStatusMatrix();
+        BotArea->AddSlot().AutoHeight().Padding(FMargin(2,1))
+            [SNew(SBox).HeightOverride(28)[StatusMatrixScroll.ToSharedRef()]];
+
         TSharedRef<SHorizontalBox> BotBar = SNew(SHorizontalBox);
         BotBar->AddSlot().Padding(FMargin(2)).AutoWidth()
             [MakeBtn(TEXT("Save Preset"), [this](){ SavePreset(); })];
         BotBar->AddSlot().Padding(FMargin(2)).AutoWidth()
-            [MakeBtn(TEXT("New Preset"), [this](){ CreateNewPreset(TEXT("NewPreset"), TEXT("/Game/FaceParallax/Presets")); RefreshUI(); })];
+            [MakeBtn(TEXT("New Preset"), [this]()
+            {
+                FString AssetName = TEXT("MyPreset");
+                FString Path = TEXT("/Game/FaceParallax/Presets");
+                CreateNewPreset(*AssetName, *Path);
+                FString Msg = FString::Printf(TEXT("Created preset '%s' at %s"), *AssetName, *Path);
+                if (TextStatus.IsValid()) TextStatus->SetText(FText::FromString(Msg));
+                RefreshUI();
+            })];
+        BotBar->AddSlot().Padding(FMargin(2)).AutoWidth()
+            [MakeBtn(TEXT("Snapshot"), [this](){ SnapshotPreset(); if (TextStatus.IsValid()) TextStatus->SetText(FText::FromString(TEXT("Snapshot saved."))); })];
+        BotBar->AddSlot().Padding(FMargin(2)).AutoWidth()
+            [MakeBtn(TEXT("Undo"), [this](){ RestoreSnapshot(); RefreshUI(); }, FLinearColor(1.0f,0.7f,0.3f))];
         BotBar->AddSlot().Padding(FMargin(2)).AutoWidth()
             [MakeBtn(TEXT("Clear State"), [this](){ ClearState(ActiveViewState); RefreshUI(); })];
         BotBar->AddSlot().Padding(FMargin(2)).AutoWidth()
@@ -2308,11 +2636,16 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
             .ColorAndOpacity(FLinearColor(0.55f,0.55f,0.55f));
         BotBar->AddSlot().Padding(FMargin(4,2)).VAlign(VAlign_Center).AutoWidth()
             [TextStatusDetail.ToSharedRef()];
-        Root->AddSlot().AutoHeight()
+        BotArea->AddSlot().AutoHeight()
             [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("NoBorder"))
                 .BorderBackgroundColor(FLinearColor(0.1f,0.1f,0.1f))
                 .Padding(FMargin(4,3))
                 [SNew(SBox).HeightOverride(24)[BotBar]]];
+        Root->AddSlot().AutoHeight()
+            [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("NoBorder"))
+                .BorderBackgroundColor(FLinearColor(0.08f,0.08f,0.08f))
+                .Padding(FMargin(2,2))
+                [BotArea]];
     }
 
     // Initial UI population
@@ -2341,6 +2674,50 @@ void UFaceParallaxEditorWidget::RefreshUI()
     RefreshTextureThumbs();
     RefreshTimeline();
     RefreshTransformSliders();
+    RefreshConfigCheckboxes();
+    RebuildZoneDiagram();
+    RebuildCrossLayerPanel();
+    RebuildStatusMatrix();
+    // Update zone labels
+    if (ZoneYawLabel.IsValid())
+    {
+        UFaceParallaxComponent* Comp = GetParallaxComponent();
+        if (Comp)
+        {
+            ZoneYawLabel->SetText(FText::FromString(FString::Printf(TEXT("Yaw: %.1f\u00b0  Pitch: %.1f\u00b0"),
+                Comp->CurrentYaw, Comp->CurrentPitch)));
+        }
+    }
+    // Update status detail
+    if (TextStatusDetail.IsValid())
+    {
+        FString S = GetStatusString();
+        TextStatusDetail->SetText(FText::FromString(S));
+    }
+    // Clear transient feedback after refresh
+    if (TextStatus.IsValid() && TextStatus->GetText().ToString().Len() > 60)
+        TextStatus->SetText(FText::FromString(TEXT("Ready")));
+}
+
+void UFaceParallaxEditorWidget::RefreshConfigCheckboxes()
+{
+    if (!CfgBox.IsValid()) return;
+    UFaceParallaxComponent* CompCfg = GetParallaxComponent();
+    if (!CompCfg) return;
+
+    auto ApplyCheck = [](TSharedPtr<SCheckBox>& Ch, bool bVal)
+    {
+        if (Ch.IsValid()) Ch->SetIsChecked(bVal ? ECheckBoxState::Checked : ECheckBoxState::Unchecked);
+    };
+
+    ApplyCheck(CheckBlinking, CompCfg->GetBlinkingEnabled());
+    ApplyCheck(CheckSwoosh, CompCfg->GetSwooshEnabled());
+    ApplyCheck(CheckNestedArt, CompCfg->GetNestedArtEnabled());
+    ApplyCheck(CheckParams, CompCfg->GetParamsEnabled());
+    ApplyCheck(CheckShowTextures, bLocalShowTextures);
+    ApplyCheck(CheckDepthMesh, bLocalShowDepthMesh);
+    ApplyCheck(CheckWireframe, bLocalShowWireframe);
+    ApplyCheck(CheckColorByDepth, bLocalColorByDepth);
 }
 
 void UFaceParallaxEditorWidget::RefreshLayerList()
@@ -2364,13 +2741,16 @@ void UFaceParallaxEditorWidget::RefreshLayerList()
         FString TagStr = Tag.ToString();
 
         TSharedRef<SHorizontalBox> Row = SNew(SHorizontalBox);
+        bool bLayerHidden = HiddenLayers.Contains(Tag);
         // Eye toggle
         Row->AddSlot().AutoWidth().Padding(FMargin(2,0,0,0)).VAlign(VAlign_Center)
             [SNew(SCheckBox)
-                .IsChecked(ECheckBoxState::Checked)
+                .IsChecked(bLayerHidden ? ECheckBoxState::Unchecked : ECheckBoxState::Checked)
                 .OnCheckStateChanged_Lambda([this, Tag](ECheckBoxState S)
                 {
-                    // Toggle layer visibility — not directly on slot; skip for now
+                    bool bNowHidden = (S == ECheckBoxState::Unchecked);
+                    if (bNowHidden) HiddenLayers.Add(Tag);
+                    else HiddenLayers.Remove(Tag);
                     RefreshUI();
                 })];
         // Layer name button
@@ -2385,10 +2765,10 @@ void UFaceParallaxEditorWidget::RefreshLayerList()
                 })
                 .Content()
                 [SNew(STextBlock)
-                    .Text(FText::FromString(TagStr))
+                    .Text(FText::FromString(bLayerHidden ? (TagStr + TEXT(" [hidden]")) : TagStr))
                     .Font(FCoreStyle::GetDefaultFontStyle("Regular", bSelected ? 10 : 9))
-                    .ColorAndOpacity(bSelected ? FLinearColor(1,1,1) : FLinearColor(0.7f,0.7f,0.7f))]];
-
+                    .ColorAndOpacity(bLayerHidden ? FLinearColor(0.35f,0.35f,0.35f) :
+                        (bSelected ? FLinearColor(1,1,1) : FLinearColor(0.7f,0.7f,0.7f)))]];
         LayerPanelBox->AddSlot().AutoHeight().Padding(FMargin(0,1))
             [SNew(SBox).HeightOverride(22)[Row]];
     }
@@ -2495,8 +2875,7 @@ void UFaceParallaxEditorWidget::RefreshTimeline()
         TSharedRef<SHorizontalBox> ExpRow = SNew(SHorizontalBox);
         // Show a few expression slots
         EExpression KnownExprs[] = {
-            EExpression::Neutral, EExpression::Happy, EExpression::Sad,
-            EExpression::Angry, EExpression::Surprise,
+            EExpression::Neutral, EExpression::Smile, EExpression::Frown,
         };
         for (auto Expr : KnownExprs)
         {
@@ -2531,7 +2910,10 @@ void UFaceParallaxEditorWidget::RefreshTimeline()
             [MakeLbl(TEXT("Swoosh"), 9, FLinearColor(1.0f,0.7f,0.5f))];
         TSharedRef<SHorizontalBox> SwRow = SNew(SHorizontalBox);
         SwRow->AddSlot().Padding(FMargin(0,2)).AutoWidth()
-            [MakeToggle(GetSwooshEnabled(), [this](bool b){ SetSwooshEnabled(b); RefreshUI(); })
+            [SNew(SCheckBox)
+                .IsChecked(GetSwooshEnabled() ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
+                .OnCheckStateChanged_Lambda([this](ECheckBoxState S)
+                { SetSwooshEnabled(S == ECheckBoxState::Checked); RefreshUI(); })
                 [MakeLbl(TEXT("On"), 8, FLinearColor(0.5f,1.0f,0.5f))]];
         if (SwooshFrames > 0)
         {
@@ -2608,23 +2990,20 @@ int32 UFaceParallaxEditorWidget::GetLayerIndex(FName Tag) const
 
 UTexture2D* UFaceParallaxEditorWidget::GetSelectedContentBrowserTexture()
 {
-    // In-editor: content browser selection read requires EditorAssetLibrary.
-    // This C++ function returns the first assigned texture for the current slot
-    // as a fallback. BP can override by calling SetSlotTextures directly.
-    // The Pick button in the Slate UI will try this function, and if it finds
-    // a matching texture in the slot already, it refreshes. For full workflow,
-    // Blueprint should open an asset picker dialog and call SetSlotTextures.
-    UTexture2D* Tex = nullptr;
-    if (SelectedLayerName.IsValid())
+    if (!GEditor) return nullptr;
+    FContentBrowserModule& CBModule = FModuleManager::LoadModuleChecked<FContentBrowserModule>(TEXT("ContentBrowser"));
+    TArray<FAssetData> SelectedAssets;
+    CBModule.Get().GetSelectedAssets(SelectedAssets);
+    for (const FAssetData& Asset : SelectedAssets)
     {
-        FFaceTextureSet Cur = GetSlotTextures(ActiveViewState, SelectedLayerName);
-        if (Cur.Albedo) Tex = Cur.Albedo;
-        else if (Cur.Normal) Tex = Cur.Normal;
-        else if (Cur.Depth) Tex = Cur.Depth;
+        if (Asset.GetClass()->IsChildOf(UTexture2D::StaticClass()))
+        {
+            UTexture2D* Tex = Cast<UTexture2D>(Asset.GetAsset());
+            if (Tex) return Tex;
+        }
     }
-    if (!Tex)
-        UE_LOG(LogTemp, Warning, TEXT("[FaceParallaxEditorWidget] GetSelectedContentBrowserTexture: no texture found. Select a texture in CB and call SetSlotTextures from BP."));
-    return Tex;
+    UE_LOG(LogTemp, Warning, TEXT("[FaceParallaxEditorWidget] No texture selected in Content Browser."));
+    return nullptr;
 }
 
 void UFaceParallaxEditorWidget::SetRenderTarget(UTextureRenderTarget2D* RT)
@@ -2633,7 +3012,7 @@ void UFaceParallaxEditorWidget::SetRenderTarget(UTextureRenderTarget2D* RT)
     if (RT)
     {
         PreviewBrush.SetResourceObject(RT);
-        PreviewBrush.ImageSize = FVector2D(1.0f, 1.0f);
+        PreviewBrush.ImageSize = FVector2D((float)RT->SizeX, (float)RT->SizeY);
         if (PreviewImageWidget.IsValid())
             PreviewImageWidget->SetImage(&PreviewBrush);
     }
@@ -2720,4 +3099,425 @@ void UFaceParallaxEditorWidget::DetectFaceProfile()
 {
     UFaceParallaxComponent* Comp = GetParallaxComponent();
     if (Comp) Comp->DetectFaceProfileFromPreset();
+}
+
+// ====================================================================
+// ZONE DIAGRAM
+// ====================================================================
+
+void UFaceParallaxEditorWidget::RebuildZoneDiagram()
+{
+    if (!ZoneDiagramWidget.IsValid()) return;
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    float HZW = Comp ? Comp->HalfZoneWidth : 22.5f;
+    float BlendW = Comp ? Comp->BlendWindowWidth : 5.0f;
+    float Yaw = Comp ? Comp->CurrentYaw : 0.0f;
+
+    // Build horizontal zones: 8 zones across 180 degrees
+    struct FZoneSeg { FString Label; float Start; float End; FLinearColor Color; };
+    TArray<FZoneSeg> Segs;
+    float HalfTotal = 180.0f;
+    float Z2 = HZW * 2.0f, Z3 = HZW * 3.0f, Z4 = HZW * 4.0f, Z5 = HZW * 5.0f, Z6 = HZW * 6.0f, Z7 = HZW * 7.0f;
+
+    auto AddSeg = [&](float S, float E, const FString& L, FLinearColor C)
+    {
+        S = FMath::Clamp(S, -HalfTotal, HalfTotal);
+        E = FMath::Clamp(E, -HalfTotal, HalfTotal);
+        if (S >= E) return;
+        Segs.Add({L, S, E, C});
+    };
+
+    AddSeg(-Z7, -Z5, TEXT("BkL"), FLinearColor(0.5f,0.5f,0.7f));
+    AddSeg(-Z5, -Z3, TEXT("ProfL"), FLinearColor(0.4f,0.6f,1.0f));
+    AddSeg(-Z3, -HZW, TEXT("3/4L"), FLinearColor(0.5f,0.7f,1.0f));
+    AddSeg(-HZW, HZW, TEXT("Front"), FLinearColor(0.6f,0.8f,1.0f));
+    AddSeg(HZW, Z3, TEXT("3/4R"), FLinearColor(0.5f,0.7f,1.0f));
+    AddSeg(Z3, Z5, TEXT("ProfR"), FLinearColor(0.4f,0.6f,1.0f));
+    AddSeg(Z5, Z7, TEXT("BkR"), FLinearColor(0.5f,0.5f,0.7f));
+    AddSeg(Z7, HalfTotal, TEXT("Back"), FLinearColor(0.4f,0.4f,0.6f));
+
+    TSharedRef<SHorizontalBox> Bar = SNew(SHorizontalBox);
+    float TotalAngle = HalfTotal * 2.0f;
+    int32 SegIdx = 0, YawPosPx = -1;
+    for (const FZoneSeg& Seg : Segs)
+    {
+        float Frac = (Seg.End - Seg.Start) / TotalAngle;
+        int32 Px = FMath::Max(1, (int32)(Frac * 400.0f));
+        FLinearColor C = Seg.Color;
+
+        // Blend window tint
+        if (BlendW > 0.0f)
+        {
+            float SegLen = Seg.End - Seg.Start;
+            float BlendFrac = BlendW / SegLen;
+            if (BlendFrac > 0.1f)
+                C = C * 0.7f + FLinearColor(0.5f, 0.5f, 0.3f) * 0.3f;
+        }
+
+        // Yaw cursor marker
+        int32 ThisStartPx = SegIdx > 0 ? 0 : 0;
+        if (Yaw >= Seg.Start && Yaw <= Seg.End && SegIdx > 0)
+        {
+            float YawFrac = (Yaw - Seg.Start) / (Seg.End - Seg.Start);
+            YawPosPx = (int32)(YawFrac * Px);
+        }
+
+        Bar->AddSlot().Padding(FMargin(0)).FillWidth(Frac)
+            [SNew(SBorder)
+                .BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+                .BorderBackgroundColor(C)
+                .Padding(FMargin(2,0))
+                [SNew(STextBlock)
+                    .Text(FText::FromString(Seg.Label))
+                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 7))
+                    .ColorAndOpacity(FLinearColor(0.1f,0.1f,0.1f))
+                    .Justification(ETextJustify::Center)]];
+        ++SegIdx;
+    }
+
+    // Overlay yaw cursor if within range
+    if (YawPosPx >= 0)
+        ZoneDiagramWidget = SNew(SOverlay)
+            + SOverlay::Slot()[Bar]
+            + SOverlay::Slot().HAlign(HAlign_Left).Padding(FMargin(YawPosPx, 0, 0, 0))
+                [SNew(SBox).WidthOverride(4)
+                    [SNew(SBorder)
+                        .BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+                        .BorderBackgroundColor(FLinearColor(1.0f, 0.2f, 0.2f))]];
+    else
+        ZoneDiagramWidget = Bar;
+}
+
+// ====================================================================
+// BLEND PREVIEW
+// ====================================================================
+
+void UFaceParallaxEditorWidget::SetBlendPreview(float Alpha)
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->SetBlendPreview(Alpha);
+}
+
+void UFaceParallaxEditorWidget::ClearBlendPreview()
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) Comp->ClearBlendPreview();
+}
+
+// ====================================================================
+// STATUS MATRIX
+// ====================================================================
+
+void UFaceParallaxEditorWidget::RebuildStatusMatrix()
+{
+    if (!StatusMatrixGrid.IsValid()) return;
+    StatusMatrixGrid->ClearChildren();
+
+    if (!ValidatePreset()) return;
+    TArray<FName> Tags;
+    {
+        UFaceParallaxComponent* Comp = GetParallaxComponent();
+        if (Comp)
+        {
+            for (int32 i = 0; i < Comp->GetNumLayerDefinitions(); ++i)
+                Tags.Add(Comp->GetLayerDefinition(i).LayerTag);
+        }
+        if (Tags.Num() == 0) Tags = { FName("Eyes"), FName("Brows"), FName("Mouth"), FName("Hair") };
+    }
+
+    TArray<EFaceAngleState> States = {
+        EFaceAngleState::Front, EFaceAngleState::ThreeQuarterRight,
+        EFaceAngleState::RightProfile, EFaceAngleState::BackRight,
+        EFaceAngleState::Back, EFaceAngleState::BackLeft,
+        EFaceAngleState::LeftProfile, EFaceAngleState::ThreeQuarterLeft,
+        EFaceAngleState::Top, EFaceAngleState::Bottom
+    };
+
+    // Header row — state labels
+    StatusMatrixGrid->AddSlot(0, 0)
+        [SNew(SBox).WidthOverride(44).HeightOverride(20)
+            [SNew(STextBlock)
+                .Text(FText::FromString(TEXT("")))
+                .Font(FCoreStyle::GetDefaultFontStyle("Regular", 7))
+                .ColorAndOpacity(FLinearColor(0.5f,0.5f,0.5f))]];
+    for (int32 si = 0; si < States.Num(); ++si)
+    {
+        FString Abbr;
+        switch (States[si])
+        {
+            case EFaceAngleState::Front: Abbr = TEXT("F"); break;
+            case EFaceAngleState::ThreeQuarterRight: Abbr = TEXT("3R"); break;
+            case EFaceAngleState::RightProfile: Abbr = TEXT("PR"); break;
+            case EFaceAngleState::BackRight: Abbr = TEXT("BR"); break;
+            case EFaceAngleState::Back: Abbr = TEXT("B"); break;
+            case EFaceAngleState::BackLeft: Abbr = TEXT("BL"); break;
+            case EFaceAngleState::LeftProfile: Abbr = TEXT("PL"); break;
+            case EFaceAngleState::ThreeQuarterLeft: Abbr = TEXT("3L"); break;
+            case EFaceAngleState::Top: Abbr = TEXT("T"); break;
+            case EFaceAngleState::Bottom: Abbr = TEXT("Bt"); break;
+        }
+        StatusMatrixGrid->AddSlot(si + 1, 0)
+            [SNew(SBox).WidthOverride(22).HeightOverride(20)
+                [SNew(SBorder)
+                    .BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+                    .BorderBackgroundColor(FLinearColor(0.12f,0.12f,0.12f))
+                    .Padding(FMargin(1))
+                    [SNew(STextBlock)
+                        .Text(FText::FromString(Abbr))
+                        .Font(FCoreStyle::GetDefaultFontStyle("Regular", 6))
+                        .ColorAndOpacity(FLinearColor(0.6f,0.6f,0.6f))
+                        .Justification(ETextJustify::Center)]]];
+    }
+
+    // Data rows — one per layer
+    for (int32 li = 0; li < Tags.Num(); ++li)
+    {
+        FName Tag = Tags[li];
+        StatusMatrixGrid->AddSlot(0, li + 1)
+            [SNew(SBox).WidthOverride(44).HeightOverride(18)
+                [SNew(STextBlock)
+                    .Text(FText::FromString(Tag.ToString()))
+                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 7))
+                    .ColorAndOpacity(FLinearColor(0.7f,0.7f,0.7f))]];
+        for (int32 si = 0; si < States.Num(); ++si)
+        {
+            bool bAssigned = ActivePreset->HasSlot(States[si], Tag);
+            bool bSelected = (States[si] == ActiveViewState);
+            FLinearColor CellColor = bAssigned
+                ? (bSelected ? FLinearColor(0.3f, 0.7f, 0.3f) : FLinearColor(0.2f, 0.5f, 0.2f))
+                : (bSelected ? FLinearColor(0.7f, 0.3f, 0.3f) : FLinearColor(0.15f,0.15f,0.15f));
+            StatusMatrixGrid->AddSlot(si + 1, li + 1)
+                [SNew(SBox).WidthOverride(22).HeightOverride(18)
+                    [SNew(SBorder)
+                        .BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+                        .BorderBackgroundColor(CellColor)
+                        .Padding(FMargin(1))
+                        [SNew(STextBlock)
+                            .Text(FText::FromString(bAssigned ? TEXT("\u2713") : TEXT("\u00D7")))
+                            .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+                            .ColorAndOpacity(bAssigned ? FLinearColor(0.8f,1.0f,0.8f) : FLinearColor(0.5f,0.5f,0.5f))
+                            .Justification(ETextJustify::Center)]]];
+        }
+    }
+}
+
+// ====================================================================
+// CROSS-LAYER OVERLAY
+// ====================================================================
+
+void UFaceParallaxEditorWidget::RebuildCrossLayerPanel()
+{
+    if (!CrossLayerBox.IsValid()) return;
+    CrossLayerBox->ClearChildren();
+
+    if (!ValidatePreset())
+    {
+        TextCrossLayer->SetText(FText::FromString(TEXT("No preset assigned.")));
+        CrossLayerBox->AddSlot().AutoHeight()[TextCrossLayer.ToSharedRef()];
+        return;
+    }
+
+    TArray<FName> AllTags;
+    {
+        UFaceParallaxComponent* Comp = GetParallaxComponent();
+        if (Comp)
+        {
+            for (int32 i = 0; i < Comp->GetNumLayerDefinitions(); ++i)
+                AllTags.Add(Comp->GetLayerDefinition(i).LayerTag);
+        }
+        if (AllTags.Num() == 0) AllTags = LayerNames;
+    }
+
+    FString Output;
+    for (const FName& Tag : AllTags)
+    {
+        if (!ActivePreset->HasSlot(ActiveViewState, Tag)) continue;
+        FFaceArtTransform T = GetEffectiveLayerTransform(ActiveViewState, Tag);
+        Output += FString::Printf(TEXT("%s: P(%.2f,%.2f) S(%.2f,%.2f) R(%.1f)"),
+            *Tag.ToString(),
+            T.Position.X, T.Position.Y,
+            T.Scale.X, T.Scale.Y,
+            T.Rotation);
+        // Check for nested elements
+        int32 NE = ActivePreset->GetNestedElementCount(ActiveViewState, Tag);
+        if (NE > 0)
+        {
+            Output += TEXT(" [");
+            for (int32 ni = 0; ni < NE; ++ni)
+            {
+                FFaceNestedArt N = ActivePreset->GetNestedElement(ActiveViewState, Tag, ni);
+                if (ni > 0) Output += TEXT(", ");
+                Output += FString::Printf(TEXT("%s P(%.2f,%.2f)"),
+                    *N.ElementName.ToString(),
+                    N.RelativeTransform.Position.X, N.RelativeTransform.Position.Y);
+            }
+            Output += TEXT("]");
+        }
+        Output += TEXT("\n");
+    }
+
+    if (Output.IsEmpty())
+        Output = TEXT("No layers assigned for this state.");
+
+    TextCrossLayer->SetText(FText::FromString(Output));
+    CrossLayerBox->AddSlot().AutoHeight()[TextCrossLayer.ToSharedRef()];
+}
+
+// ====================================================================
+// SEARCH FILTER
+// ====================================================================
+
+void UFaceParallaxEditorWidget::ApplySearchFilter(const FString& Filter)
+{
+    SearchFilter = Filter;
+    // Apply visibility on the main prop scroll sections
+    if (!PropScroll.IsValid()) return;
+    TArray<TSharedRef<SWidget>> Children = PropScroll->GetChildren();
+    for (const TSharedRef<SWidget>& Child : Children)
+    {
+        // Show all when filter is empty; otherwise, a more
+        // sophisticated per-section filter could be applied here.
+        Child->SetVisibility(Filter.IsEmpty() ? EVisibility::Visible : EVisibility::Visible);
+    }
+    UE_LOG(LogTemp, Verbose, TEXT("[FaceParallaxEditorWidget] Search filter: %s"), *Filter);
+}
+
+// ====================================================================
+// STATUS QUERIES
+// ====================================================================
+
+TArray<EFaceAngleState> UFaceParallaxEditorWidget::GetMissingStates() const
+{
+    TArray<EFaceAngleState> Missing;
+    if (!ValidatePreset()) return Missing;
+    TArray<EFaceAngleState> AllStates = {
+        EFaceAngleState::Front, EFaceAngleState::ThreeQuarterRight,
+        EFaceAngleState::RightProfile, EFaceAngleState::BackRight,
+        EFaceAngleState::Back, EFaceAngleState::BackLeft,
+        EFaceAngleState::LeftProfile, EFaceAngleState::ThreeQuarterLeft,
+        EFaceAngleState::Top, EFaceAngleState::Bottom
+    };
+    for (EFaceAngleState S : AllStates)
+    {
+        if (!ActivePreset->HasState(S))
+            Missing.Add(S);
+    }
+    return Missing;
+}
+
+TArray<FName> UFaceParallaxEditorWidget::GetMissingLayers(EFaceAngleState State) const
+{
+    TArray<FName> Missing;
+    if (!ValidatePreset()) return Missing;
+    TArray<FName> AllTags;
+    {
+        UFaceParallaxComponent* Comp = GetParallaxComponent();
+        if (Comp)
+        {
+            for (int32 i = 0; i < Comp->GetNumLayerDefinitions(); ++i)
+                AllTags.Add(Comp->GetLayerDefinition(i).LayerTag);
+        }
+    }
+    for (FName Tag : AllTags)
+    {
+        if (!ActivePreset->HasSlot(State, Tag))
+            Missing.Add(Tag);
+    }
+    return Missing;
+}
+
+TArray<FString> UFaceParallaxEditorWidget::GetAllLayerTransforms(EFaceAngleState State) const
+{
+    TArray<FString> Result;
+    if (!ValidatePreset()) return Result;
+    TArray<FName> AllTags;
+    {
+        UFaceParallaxComponent* Comp = GetParallaxComponent();
+        if (Comp)
+        {
+            for (int32 i = 0; i < Comp->GetNumLayerDefinitions(); ++i)
+                AllTags.Add(Comp->GetLayerDefinition(i).LayerTag);
+        }
+    }
+    for (FName Tag : AllTags)
+    {
+        if (!ActivePreset->HasSlot(State, Tag)) continue;
+        FFaceArtTransform T = ActivePreset->GetEffectiveTransform(State, Tag);
+        Result.Add(FString::Printf(TEXT("%s: Pos(%.3f,%.3f) Scale(%.3f,%.3f) Rot(%.1f)"),
+            *Tag.ToString(), T.Position.X, T.Position.Y, T.Scale.X, T.Scale.Y, T.Rotation));
+    }
+    return Result;
+}
+
+// ====================================================================
+// PARAM REFERENCE
+// ====================================================================
+
+TArray<FString> UFaceParallaxEditorWidget::FindParamUsages(FName ParamName) const
+{
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (Comp) return Comp->FindParamNameReferences(ParamName);
+    return TArray<FString>();
+}
+
+// ====================================================================
+// SNAPSHOT / UNDO
+// ====================================================================
+
+void UFaceParallaxEditorWidget::SnapshotPreset()
+{
+    if (!ActivePreset) return;
+    // Duplicate the preset into a temporary package
+    UPackage* TempPkg = CreatePackage(TEXT("/Temp/FaceParallaxSnapshot"));
+    TempPkg->SetFlags(RF_Transient);
+    SnapshotPresetBackup = DuplicateObject<UFaceParallaxPreset>(ActivePreset, TempPkg, TEXT("SnapshotBackup"));
+    if (TextStatus.IsValid())
+        TextStatus->SetText(FText::FromString(TEXT("Snapshot saved.")));
+}
+
+void UFaceParallaxEditorWidget::RestoreSnapshot()
+{
+    if (!SnapshotPresetBackup || !ActivePreset) return;
+    // Copy all assignments from snapshot back into active preset
+    TArray<EFaceAngleState> AllStates = {
+        EFaceAngleState::Front, EFaceAngleState::ThreeQuarterRight,
+        EFaceAngleState::RightProfile, EFaceAngleState::BackRight,
+        EFaceAngleState::Back, EFaceAngleState::BackLeft,
+        EFaceAngleState::LeftProfile, EFaceAngleState::ThreeQuarterLeft,
+        EFaceAngleState::Top, EFaceAngleState::Bottom
+    };
+    for (EFaceAngleState S : AllStates)
+    {
+        ActivePreset->ClearState(S);
+        TArray<FName> Tags = SnapshotPresetBackup->GetLayerTagsForState(S);
+        for (FName Tag : Tags)
+        {
+            FFaceArtSlot Slot = SnapshotPresetBackup->GetSlot(S, Tag);
+            ActivePreset->SetSlot(S, Tag, Slot);
+        }
+        // Copy NestedPin3D and FaceProfile references
+        if (SnapshotPresetBackup->HasState(S))
+        {
+            TArray<FName> STags = SnapshotPresetBackup->GetLayerTagsForState(S);
+            TArray<FName> ATags = ActivePreset->GetLayerTagsForState(S);
+            for (FName Tag : STags)
+            {
+                int32 N = SnapshotPresetBackup->GetNestedElementCount(S, Tag);
+                for (int32 i = 0; i < N; ++i)
+                {
+                    FFacePin3D Pin = SnapshotPresetBackup->GetNestedPin3D(S, Tag, i);
+                    ActivePreset->SetNestedPin3D(S, Tag, i, Pin);
+                }
+            }
+        }
+    }
+    // Refresh preview
+    ApplyPresetToPreview();
+    if (TextStatus.IsValid())
+        TextStatus->SetText(FText::FromString(TEXT("Snapshot restored.")));
+}
+
+bool UFaceParallaxEditorWidget::HasSnapshot() const
+{
+    return SnapshotPresetBackup != nullptr;
 }
