@@ -2,6 +2,19 @@
 
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
+
+#include "Styling/SlateBrush.h"
+#include "Widgets/Images/SImage.h"
+#include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SSlider.h"
+#include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SEditableTextBox.h"
+#include "Widgets/Text/STextBlock.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SScrollBox.h"
+#include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SWidgetSwitcher.h"
+#include "Widgets/SBoxPanel.h"
 #include "FaceParallaxTypes.h"
 #include "FaceParallaxEditorWidget.generated.h"
 
@@ -15,6 +28,7 @@ class UFaceParallaxEditorWidget : public UUserWidget
     GENERATED_BODY()
 
 public:
+    virtual TSharedRef<SWidget> RebuildWidget() override;
     // ===== TARGETS =====
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Editor|Targets",
         meta = (DisplayName = "Preview Actor"))
@@ -706,10 +720,61 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Face Editor|NestedArt")
     void DetectFaceProfile();
 
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|UI")
+    void SetRenderTarget(class UTextureRenderTarget2D* RT);
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Editor|UI",
+        meta = (DisplayName = "Preview Render Target"))
+    TObjectPtr<class UTextureRenderTarget2D> RenderTargetTexture;
+
+    // Exposed so BP can trigger UI refresh
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|UI")
+    void RefreshUI();
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|UI")
+    void SetSelectedLayer(const FString& LayerName);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|UI")
+    class UTexture2D* GetSelectedContentBrowserTexture();
+
 private:
     EFaceAngleState ActiveViewState = EFaceAngleState::Front;
+    FName SelectedLayerName;
+    bool bAutoFitOnAssign = true;
+    TArray<FName> LayerNames;
+    int32 GetLayerIndex(FName Tag) const;
 
     bool ValidatePreset() const;
     bool ValidatePreviewActor() const;
     UFaceParallaxComponent* GetParallaxComponent() const;
+
+    const FSlateBrush* GetPreviewBrush() const { return &PreviewBrush; }
+
+    void RefreshLayerList();
+    void RefreshTextureThumbs();
+    void RefreshTimeline();
+    void RefreshTransformSliders();
+
+    FSlateBrush PreviewBrush;
+    FSlateBrush ThumbBrushA;
+    FSlateBrush ThumbBrushN;
+    FSlateBrush ThumbBrushD;
+
+    TSharedPtr<SImage> PreviewImageWidget;
+    TSharedPtr<SImage> ThumbAlbedo;
+    TSharedPtr<SImage> ThumbNormal;
+    TSharedPtr<SImage> ThumbDepth;
+    TSharedPtr<STextBlock> TextStatus;
+    TSharedPtr<STextBlock> TextStatusDetail;
+    TSharedPtr<STextBlock> TextLayerName;
+    TSharedPtr<SVerticalBox> LayerPanelBox;
+    TSharedPtr<SVerticalBox> TimelineBox;
+    TSharedPtr<SScrollBox> LayerScrollBox;
+    TSharedPtr<SScrollBox> TimelineScrollBox;
+    TSharedPtr<STextBlock> TextFrameCounts;
+    TSharedPtr<SEditableTextBox> EditPosX;
+    TSharedPtr<SEditableTextBox> EditPosY;
+    TSharedPtr<SEditableTextBox> EditScaleX;
+    TSharedPtr<SEditableTextBox> EditScaleY;
+    TSharedPtr<SEditableTextBox> EditRot;
 };

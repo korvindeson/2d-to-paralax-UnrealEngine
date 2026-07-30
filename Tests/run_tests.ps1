@@ -1,7 +1,9 @@
-# Test runner for Face Parallax project
+# Master test runner for Face Parallax project
 param(
     [switch]$NoCompile,
-    [switch]$NoPython
+    [switch]$NoPython,
+    [switch]$IncludeUEBuild,
+    [string]$UEProjectRoot
 )
 
 $root = Split-Path -Parent $PSScriptRoot
@@ -10,6 +12,32 @@ $failed = $false
 
 Write-Host "===== Face Parallax Test Runner =====" -ForegroundColor Cyan
 Write-Host ""
+
+# Resolve UE engine path
+$EngineBatchDir = $null
+$userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
+$machinePath = [Environment]::GetEnvironmentVariable("PATH", "Machine")
+$combinedPaths = "$userPath;$machinePath;$env:PATH"
+$allPaths = $combinedPaths -split ';' | Select-Object -Unique
+foreach ($p in $allPaths) {
+    $candidate = Join-Path $p "Build.bat"
+    if (Test-Path $candidate) {
+        $EngineBatchDir = $p
+        break
+    }
+}
+if (-not $EngineBatchDir) {
+    $candidates = @(
+        "H:\unreal\UE_5.8\Engine\Build\BatchFiles",
+        "C:\Program Files\Epic Games\UE_5.8\Engine\Build\BatchFiles"
+    )
+    foreach ($c in $candidates) {
+        if (Test-Path (Join-Path $c "Build.bat")) {
+            $EngineBatchDir = $c
+            break
+        }
+    }
+}
 
 # 1. Python syntax validator
 if (-not $NoPython) {
@@ -36,10 +64,9 @@ if (-not $NoCompile) {
     $cppTest = "$testDir\ParallaxMathTests.cpp"
     $cppExe = "$testDir\ParallaxMathTests.exe"
 
-    # Try clang first, then g++, then cl
     $compilers = @(
+        @{name="g++ (ucrt64)"; cmd="g++ -std=c++17 -o `"$cppExe`" `"$cppTest`" -Werror -Wall -Wextra"},
         @{name="clang++"; cmd="clang++ -std=c++17 -o `"$cppExe`" `"$cppTest`" -Werror -Wall -Wextra"},
-        @{name="g++"; cmd="g++ -std=c++17 -o `"$cppExe`" `"$cppTest`" -Werror -Wall -Wextra"},
         @{name="cl (MSVC)"; cmd="cl /std:c++17 /EHsc /Fe:`"$cppExe`" `"$cppTest`" 2>&1"}
     )
 
@@ -53,7 +80,7 @@ if (-not $NoCompile) {
                 $compiled = $true
                 break
             } else {
-                Write-Host "  $($c.name) compilation failed, trying next..." -ForegroundColor DarkYellow
+                Write-Host "  $($c.name) failed, trying next..." -ForegroundColor DarkYellow
             }
         }
     }
@@ -73,6 +100,49 @@ if (-not $NoCompile) {
     } else {
         Write-Host "No C++ compiler found, skipping C++ math tests" -ForegroundColor DarkYellow
     }
+    Write-Host ""
+}
+
+# 3. UE Build test (optional, requires Build.bat on PATH)
+if ($IncludeUEBuild -and $EngineBatchDir) {
+    Write-Host "--- UE Build Test ---" -ForegroundColor Yellow
+    $origPath = $env:PATH
+    $env:PATH = "$EngineBatchDir;$origPath"
+
+    if (-not $UEProjectRoot) {
+        $UEProjectRoot = Join-Path $root "SAMPLES\MyProject"
+    }
+    $UEProjectRoot = Resolve-Path $UEProjectRoot
+    $UProjectPath = Join-Path $UEProjectRoot "MyProject.uproject"
+    $ModuleName = "MyProjectEditor"
+    $BuildArgs = @($ModuleName, "Win64", "Development", "`"$UProjectPath`"", "-WaitMutex", "-FromMsBuild")
+
+    Write-Host "  Project: $UProjectPath"
+    Write-Host "  Engine:   $EngineBatchDir"
+    Write-Host "  Building $ModuleName..."
+
+    $buildOut = & "Build.bat" $ModuleName "Win64" "Development" "`"$UProjectPath`"" "-WaitMutex" "-FromMsBuild" 2>&1
+    $buildExit = $LASTEXITCODE
+
+    $env:PATH = $origPath
+
+    if ($buildExit -ne 0) {
+        $failed = $true
+        Write-Host "UE BUILD FAILED (exit $buildExit)" -ForegroundColor Red
+        Write-Host $buildOut | Select-String -Pattern "error"
+    } else {
+        Write-Host "UE BUILD PASSED" -ForegroundColor Green
+        $DllPath = Join-Path $UEProjectRoot "Binaries\Win64\UnrealEditor-MyProject.dll"
+        if (Test-Path $DllPath) {
+            Write-Host "[OK] DLL: $DllPath" -ForegroundColor Green
+        }
+    }
+    Write-Host ""
+} elseif ($IncludeUEBuild) {
+    Write-Host "--- UE Build Test ---" -ForegroundColor Yellow
+    Write-Host "[SKIP] Build.bat not found on PATH or known locations" -ForegroundColor DarkYellow
+    Write-Host "       Set PATH to UE Engine\Build\BatchFiles or install UE at:"
+    Write-Host "       H:\unreal\UE_5.8\Engine\Build\BatchFiles"
     Write-Host ""
 }
 

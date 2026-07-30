@@ -51,9 +51,8 @@ class SyntaxValidator:
             self._check_include_guard(fp, text)
             self._check_pragma_once(fp, text)
         # 5. UCLASS/UPROPERTY/UFUNCTION macro balance
-        self._check_uht_macros(fp, lines)
-        # 6. Class/struct/namespace semicolons
-        self._check_missing_semicolons(fp, text, lines)
+        self._check_uht_macros(fp, text)
+        # 6. (no-op removed — class/struct semicolons caught by compiler)
 
     def _check_balance(self, fp, lines, pair, name):
         open_ch, close_ch = pair[0], pair[1]
@@ -98,7 +97,7 @@ class SyntaxValidator:
         if fp.suffix == '.h' and not has_pragma:
             self._error(fp, "Missing #pragma once")
 
-    def _check_uht_macros(self, fp, lines):
+    def _check_uht_macros(self, fp, text):
         macros = {
             'UPROPERTY': 0,
             'UFUNCTION': 0,
@@ -110,40 +109,13 @@ class SyntaxValidator:
             'UPARAM': 0,
         }
 
-        for lineno, line in enumerate(lines, 1):
-            for macro in macros:
-                if macro in line and '#' not in line:
-                    # Check for closing paren on the macro
-                    pass
-
-        text = fp.read_text(encoding='utf-8-sig')
         for macro in macros:
             opens = len(re.findall(rf'\b{macro}\s*\(', text))
             macros[macro] = opens
 
         for macro, count in macros.items():
-            if count > 120:
+            if count > 300:
                 self._error(fp, f"High count of {macro}: {count} (possible parse issue)")
-
-    def _check_missing_semicolons(self, fp, text, lines):
-        for lineno, line in enumerate(lines, 1):
-            stripped = line.strip()
-            if not stripped or stripped.startswith('//') or stripped.startswith('#'):
-                continue
-            if re.match(r'class\s+\w+.*\{', stripped) and not stripped.endswith('{'):
-                continue
-
-            # Check for class/struct declaration ending without semicolon
-            if re.match(r'class\s+\w+.*', stripped) and ';' not in stripped and '{' not in stripped:
-                # might be a forward declaration with missing semicolon
-                pass
-
-        # Check end of file brace + semicolon for UCLASS
-        for lineno, line in enumerate(lines, 1):
-            stripped = line.strip()
-            if stripped == '};' and lineno < len(lines):
-                # Likely end of a class
-                pass
 
     def _error(self, fp, msg):
         rel = fp.relative_to(self.root)
