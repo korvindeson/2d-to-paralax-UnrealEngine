@@ -30,8 +30,8 @@ AFaceParallaxPreviewActor::AFaceParallaxPreviewActor()
 
     SceneCapture = CreateDefaultSubobject<USceneCaptureComponent2D>(TEXT("SceneCapture"));
     SceneCapture->SetupAttachment(PreviewRoot);
-    SceneCapture->bCaptureEveryFrame = true;
-    SceneCapture->bCaptureOnMovement = true;
+    SceneCapture->bCaptureEveryFrame = false;
+    SceneCapture->bCaptureOnMovement = false;
     SceneCapture->PrimitiveRenderMode = ESceneCapturePrimitiveRenderMode::PRM_LegacySceneCapture;
     SceneCapture->ShowFlags.SetAtmosphere(false);
     SceneCapture->ShowFlags.SetFog(false);
@@ -43,6 +43,8 @@ AFaceParallaxPreviewActor::AFaceParallaxPreviewActor()
 void AFaceParallaxPreviewActor::BeginPlay()
 {
     Super::BeginPlay();
+    bOrbitDirty = true;
+    bCaptureDirty = true;
     UpdateCaptureTransform();
 }
 
@@ -54,9 +56,19 @@ void AFaceParallaxPreviewActor::Tick(float DeltaTime)
     {
         OrbitYaw += AutoRotateSpeed * DeltaTime;
         if (OrbitYaw > 360.0f) OrbitYaw -= 360.0f;
+        bOrbitDirty = true;
     }
 
-    UpdateCaptureTransform();
+    if (bOrbitDirty)
+    {
+        UpdateCaptureTransform();
+        bOrbitDirty = false;
+    }
+    if (bCaptureDirty)
+    {
+        SceneCapture->CaptureScene();
+        bCaptureDirty = false;
+    }
 }
 
 void AFaceParallaxPreviewActor::AssignSkeletalMesh(USkeletalMesh* Mesh)
@@ -78,16 +90,19 @@ void AFaceParallaxPreviewActor::SetRenderTarget(UTextureRenderTarget2D* RenderTa
 void AFaceParallaxPreviewActor::SetOrbitYaw(float Degrees)
 {
     OrbitYaw = FMath::Fmod(Degrees, 360.0f);
+    MarkOrbitDirty();
 }
 
 void AFaceParallaxPreviewActor::SetOrbitPitch(float Degrees)
 {
     OrbitPitch = FMath::Clamp(Degrees, -89.0f, 89.0f);
+    MarkOrbitDirty();
 }
 
 void AFaceParallaxPreviewActor::SetOrbitDistance(float Distance)
 {
     OrbitDistance = FMath::Max(10.0f, Distance);
+    MarkOrbitDirty();
 }
 
 void AFaceParallaxPreviewActor::SetPreviewFOV(float FOV)
@@ -97,6 +112,7 @@ void AFaceParallaxPreviewActor::SetPreviewFOV(float FOV)
     {
         SceneCapture->FOVAngle = PreviewFOV;
     }
+    MarkOrbitDirty();
 }
 
 void AFaceParallaxPreviewActor::ResetCamera()
@@ -105,6 +121,7 @@ void AFaceParallaxPreviewActor::ResetCamera()
     OrbitPitch = -15.0f;
     OrbitDistance = 180.0f;
     PreviewFOV = 30.0f;
+    MarkOrbitDirty();
 }
 
 void AFaceParallaxPreviewActor::UpdateCaptureTransform()
@@ -120,6 +137,7 @@ void AFaceParallaxPreviewActor::UpdateCaptureTransform()
     SceneCapture->SetWorldLocation(CaptureLocation);
     SceneCapture->SetWorldRotation(CaptureRotation);
     SceneCapture->FOVAngle = PreviewFOV;
+    bCaptureDirty = true;
 }
 
 void AFaceParallaxPreviewActor::ApplyPreset(UFaceParallaxPreset* Preset)

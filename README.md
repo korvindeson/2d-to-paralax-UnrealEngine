@@ -1,25 +1,34 @@
-# FaceParallax — 2D Face Parallax System for Unreal Engine
+# FaceParallax — 2D Face Parallax System for Unreal Engine 5
 
-Camera-driven 2D face rendering with multi-layer parallax, depth map support, view-state transitions, real-time depth debug visualizer, preset asset system, and preview actor for an in-editor visual editor.
+Camera-driven 2D face rendering with multi-layer parallax, depth map support, view-state transitions across 10 angles, real-time depth debug visualizer, preset asset system, and in-editor visual editor with 577+ automated tests.
 
 ---
 
 ## Overview
 
-This system lets you render a 2D character face that responds to camera angle — switching between 10 view states (Front, 3/4 Left/Right, Profile Left/Right, Back Left/Right, Back, Top, Bottom) with smooth crossfades. Each state can use its own texture set (Albedo, Normal, Depth) driven by Blueprint or automated via the **Preset** system. Multi-layer parallax offsets are computed per-layer based on camera deviation and depth scale.
+The system renders a 2D character face that responds to camera angle — switching between 10 view states (Front, 3/4 Left/Right, Profile Left/Right, Back Left/Right, Back, Top, Bottom) with smooth crossfades. Each state uses its own texture set (Albedo, Normal, Depth) driven by Blueprint or automated via the **Preset** system. Multi-layer parallax offsets are computed per-layer based on camera deviation and depth scale.
 
 **Key features:**
-
 - **Angle-driven state machine** — detects camera position relative to the head bone and selects the correct 2D view
 - **Multi-layer parallax** — each art layer moves at its own rate based on depth scale
 - **Vertical parallax** — Top/Bottom views produce Y-axis parallax offset
 - **Continuous blending** — smooth crossfade at zone boundaries, not hard state snaps
 - **Hysteresis** — prevents flickering at zone edges
+- **Custom zone boundary multipliers** — adjust per-zone width for non-uniform view distribution
 - **Material-driven depth** — pushes parallax offsets and blend alpha to material instances for shader-based depth effects
 - **Preset system** — `UFaceParallaxPreset` DataAsset stores texture assignments per `(ViewState × LayerTag)`
 - **Auto texture swap** — when a preset is active, textures swap automatically on state change (no Blueprint logic needed)
+- **Async texture loading** — textures loaded via `UAssetManager::RequestAsyncLoad` with streamable delegate; no synchronous stalls
+- **Texture push caching** — per-frame texture parameter sets guarded by pointer comparison; no redundant render state invalidation
+- **Nested art + jiggle physics** — child art pieces with spring-damper physics, idle animation, per-view visibility, and 3D pin projection
+- **Sequencer camera cache** — avoids per-frame `GetAllActorsOfClass` by caching the resolved camera actor
+- **Expression system** — per-slot expression texture variants with smooth crossfade
+- **Viseme system** — per-expression speech mouth shapes as frame-based flipbook animation
+- **Blink animation** — multi-frame blink with random interval timing
+- **Swoosh transitions** — directional blur-frame sequences triggered by camera turn speed
 - **Depth Debug Visualizer** — toggleable procedural 3D mesh generated from the current depth map
-- **Preview Actor** — `AFaceParallaxPreviewActor` with scene capture for in-editor 3D preview
+- **Preview Actor** — `AFaceParallaxPreviewActor` with scene capture for in-editor 3D preview (dirty-flag optimized: capture only on orbit change)
+- **Editor Widget** — `UFaceParallaxEditorWidget` with 221+ Blueprint-callable functions across 19 categories, diagnostic log overlay, auto-refresh on preset modification, and transaction-backed undo/redo
 
 ---
 
@@ -29,38 +38,50 @@ This system lets you render a 2D character face that responds to camera angle �
 
 | File | Type | Purpose |
 |---|---|---|
-| `FaceParallaxTypes.h` | Shared types | `EFaceAngleState` enum, `FFaceTextureSet`, `FFaceViewStateLayerSet`, `FFaceArtTransform`, `FFaceArtSlot` structs |
-| `FaceParallaxComponent.h/.cpp` | Core component | State machine, parallax offsets, material parameters, preset application, art transform pushing |
-| `FaceParallaxPreset.h/.cpp` | DataAsset | Stores texture + transform mappings per view state and layer. Created from Content Browser. |
-| `DepthDebugVisualizerComponent.h/.cpp` | Debug component | Procedural mesh from depth map, wireframe, color-by-depth |
+| `FaceParallaxTypes.h` | Shared types | `EFaceAngleState`, `ECameraSource`, `ESwooshPhase`, `EExpression`, `EViseme`, `EFaceParamTarget` enums. Structs: `FFaceTextureSet`, `FFaceArtTransform`, `FFaceArtSlot`, `FFaceViewStateLayerSet`, `FFaceLayerDef`, `FFaceJiggleSettings`, `FFaceNestedArt`, `FFaceParamBinding`, `FFaceProfile3D`, `FFacePin3D`, `FFaceAppliedTextures` |
+| `FaceParallaxComponent.h/.cpp` | Core component | State machine, parallax offsets, material parameter push, preset application, jiggle physics, idle animation, nested art transforms, 3D pin projection, face profile detection. 145 BP-accessible functions. |
+| `FaceParallaxPreset.h/.cpp` | DataAsset | Stores per-state × per-layer texture + transform assignments. Batch operations, Pin3D accessors, swoosh art, nested elements. |
+| `DepthDebugVisualizerComponent.h/.cpp` | Debug component | Procedural mesh from depth map, wireframe, color-by-depth, configurable grid resolution |
 | `FaceParallaxPreviewActor.h/.cpp` | Preview actor | Skeletal mesh + scene capture + orbit controls + per-part transform access |
-| `FaceParallaxEditorWidget.h/.cpp` | Editor Widget | C++ `UUserWidget` subclass providing bindable functions for every setting across 10 categories |
+| `FaceParallaxEditorWidget.h/.cpp` | Editor Widget | C++ `UUserWidget` subclass providing bindable functions for every setting across 19 categories. Diagnostic log overlay, auto-refresh via `FCoreUObjectDelegates::OnObjectModified`. |
+| `deploy.py` | Deployment script | Creates master material, material instances, preset data asset, and character BP inside the Unreal Editor Python console |
+| `_gen_embed.py` | Maintenance script | Re-encodes all `.h`/`.cpp` files into `deploy.py`'s `EMBEDDED_SOURCES` for self-contained deployment |
+| `Tests/ParallaxMathTests.cpp` | Math tests | Standalone C++17 (no UE dep) — 577 tests covering state machine, transforms, blink/expression/viseme, swoosh, parameters, nested art + jiggle, 3D pin projection, batch ops, zone multipliers |
+| `Tests/SyntaxValidator.py` | Syntax validator | Brace/macro balance, include guards — enforces clean parsing on all source files |
+| `Tests/run_tests.ps1` | Test runner | Syntax validator + C++ math tests + optional UE build test |
+| `Tests/ue_build_test.ps1` | UE build test | Compiles SAMPLES project with `Build.bat`, verifies DLL output |
+| `SAMPLES/MyProject/` | Standalone UE5 project copy | Used for CI/offline compilation verification |
 
 ### Component Roles
 
 | Component | Purpose |
 |---|---|
-| `UFaceParallaxComponent` | Core component. Computes camera-to-head angle, manages view state machine, calculates parallax offsets per layer, drives material parameters, applies preset textures. |
-| `UDepthDebugVisualizerComponent` | Optional debug tool. Reads the current depth map texture, builds a uniform-grid procedural mesh with Z = depth value, colorized by height. Toggleable in-game and in-editor. |
+| `UFaceParallaxComponent` | Core component. Computes camera-to-head angle, manages view state machine, calculates parallax offsets per layer, drives material parameters, applies preset textures. Handles async texture loading, sequencer camera caching, texture push caching. |
+| `UDepthDebugVisualizerComponent` | Optional debug tool. Reads the current depth map texture, builds a uniform-grid procedural mesh with Z = depth value, colorized by height. Texture compression validation included. |
 | `UFaceParallaxPreset` | Data asset. Holds a `TMap<EFaceAngleState, FFaceViewStateLayerSet>` — one texture set per view state, with sub-keys per layer tag. |
-| `AFaceParallaxPreviewActor` | Editor/runtime preview actor. Hosts the mesh, parallax component, depth debug, and a scene capture camera with orbit controls. Used by the Editor Widget. |
-| `UFaceParallaxEditorWidget` | `UUserWidget` subclass with bindable Blueprint functions for every editor setting — transform sliders, view overrides, auto-fit, sync, camera, debug toggles, material params, status. |
+| `AFaceParallaxPreviewActor` | Editor/runtime preview actor. Hosts the mesh, parallax component, depth debug, and a scene capture camera with orbit controls. Dirty-flag optimized: capture occurs only on orbit change. |
+| `UFaceParallaxEditorWidget` | `UUserWidget` subclass with bindable Blueprint functions for every editor setting — transform sliders, view overrides, auto-fit, sync, camera, debug toggles, material params, status, nested art. Includes diagnostic log and auto-refresh on preset modification. Undo/redo via `GEditor->BeginTransaction` with `FPresetTransactionScope` RAII guard. |
 
 ### Module
 
-The API macro is `FACEPARALLAX_API`. Include the module in your project's `Build.cs`:
+Include the module in your project's `Build.cs`:
 
 ```csharp
 PublicDependencyModuleNames.AddRange(new string[] {
-    "Core", "CoreUObject", "Engine", "InputCore"
+    "Core", "CoreUObject", "Engine", "InputCore",
+    "LevelSequence", "CinematicCamera", "AssetRegistry",
+    "ProceduralMeshComponent",
 });
-PrivateDependencyModuleNames.AddRange(new string[] {
-    "ProceduralMeshComponent",   // required for DepthDebugVisualizerComponent
-    "Blutility"                  // required for UFaceParallaxEditorWidget if used as Editor Utility Widget base
-});
+
+if (Target.Type == TargetRules.TargetType.Editor)
+{
+    PrivateDependencyModuleNames.AddRange(new string[] {
+        "ContentBrowser", "AssetRegistry", "UnrealEd", "DesktopPlatform",
+    });
+}
 ```
 
-Also add `"ProceduralMeshComponent"` to your `.uproject` plugin list if it isn't there already:
+Also add `"ProceduralMeshComponent"` to your `.uproject` plugin list:
 
 ```json
 "Plugins": [
@@ -84,6 +105,8 @@ Pitch < -60°   → Bottom
                 └─────────────────────────────────────────────┘
 ```
 
+Default zone boundaries (multiplier × HalfZoneWidth = 22.5°):
+
 | State | Yaw Range (degrees) |
 |---|---|
 | Front | (-22.5, 22.5] |
@@ -96,6 +119,8 @@ Pitch < -60°   → Bottom
 | ThreeQuarterLeft | (-67.5, -22.5] |
 | Top | Pitch > TopViewPitchThreshold |
 | Bottom | Pitch < BottomViewPitchThreshold |
+
+**Custom zone boundaries**: Set `ZoneBoundaryMultipliers` (TArray<float>, indices 0-3 for Front, ThreeQuarter, Profile, Back) to adjust zone widths. Default `{1,3,5,7}`.
 
 ### Transitions
 
@@ -144,73 +169,30 @@ When `bUseMaterialDrivenDepth` is enabled, the component sets these parameters o
 
 | Parameter | Type | Description |
 |---|---|---|
-| `StateBlendAlpha` | Scalar | 0→1 crossfade between previous and current state. Material should lerp between `AlbedoTexturePrev/NormalTexturePrev/DepthTexturePrev` (previous state) and the non-prev counterparts (current state). |
+| `StateBlendAlpha` | Scalar | 0→1 crossfade between previous and current state |
 | `ParallaxOffset` | Vector4 | (OffsetX, OffsetY, 0, 0) — per-layer parallax shift |
 | `DepthIntensity` | Scalar | Global depth map intensity multiplier |
 | `DebugDepth` | Scalar | 0 = normal rendering, 1 = show depth as heat map |
 | `IsTopDown` | Scalar | 1 when in Top or Bottom state (for shader branching) |
 | `IsTopView` | Scalar | 1 when in Top state specifically |
-| `ArtPosition` | Vector4 | (PosX, PosY, 0, 0) — per-art-piece UV position offset (canonical + override + optional yaw-driven dynamic offset) |
+| `ArtPosition` | Vector4 | (PosX, PosY, 0, 0) — per-art-piece UV position offset |
 | `ArtScale` | Vector4 | (ScaleX, ScaleY, 0, 0) — per-art-piece UV scale |
 | `ArtRotation` | Scalar | Rotation in degrees — per-art-piece UV rotation |
-| `AlbedoTexturePrev` | Texture2D | Previous state albedo (for crossfade). Material lerps between this and `AlbedoTexture` using `StateBlendAlpha`. |
+| `AlbedoTexturePrev` | Texture2D | Previous state albedo (for crossfade) |
 | `NormalTexturePrev` | Texture2D | Previous state normal map |
 | `DepthTexturePrev` | Texture2D | Previous state depth map |
-| `ExpressionBlendAlpha` | Scalar | 0→1 crossfade between previous and current expression. Material should lerp `Expression*Prev` ↔ main params. |
-| `ExpressionAlbedoPrev` | Texture2D | Previous expression albedo |
-| `ExpressionNormalPrev` | Texture2D | Previous expression normal map |
-| `ExpressionDepthPrev` | Texture2D | Previous expression depth map |
 
-### Viseme System (Speech Mouth Shapes)
+### Material Parameters (Preset System)
 
-Each `FFaceArtSlot` stores per-expression, per-viseme animation frame sequences. Visemes represent mouth shapes for different phonemes (speech sounds). When a viseme is triggered, the component plays through the frame sequence as a flipbook animation.
+When a preset is active, the component sets these texture parameters on each layer's material instances:
 
-**Supported visemes:**
-
-| Value | Display Name |
-|---|---|
-| `Uh` | Uh |
-| `Ah` | Ah |
-| `Ee` | Ee |
-| `D` | D |
-| `S` | S |
-| `F` | F |
-| `M` | M |
-| `L` | L |
-| `WOO` | WO-o |
-| `Oh` | Oh |
-| `R` | R |
-
-**Properties:**
-
-| Property | Default | Description |
+| Property | Default | Material Parameter |
 |---|---|---|
-| `bVisemeEnabled` | true | Enable viseme playback |
-| `VisemeFrameDuration` | 0.04s | Seconds per viseme frame |
+| `AlbedoParamName` | `"AlbedoTexture"` | Texture2DParameter |
+| `NormalParamName` | `"NormalTexture"` | Texture2DParameter |
+| `DepthParamName` | `"DepthTexture"` | Texture2DParameter |
 
-**Data structure:** `Slot.VisemeFrameSets[Expression][Viseme] = TArray<FFaceTextureSet>`
-
-Each expression (Neutral, Smile, Frown) can have its own viseme frame set for each of the 11 visemes. This allows different mouth shapes depending on the character's expression — e.g., a smile-Ah looks different from a frown-Ah.
-
-**Behavior:**
-- Call `PlayViseme(EViseme::Ah)` to start a viseme animation
-- The component plays through the frame sequence at `VisemeFrameDuration` speed
-- When all frames are exhausted, the viseme auto-completes and mouth returns to the expression-default texture
-- Call `StopViseme()` to interrupt playback early
-- Events: `OnVisemeStarted`, `OnVisemeCompleted` (both broadcast `CurrentState, PreviousState`)
-- Viseme texture frames override the main texture params (`AlbedoTexture`/etc.) while playing, similar to blink
-
-**Usage from Blueprint:**
-```
-// Play the "Ah" viseme on the current expression
-PlayViseme(EViseme::Ah)
-
-// Check if currently playing
-IsVisemePlaying()
-
-// Stop early
-StopViseme()
-```
+Each material used by a layer should expose these as texture parameters so the preset system can drive them automatically.
 
 ### Dual-Texture Crossfade
 
@@ -223,395 +205,302 @@ The `StateBlendAlpha` parameter ramps from 0→1. Your material should use it as
 Albedo = lerp(AlbedoTexturePrev, AlbedoTexture, StateBlendAlpha)
 ```
 
-This enables smooth crossfades between eye directions, not just fade-ins of the new art.
+### Texture Push Caching
 
-### Blink Animation
+Per-frame `SetTextureParameterValue` calls are guarded by pointer comparison against `LastAppliedTextures` (a `TMap<FName, TObjectPtr<UTexture2D>>`). A texture parameter is only updated when the pointer actually changes, avoiding redundant GPU render state invalidation. Same optimization applies to nested art textures via `LastAppliedNestedTextures`.
 
-Each `FFaceArtSlot` stores an ordered `TArray<FFaceTextureSet> BlinkFrames`. The component plays through these frames sequentially at a configurable rate, allowing multi-frame blink animations (e.g., open → slightly closed → half → closed → pushed → closed → half → open).
+### Async Texture Loading
 
-**Properties:**
+`AsyncLoadSlotTextures` calls `UAssetManager::GetStreamableManager().RequestAsyncLoad()` with `FStreamableDelegate` bound to `OnAsyncTexturesLoaded`. Active handles are tracked in `ActiveTextureLoads`; existing handles are cancelled when new loads are initiated. Textures are resolved from soft object pointers and written into the slot's hard refs and cache. No `LoadSynchronous` calls remain.
 
-| Property | Default | Description |
-|---|---|---|
-| `bBlinkingEnabled` | true | Enable automatic blinking |
-| `BlinkIntervalMin` | 3.0s | Minimum seconds between blinks |
-| `BlinkIntervalMax` | 7.0s | Maximum seconds between blinks |
-| `BlinkFrameDuration` | 0.03s | Seconds per blink frame |
+### Sequencer Camera Cache
 
-**Behavior:**
-- Blinks occur at random intervals between `BlinkIntervalMin` and `BlinkIntervalMax`
-- Each frame is shown for `BlinkFrameDuration` seconds
-- When blinking, current texture params (`AlbedoTexture`/`NormalTexture`/`DepthTexture`) are overridden with the current blink frame
-- Call `ForceBlink()` to trigger a blink immediately
-- Events: `OnBlinkStarted`, `OnBlinkCompleted` (both broadcast `CurrentState, PreviousState`)
-
-### Expression System
-
-Each `FFaceArtSlot` stores expression-specific texture variants in `TMap<EExpression, FFaceTextureSet> ExpressionTextures`. Changing the expression triggers a smooth crossfade controlled by the material parameter `ExpressionBlendAlpha`.
-
-**Supported expressions:**
-
-| Value | Display Name |
-|---|---|
-| `Neutral` | Neutral |
-| `Smile` | Smile |
-| `Frown` | Frown |
-
-**Properties:**
-
-| Property | Default | Description |
-|---|---|---|
-| `CurrentExpression` | Neutral | Active expression |
-| `ExpressionCrossfadeDuration` | 0.3s | Transition duration in seconds |
-| `ExpressionBlendParamName` | `"ExpressionBlendAlpha"` | Scalar for expression crossfade |
-| `ExpressionAlbedoPrevParamName` | `"ExpressionAlbedoPrev"` | Previous expression albedo texture |
-| `ExpressionNormalPrevParamName` | `"ExpressionNormalPrev"` | Previous expression normal map |
-| `ExpressionDepthPrevParamName` | `"ExpressionDepthPrev"` | Previous expression depth map |
-
-**Behavior:**
-- When `SetExpression(NewExpression)` is called, current textures are captured into `Expression*Prev` params
-- New expression textures are loaded into the main texture params (`AlbedoTexture`/etc.)
-- `ExpressionBlendAlpha` ramps from 0→1 over `ExpressionCrossfadeDuration`
-- Material should lerp between `Expression*Prev` and main params using `ExpressionBlendAlpha`
-- If no expression textures exist for the current expression, falls back to the slot's base `Textures`
-- Expression variants can be assigned per-state × per-layer, just like base textures
-
-### Dynamic Art Offset (Eye Tracking)
-
-When `bDriveArtPositionFromYaw` is enabled on the component, the `ArtPosition` is automatically offset by the yaw/pitch deviation within the current view zone (clamped by `MaxYawArtOffset`). This creates the illusion that the eyes track the camera without needing sub-zone texture variants:
-
-- **Horizontal states** (Front, Profile, etc.): `ArtPosition.X` offset by normalized yaw deviation
-- **Vertical states** (Top, Bottom): `ArtPosition.Y` offset by normalized pitch deviation
-
-```
-Horizontal: ArtPosition.X = Canonical.X + (YawDeviation / HalfZoneWidth) × MaxYawArtOffset
-Vertical:   ArtPosition.Y = Canonical.Y + (PitchDeviation / HalfZoneWidth) × MaxYawArtOffset
-```
-
-### Material Texture Parameters (Preset System)
-
-When a preset is active, the component sets these texture parameters on each layer's material instances, using the `AlbedoParamName`, `NormalParamName`, and `DepthParamName` properties:
-
-| Property | Default | Material Parameter |
-|---|---|---|
-| `AlbedoParamName` | `"AlbedoTexture"` | Texture2DParameter |
-| `NormalParamName` | `"NormalTexture"` | Texture2DParameter |
-| `DepthParamName` | `"DepthTexture"` | Texture2DParameter |
-
-Each material used by a layer should expose these as texture parameters so the preset system can drive them automatically.
+`GetCameraLocationAndRotation` reads from `SequencerCameraCache` (updated by `RefreshSequencerCamera()` on `BeginPlay` and whenever `SetCameraSource`/`SetCustomCameraActor` is called) instead of calling `GetAllActorsOfClass` every frame. Cache invalidated via `bSequencerCacheValid` flag.
 
 ---
 
 ## Preset System
 
-The `UFaceParallaxPreset` DataAsset stores all texture assignments for a character face as a map:
+The `UFaceParallaxPreset` DataAsset stores all texture assignments for a character face:
 
 ```
 Preset → {
     Front  → {
         "Eyes"  → { Albedo: T_Front_Eyes_A,  Normal: T_Front_Eyes_N,  Depth: T_Front_Eyes_D },
         "Hair"  → { Albedo: T_Front_Hair_A,  Normal: T_Front_Hair_N,  Depth: T_Front_Hair_D },
-        "Skin"  → { Albedo: T_Front_Skin_A,  Normal: T_Front_Skin_N,  Depth: T_Front_Skin_D },
     },
     RightProfile → {
         "Eyes"  → { Albedo: T_Profile_Eyes_A, Normal: T_Profile_Eyes_N, Depth: T_Profile_Eyes_D },
-        ...
     },
     ...
 }
-```
-
-### Creating a Preset
-
-1. In the Content Browser, right-click → **Miscellaneous → DataAsset**.
-2. Pick `UFaceParallaxPreset` as the asset class.
-3. Name it (e.g., `PA_MyCharacter_Face`).
-4. Open it and populate the `ViewAssignments` map — one entry per view state, with layers matching your component's `LayerDefinitions`.
-
-### Using a Preset
-
-Assign the preset to the `ActivePreset` property on `UFaceParallaxComponent` in your character Blueprint. When `bAutoApplyPreset` is true (default), textures swap automatically when the view state changes. No Blueprint event binding is needed.
-
-You can also apply a preset manually at any time:
-
-```cpp
-FaceParallaxComponent->ApplyPreset(MyPreset);
-// or per-state:
-FaceParallaxComponent->SetStateTextures(EFaceAngleState::Front);
 ```
 
 ### Preset API
 
 | Method | Description |
 |---|---|
-| `GetSlot(State, LayerTag)` | Returns the full `FFaceArtSlot` (textures + transforms) |
+| `GetSlot(State, LayerTag)` | Returns the full `FFaceArtSlot`. Logs warning on fallback to default. |
 | `SetSlot(State, LayerTag, Slot)` | Assigns an entire slot |
-| `GetTexturesForSlot(State, LayerTag)` | Returns the `FFaceTextureSet` for a given state and layer |
+| `GetTexturesForSlot(State, LayerTag)` | Returns the `FFaceTextureSet` |
 | `SetTexturesForSlot(State, LayerTag, Textures)` | Assigns textures to a slot (auto-fits if enabled) |
-| `GetEffectiveTransform(State, LayerTag)` | Returns the combined (canonical + view-override) transform for the current view |
-| `SetCanonicalTransform(State, LayerTag, Transform)` | Sets the canonical (default) transform for a slot |
+| `GetEffectiveTransform(State, LayerTag)` | Combined (canonical + view-override) transform |
+| `SetCanonicalTransform(State, LayerTag, Transform)` | Sets canonical transform |
 | `SetViewOverride(State, LayerTag, OverrideView, Transform)` | Adds a view-specific transform override |
-| `HasViewOverride(State, LayerTag, OverrideView)` | Checks for a view override |
-| `ClearViewOverride(State, LayerTag, OverrideView)` | Removes a specific override |
-| `ClearAllOverridesForSlot(State, LayerTag)` | Removes all overrides for a slot |
-| `ClearAllOverrides()` | Removes all overrides in the entire preset |
-| `ComputeAutoFitTransform(Textures)` | Computes a uniform scale to fit texture to `CanvasSize` |
+| `HasViewOverride` / `ClearViewOverride` | Override management |
+| `ClearAllOverridesForSlot` / `ClearAllOverrides` | Bulk override removal |
+| `ComputeAutoFitTransform(Textures)` | Computes uniform scale to fit texture to `CanvasSize` |
 | `ApplyAutoFitToSlot(State, LayerTag)` | Auto-fits a slot's canonical transform |
-| `SyncCanonicalToAllViews(State, LayerTag)` | Copies a slot's canonical transform to same-named slots in all other views |
-| `HasState(State)` | Whether the preset has any assignments for a given state |
-| `HasSlot(State, LayerTag)` | Whether a specific slot is assigned |
-| `GetAssignedStates()` | Array of states that have any assignments |
-| `GetTotalAssignedSlots()` | Count of all assigned `(State, LayerTag)` pairs |
-| `ClearState(State)` | Remove all assignments for a state |
-| `ClearAll()` | Remove all assignments |
+| `SyncCanonicalToAllViews(State, LayerTag)` | Copies canonical transform to all views |
+| `HasState` / `HasSlot` / `GetAssignedStates` | Query methods |
+| `ClearState` / `ClearAll` | Removal methods |
+| `GetAllLayerTags(State)` | List all layer tags for a state |
+| `GetNestedElement` / `SetNestedElement` / `AddNestedElement` / `RemoveNestedElement` | Nested art access |
+| `GetNestedPin3D` / `SetNestedPin3D` | Pin projection access |
+| `GetSwooshArt` / `SetSwooshArt` / `HasSwooshArt` / `ClearSwooshArt` | Swoosh art access |
+| `GetParamBindings` / `SetParamBindings` | Parameter binding access |
+| `GetAltTextures` / `SetAltTextures` | Alt texture set access |
+| `BatchSetTextures` / `BatchSetTexturesAllLayers` | Batch texture assignment |
+| `DuplicateState` / `ClearAllTextures` / `SyncLayerNestedToAllViews` | Batch operations |
+| `SetNestedAltTextures` | Alt textures for nested elements |
+
+---
+
+## Expression & Viseme Systems
+
+### Expression System
+
+Each `FFaceArtSlot` stores expression-specific texture variants in `TMap<EExpression, FFaceTextureSet> ExpressionTextures`. Changing the expression triggers a smooth crossfade controlled by `ExpressionBlendAlpha`.
+
+**Supported expressions:** Neutral, Smile, Frown.
+
+**Properties:** `CurrentExpression`, `ExpressionCrossfadeDuration` (0.3s), expression param names.
+
+### Viseme System (Speech Mouth Shapes)
+
+Each slot stores per-expression, per-viseme animation frame sequences (flipbook). **11 visemes:** Uh, Ah, Ee, D, S, F, M, L, WOO, Oh, R.
+
+**Properties:** `bVisemeEnabled`, `VisemeFrameDuration` (0.04s).
+
+### Blink Animation
+
+Each slot stores `TArray<FFaceTextureSet> BlinkFrames`. Multi-frame blink at random intervals.
+
+**Properties:** `bBlinkingEnabled`, `BlinkIntervalMin` (3.0s)/Max (7.0s), `BlinkFrameDuration` (0.03s).
+
+---
+
+## Nested Art & Jiggle System
+
+Attach child art pieces to existing layers with independent transforms, spring-damper jiggle physics driven by camera angular velocity, idle animation flipbook, per-view visibility, and 3D pin projection.
+
+**Primitive Tag Convention:** Nested primitives tagged `LayerTag_ElementName` (e.g., `HairLayer_Wig`). Precomputed FName state key cache avoids per-frame string formatting — cache built via `BuildNestedArtCache()` on dirty flag.
+
+**Key concepts:** Relative transform, pivot point (normalized UV), jiggle (Stiffness/Damping/ImpulseScale/JiggleAxis), idle animation (looping flipbook), per-view visibility, static nesting (arbitrary depth, jiggle elements are leaf nodes).
+
+---
+
+## Zone Boundary Multipliers
+
+The `ZoneBoundaryMultipliers` property (`TArray<float>`) on `UFaceParallaxComponent` lets you customize the width of each view zone relative to `HalfZoneWidth`:
+
+| Index | Zone | Default Multiplier | Boundary at HW=22.5 |
+|---|---|---|---|
+| 0 | Front | 1.0 | 22.5° |
+| 1 | ThreeQuarter | 3.0 | 67.5° |
+| 2 | Profile | 5.0 | 112.5° |
+| 3 | Back | 7.0 | 157.5° |
+
+Set `ZoneBoundaryMultipliers = {2.0, 4.0, 6.0, 8.0}` for wider front and 3/4 zones. Values use `GetBoundaryOrDefault()` static helper with fallback to defaults.
 
 ---
 
 ## Depth Debug Visualizer
 
-The `UDepthDebugVisualizerComponent` creates a procedural 3D mesh from the current view state's depth map texture. This lets you see how the depth data is interpreted — a rough relief of the face geometry derived purely from the 2D depth map.
+The `UDepthDebugVisualizerComponent` creates a procedural 3D mesh from the current depth map. Grid mesh with Z = depth value × `HeightScale`, vertex-colored blue→red gradient.
 
-### What it shows
+**Texture compression validation:** `SampleDepthMap()` validates `Texture->CompressionSettings` and warns if not `TC_EditorIcon`, `TC_VectorDisplacementmap`, or `TC_HDR`.
 
-- A uniform grid mesh (default 48×48 vertices)
-- Z-axis displacement = depth map value × `HeightScale`
-- Vertex colors: blue (deep/far) → red (shallow/near) gradient
-- Positions itself at the head bone location with a configurable local offset
-
-### Controls
-
-| Property | Default | Description |
-|---|---|---|
-| `bStartEnabled` | false | Enable on BeginPlay |
-| `GridResolution` | 48 | Grid vertices per axis (8–256) |
-| `MeshSize` | 30.0 | World-space size of the debug quad |
-| `HeightScale` | 10.0 | Amplification of depth values |
-| `LocalOffset` | (0,0,25) | Position relative to owner root |
-| `bShowWireframe` | false | Wireframe overlay |
-| `bUseVertexColors` | true | Color mesh by depth |
-| `LowColor` / `HighColor` | Blue / Red | Gradient endpoints |
-
-### Usage
-
-1. Add the component to your character actor.
-2. When the view state changes, call `RebuildMeshFromDepthMap(YourDepthMapTexture)`.
-3. Toggle visibility with `ToggleVisualizer()` or `SetVisualizerEnabled(bool)`.
-
-### How the depth map is read
-
-The component reads the texture's **source data** (the original imported pixel data, not GPU-compressed):
-- Works in editor and PIE
-- In packaged builds, ensure textures have **TC_Editor** or **TC_VectorDisplacementmap** compression
-- For reliable runtime reading, use a render target approach or set compression to `TC_HDR`
+**Controls:** GridResolution (8-256), MeshSize, HeightScale, LocalOffset, bShowWireframe, bUseVertexColors, LowColor/HighColor.
 
 ---
 
 ## Preview Actor
 
-The `AFaceParallaxPreviewActor` provides a self-contained, orbit-controlled preview of the character face. It is used by the Editor Utility Widget but can also be spawned at runtime.
+The `AFaceParallaxPreviewActor` provides orbit-controlled preview with dirty-flag optimization:
 
-### Components
+- `bOrbitDirty` flag — `UpdateCaptureTransform()` only runs when yaw/pitch/distance/FOV changed
+- `bCaptureDirty` flag — `SceneCapture->CaptureScene()` only called after transform updates
+- `bCaptureEveryFrame = false`, `bCaptureOnMovement = false` — zero GPU cost when idle
 
-| Component | Purpose |
-|---|---|
-| `PreviewRoot` | Scene component at origin |
-| `PreviewMesh` | Skeletal mesh of the character head |
-| `FaceParallax` | Core parallax component (preset-ready) |
-| `DepthDebug` | Debug visualizer (toggleable) |
-| `SceneCapture` | Captures the preview to a render target |
+**Camera Controls:** SetOrbitYaw, SetOrbitPitch, SetOrbitDistance, SetPreviewFOV, ResetCamera, SetAutoRotate.
 
-### Camera Controls
+---
 
-| Method | Range | Description |
+## Editor Widget (UFaceParallaxEditorWidget)
+
+The `UUserWidget` subclass constructs its entire UI via `RebuildWidget()` — no UMG Designer needed.
+
+**Key improvements:**
+- **Diagnostic log overlay** — `SMultiLineEditableTextBox` at bottom of widget; `RunDiagnostics()` reports preset status, missing states/layers
+- **Auto-refresh** — bound to `FCoreUObjectDelegates::OnObjectModified`; triggers `RefreshUI()` when ActivePreset modified externally
+- **Undo/redo** — `FPresetTransactionScope` RAII guard wraps 13 preset-mutating functions with `GEditor->BeginTransaction`/`EndTransaction` and `Modify()`
+
+**19 function categories:** Preset, ViewState, Transform, ViewOverride, Textures, Camera, DebugOverlays, Status, DynamicArt, TextureAndTransformParams, Blink, Expression, Viseme, Parameter, ParamBinding, Swoosh, UI, NestedArt, Targets.
+
+---
+
+## Building and Testing
+
+### Project Setup
+
+Add the source files to your UE5 module. Ensure `Build.cs` includes the dependencies listed in the Module section above.
+
+### Running Tests
+
+```powershell
+.\Tests\run_tests.ps1 -IncludeUEBuild
+```
+
+This runs:
+1. **Python syntax validator** — braces/macros/includes on all `.h`/`.cpp` files
+2. **C++ math tests** — 577 standalone tests (g++ from msys64 ucrt64)
+3. **UE build test** — full compilation of SAMPLES project with `Build.bat`
+
+### Maintaining deploy.py
+
+After editing source files:
+```powershell
+python _gen_embed.py
+```
+This re-encodes all `.h`/`.cpp` into `deploy.py`'s `EMBEDDED_SOURCES` for self-contained deployment.
+
+---
+
+## Deployment: Step-by-Step
+
+This section walks through the complete workflow from running `deploy.py` to opening the editor widget and adding art to your character.
+
+### Prerequisites
+
+- Unreal Engine 5.x project with the FaceParallax source files in a module
+- `ProceduralMeshComponent` plugin enabled in `.uproject`
+- Build.cs updated with all dependencies (see Module section)
+- A skeletal mesh for your character (the head or body mesh)
+
+### Step 1: Compile the C++ Code
+
+```powershell
+# From your project root
+& "H:\unreal\UE_5.8\Engine\Build\BatchFiles\Build.bat" YourProjectEditor Win64 Development "path\to\YourProject.uproject" -waitmutex
+```
+
+Verify the build succeeds with no errors. The FaceParallax C++ classes (component, preset, preview actor, editor widget, depth debug visualizer) are now available.
+
+### Step 2: Run deploy.py Inside Unreal Editor
+
+**Important:** `deploy.py` runs inside the Unreal Editor Python console, not as a standalone script. It creates binary assets that cannot be generated from text files.
+
+1. Open your project in the Unreal Editor
+2. Open the **Output Log** (Window → Developer Tools → Output Log)
+3. Switch to the **Python** tab
+4. Run:
+```python
+exec(open(r"D:\Projects\YourProject\deploy.py").read())
+```
+
+Alternatively, launch the editor with the script:
+```powershell
+UnrealEditor-Cmd.exe "D:\Projects\YourProject\YourProject.uproject" -run=pythonscript -script="deploy.py"
+```
+
+**What deploy.py creates:**
+
+| Asset | Path | Description |
 |---|---|---|
-| `SetOrbitYaw(deg)` | 0–360 | Horizontal orbit angle |
-| `SetOrbitPitch(deg)` | -89–89 | Vertical orbit angle |
-| `SetOrbitDistance(dist)` | 10+ | Camera distance from head |
-| `SetPreviewFOV(fov)` | 1–160 | Camera field of view |
-| `ResetCamera()` | — | Restore default orbit |
-| `SetAutoRotate(bool)` | — | Continuous yaw rotation |
+| `M_FaceParallax_Master` | `/Game/FaceParallax/Materials/` | Master material with all parameters wired (crossfade, parallax, expression blend, depth debug, nested art pivot) |
+| `MI_FaceParallax_{LayerTag}` | `/Game/FaceParallax/Materials/` | One material instance per layer, parented to master |
+| `DA_FaceParallax_Default` | `/Game/FaceParallax/Presets/` | Preset DataAsset with ViewAssignments for all 10 states × all layer tags |
+| `BP_FaceParallaxCharacter` | `/Game/FaceParallax/Blueprints/` | Character BP with FaceParallaxComponent attached, pre-configured HeadBoneName and LayerDefinitions |
 
-### Preview Controls
+### Step 3: Set Up the Skeletal Mesh
 
-| Method | Description |
-|---|---|
-| `ShowTextures(bool)` | Show/hide the textured mesh |
-| `ShowDepthMesh(bool)` | Toggle depth debug mesh |
-| `ShowWireframe(bool)` | Toggle wireframe on debug mesh |
-| `ColorByDepth(bool)` | Toggle depth-color mode |
-| `ApplyPreset(Preset)` | Apply a preset to the preview |
-| `AssignSkeletalMesh(Mesh)` | Set the skeletal mesh |
-| `SetRenderTarget(RT)` | Set the scene capture target |
-| `GetEffectivePartTransform(State, LayerTag)` | Returns the combined canonical + override transform for a part in a given view |
-| `GetPartSourceSize(State, LayerTag)` | Returns the source pixel dimensions (albedo width/height) of a part |
-| `RefreshPreview()` | Re-applies the current preset to refresh textures and transforms |
+1. Open `BP_FaceParallaxCharacter` (or your own character BP)
+2. Assign a skeletal mesh to the SkeletalMeshComponent
+3. Ensure the head bone matches `HeadBoneName` (default: "head")
 
----
+### Step 4: Place Face-Layer Quads
 
-## Editor Utility Widget (C++ RebuildWidget)
+For each art layer (e.g., Eyes, Hair, Skin), add a plane/quad mesh to the skeleton:
 
-The editor tool is a `UUserWidget` subclass (`UFaceParallaxEditorWidget`) that constructs its **entire UI layout in C++** via `RebuildWidget()`. No manual UMG Designer construction is needed — the widget builds a complete Slate tree with all tabs, layer lists, buttons, and controls at runtime.
+1. In your character BP, add **Static Mesh Components** or **Skeletal Mesh Components** as children of the head bone
+2. Position each quad at the appropriate location (face surface for skin, top of head for hair, etc.)
+3. Scale each quad to match the art texture aspect ratio
+4. **Tag each quad** with the layer tag name matching your `FFaceLayerDef.LayerTag` (e.g., `EyesLayer`, `HairLayer`, `SkinLayer`)
 
-### UI Layout
+### Step 5: Assign the Master Material
 
-```
-┌─────────────────────────────────────────────────────────────────────┐
-│ [New Preset] [Save] [Import Art...]                          [Help] │
-├─────────────────────────────────────────────────────────────────────┤
-│ [Front][3/4R][ProR][BkR][Back][BkL][ProL][3/4L][Top][Bot]          │
-├──────────┬─────────────────────────┬───────────────────────────────┤
-│ LAYERS   │ PREVIEW + TEXTURES      │ PROPERTIES                    │
-│ ☑ Eyes   │ ┌─────────────────────┐ │ Transform: Pos X/Y/SX/SY/Rot │
-│ ☑ Hair   │ │  3D Preview Image   │ │ Camera: Yaw/Pitch/Dist       │
-│ Layer... │ │  Eyes               │ │ Config: 8 checkboxes         │
-│ + Add    │ │  [Albedo] [Normal]  │ │ Nested Art/Pins: X/Y/Z sliders│
-│          │ │  [Depth]  [Pick/Clear]│ │ [Detect Profile]            │
-│          │ │  Auto-Fit Reset Sync │ └───────────────────────────────┘│
-├──────────┴─────────────────────────┴───────────────────────────────┤
-│ TIMELINE / ART FRAMES                                               │
-│ Blink: [0] [1] [+]  Expression: [Neutral] [Smile] [Frown]          │
-│ Swoosh: [On] [0] [1] [2]                                            │
-├─────────────────────────────────────────────────────────────────────┤
-│ [Save Preset] [New Preset] [Clear State] [Clear All]  State: Front  │
-│  Layer: Eyes | Textures: 3                                          │
-└─────────────────────────────────────────────────────────────────────┘
-```
+1. Select each face-layer quad
+2. Assign `MI_FaceParallax_{LayerTag}` as its material
+3. The material instance is pre-wired to receive all parameters from the component
 
-The widget reads layer definitions from `UFaceParallaxComponent::LayerDefinitions` and populates the layer list dynamically. Texture thumbnails update live when textures are assigned via the Content Browser picker. The timeline shows blink frames, expression buttons, and swoosh indicators per the selected layer and view state.
+### Step 6: Open the Editor Widget
 
-### Creating the Widget
+1. Create a Blueprint class derived from `UFaceParallaxEditorWidget`:
+   - Right-click in Content Browser → Blueprint Class
+   - Pick `UFaceParallaxEditorWidget` as parent class
+   - Name it (e.g., `WBP_FaceParallaxEditor`)
+2. Spawn an `AFaceParallaxPreviewActor` and wire it to the widget:
+   - In your editor utility widget or level BP, spawn the preview actor
+   - Assign it to the widget's `PreviewActor` property
+   - Create a `UTextureRenderTarget2D` and assign it via `SetRenderTarget()`
+   - Assign a `UFaceParallaxPreset` to `ActivePreset`
+3. Add the widget to your viewport (or open as Editor Utility Widget)
 
-1. Create a Blueprint class derived from `UFaceParallaxEditorWidget`.
-2. In the widget's `Construct` event, spawn an `AFaceParallaxPreviewActor` and assign it to the `PreviewActor` property.
-3. Assign a `UFaceParallaxPreset` DataAsset to the `ActivePreset` property.
-4. Call `SetRenderTarget(YourRenderTarget)` to connect the preview image.
-5. The widget's `RebuildWidget()` handles the full UI layout — no manual UMG construction needed.
+### Step 7: Import and Assign Art Textures
 
-**All function categories are BlueprintCallable** — search for "Face Editor" in the Blueprint picker.
+With the widget open:
 
-The `UFaceParallaxEditorWidget` C++ class exposes every setting as a bindable Blueprint function, organized into categories:
+1. **Select a View State** — click one of the 10 state buttons (Front, 3/4R, ProR, etc.)
+2. **Select a Layer** — click a layer name in the Layers panel
+3. **Assign Textures** — use the texture slots in the Properties panel:
+   - Click the **Albedo** thumbnail to pick a texture from the Content Browser
+   - Click the **Normal** thumbnail to assign the normal map
+   - Click the **Depth** thumbnail to assign the depth map
+   - Each assignment auto-updates the preview
 
-| Category | Functions | Maps To |
-|---|---|---|
-| **Preset** | `ApplyPresetToPreview`, `CreateNewPreset`, `SavePreset`, `SetCanvasSize`, `GetCanvasSize`, `SetAutoFitOnAssign`, `GetAutoFitOnAssign`, `BatchSetTextures`, `ClearAllTextures`, `DuplicateState` | `UFaceParallaxPreset` on `ActivePreset` |
-| **ViewState** | `SetActiveViewState`, `GetActiveViewState`, `GetAssignedStates`, `HasState`, `GetLayerTagsForState`, `GetLayerCount` | Active tab selection, state enumeration |
-| **Transform** | `GetLayerCanonicalTransform`, `SetLayerPosition`, `GetLayerPosition`, `SetLayerScale`, `GetLayerScale`, `SetLayerRotation`, `GetLayerRotation`, `SetLayerTransform`, `ResetLayerTransform`, `GetEffectiveLayerTransform`, `ApplyAutoFit`, `ApplyAutoFitToAllSlots`, `SyncLayerToAllViews`, `SyncAllLayersToAllViews` | Per-layer sliders → `FFaceArtTransform` on `ActivePreset` |
-| **ViewOverride** | `HasViewOverride`, `GetViewOverride`, `SetViewOverride`, `ClearViewOverride`, `ClearAllOverridesForSlot`, `ClearAllOverrides`, `GetOverrideViewsForSlot` | Per-state transform overrides on `FFaceArtSlot` |
-| **Textures** | `GetSlotTextures`, `SetSlotTextures`, `GetSlotSourceSize`, `GetSlotAlbedo`, `GetSlotDepth`, `GetSlotNormal` | `FFaceTextureSet` on preset slots |
-| **Camera** | `SetOrbitYaw`, `GetOrbitYaw`, `SetOrbitPitch`, `GetOrbitPitch`, `SetOrbitDistance`, `GetOrbitDistance`, `SetPreviewFOV`, `GetPreviewFOV`, `SetAutoRotate`, `GetAutoRotate`, `SetAutoRotateSpeed`, `GetAutoRotateSpeed`, `ResetCamera` | Preview actor camera controls |
-| **DebugOverlays** | `ShowTextures`, `ShowDepthMesh`, `ShowWireframe`, `ColorByDepth`, `SetEnableMaterialDebugMode`, `GetEnableMaterialDebugMode` | Preview actor + depth debug toggles |
-| **Status** | `GetAssignedStateCount`, `GetTotalAssignedSlots`, `GetActiveLayerCount`, `GetStatusString`, `GetStateTextureCount`, `GetStatusDetails`, `HasSlot`, `IsSlotFullyAssigned`, `ClearState`, `ClearAll` | Preset slot queries |
-| **DynamicArt** | `SetDriveArtPositionFromYaw`, `GetDriveArtPositionFromYaw`, `SetMaxYawArtOffset`, `GetMaxYawArtOffset` | Eye tracking via yaw-driven ArtPosition X |
-| **TextureAndTransformParams** | `SetAlbedoParamName`, `GetAlbedoParamName`, `SetNormalParamName`, `GetNormalParamName`, `SetDepthParamName`, `GetDepthParamName`, `SetAlbedoPrevParamName`, `GetAlbedoPrevParamName`, `SetNormalPrevParamName`, `GetNormalPrevParamName`, `SetDepthPrevParamName`, `GetDepthPrevParamName`, `SetArtPositionParamName`, `GetArtPositionParamName`, `SetArtScaleParamName`, `GetArtScaleParamName`, `SetArtRotationParamName`, `GetArtRotationParamName` | Component material + transform param names |
-| **Blink** | `SetBlinkingEnabled`, `GetBlinkingEnabled`, `SetBlinkInterval`, `GetBlinkIntervalMin`, `GetBlinkIntervalMax`, `ForceBlink`, `IsBlinking`, `SetBlinkFrameDuration`, `GetBlinkFrameDuration`, `GetBlinkFrameCount`, `SetBlinkFrameTextures`, `GetBlinkFrameTextures` | Blink animation toggle, timing, frame assignment |
-| **Expression** | `SetExpression`, `GetExpression`, `SetExpressionCrossfadeDuration`, `GetExpressionCrossfadeDuration`, `IsExpressionTransitioning`, `SetExpressionTextures`, `GetExpressionTextures`, `HasExpressionTextures`, `GetAssignedExpressions`, `SetExpressionBlendParamName`, `GetExpressionBlendParamName`, `SetExpressionAlbedoPrevParamName`, `GetExpressionAlbedoPrevParamName`, `SetExpressionNormalPrevParamName`, `GetExpressionNormalPrevParamName`, `SetExpressionDepthPrevParamName`, `GetExpressionDepthPrevParamName` | Expression crossfade, texture assignment, expression material param names |
-| **Viseme** | `SetVisemeEnabled`, `GetVisemeEnabled`, `PlayViseme`, `StopViseme`, `IsVisemePlaying`, `GetCurrentViseme`, `SetVisemeFrameDuration`, `GetVisemeFrameDuration`, `GetVisemeFrameCount`, `SetVisemeFrameTextures`, `GetVisemeFrameTextures`, `GetAssignedVisemes` | Speech mouth shape animation per expression × viseme |
-| **Parameter** | `SetParamsEnabled`, `GetParamsEnabled`, `DefineParameter`, `SetParameterValue`, `GetParameterValue`, `GetParameterNames`, `ResetAllParameters`, `SetParamSmoothingSpeed`, `GetParamSmoothingSpeed`, `SetParamBlendParamName`, `GetParamBlendParamName`, `SetParamAltAlbedoParamName`, `GetParamAltAlbedoParamName`, `SetParamAltNormalParamName`, `GetParamAltNormalParamName`, `SetParamAltDepthParamName`, `GetParamAltDepthParamName` | Component parameter system + alt texture param names |
-| **ParamBinding** | `GetParamBindings`, `SetParamBindings`, `GetAltTextures`, `SetAltTextures` | Per-slot parameter bindings + alt texture sets |
-| **Swoosh** | `SetSwooshEnabled`, `GetSwooshEnabled`, `SetSwooshSpeedThreshold`, `GetSwooshSpeedThreshold`, `SetSwooshBusyness`, `GetSwooshBusyness`, `SetSwooshSize`, `GetSwooshSize`, `ForceSwoosh`, `IsSwooshActive`, `GetSwooshFrameCount`, `SetSwooshFrameTextures`, `GetSwooshFrameTextures`, `ClearSwooshFrames`, `SetSwooshFrameDuration`, `GetSwooshFrameDuration`, `SetSwooshBlendOutDuration`, `GetSwooshBlendOutDuration`, `SetSwooshLayerBlendParamName`, `GetSwooshLayerBlendParamName`, `SetSwooshIntensityParamName`, `GetSwooshIntensityParamName`, `SetSwooshAngleParamName`, `GetSwooshAngleParamName`, `SetSwooshSizeParamName`, `GetSwooshSizeParamName`, `SetSwooshTextureParamName`, `GetSwooshTextureParamName` | Swoosh timing, texture frames, material param names |
-| **UI** | `SetRenderTarget`, `RefreshUI`, `SetSelectedLayer`, `GetSelectedContentBrowserTexture` | Render target connection, UI refresh, layer selection, texture picker |
-| **Targets** | `PreviewActor`, `ActivePreset` (UPROPERTY) | Preview actor and preset asset references |
-| **NestedArt** | `SetNestedArtEnabled`, `GetNestedArtEnabled`, `GetNestedElementCount`, `GetNestedElement`, `SetNestedElement`, `AddNestedElement`, `RemoveNestedElement`, `SetNestedTextures`, `GetNestedTextures`, `SetNestedTransform`, `GetNestedTransform`, `SetNestedPivot`, `GetNestedPivot`, `SetNestedJiggleEnabled`, `SetNestedJiggleSettings`, `GetNestedJiggleSettings`, `SetNestedVisibility`, `GetNestedVisibility`, `SetNestedIdleFrames`, `GetNestedIdleFrames`, `ClearNestedIdleFrames`, `BatchSetNestedTexturesAllViews`, `DuplicateNestedElement`, `SyncNestedToAllViews`, `GetNestedPin3D`, `SetNestedPin3D`, `GetNestedPinUV`, `SetNestedPinFromUV`, `GetNestedEffectivePivot`, `GetFaceProfile`, `SetFaceProfile`, `DetectFaceProfile` | Nested element management per slot, 3D pin projection, face profile |
+Alternatively, use the **Import Art...** button to batch-import texture files from disk (opens a file dialog for selecting PNG/TGA/EXR files).
 
-### Creating the EUW Blueprint
+### Step 8: Configure Each View State
 
-1. Create a Blueprint class derived from `UFaceParallaxEditorWidget`.
-2. In the widget's `Construct` event, spawn an `AFaceParallaxPreviewActor` and assign it to the `PreviewActor` property.
-3. Assign a `UFaceParallaxPreset` DataAsset to the `ActivePreset` property.
-4. Call `SetRenderTarget(YourRenderTarget)` to connect the preview image.
-5. The widget's `RebuildWidget()` constructs the complete Slate UI — no manual UMG Designer layout needed.
+Repeat Step 7 for all 10 view states. The widget's **Status** panel shows which states/layers are still missing textures. The **Diagnostic Log** at the bottom inlines validation results.
 
-**All function categories are BlueprintCallable** — search for "Face Editor" in the Blueprint picker.
+**Pro tips:**
+- Use **Auto-Fit** to auto-scale textures to the canvas size
+- Use **Sync Layer to All Views** to copy a transform from one state to all others
+- Use **Duplicate State** to copy an entire state's assignments
+- Use **Snapshot/Undo** for safe experimentation — all edits are transaction-backed
 
-### Prerequisites for the EUW
+### Step 9: Configure Per-Layer Settings
 
-- The C++ `UFaceParallaxEditorWidget` depends on editor modules: `ContentBrowser`, `AssetRegistry`, `EditorScriptingUtilities`, `UnrealEd`, `DesktopPlatform` — add these to your module's `Build.cs` in the editor-only section
-- `Blutility` plugin enabled (if using as a base for Editor Utility Widgets)
-- `Python Editor Scripting Plugin` (optional, for advanced automation)
-- The `AFaceParallaxPreviewActor` must be spawnable (place a Blueprint subclass or spawn from class)
+In the component's `LayerDefinitions` array, adjust per-layer:
+- `DepthScale` — parallax movement amount
+- `DepthMapIntensity` — depth effect strength
+- `bInvertParallax` — for background layers
 
----
+### Step 10: Save and Use the Preset
 
-## Integration Walkthrough
+1. Click **Save Preset** in the widget to persist the preset data asset
+2. Assign the preset to your runtime character's `FaceParallaxComponent.ActivePreset`
+3. The character will now automatically switch textures as the camera orbits around it
 
-### 1. Add component to character
+### Post-Deployment Customization
 
-In your character Blueprint:
-- Add `UFaceParallaxComponent`
-- Add `UDepthDebugVisualizerComponent` (optional)
-
-### 2. Configure Skeletal Mesh
-
-Set `HeadBoneName` to the socket/bone name where the face is located (e.g., "head").
-
-### 3. Tag your face layer primitives
-
-Each flat plane / quad that renders a face layer needs a component tag matching a `FFaceLayerDef.LayerTag` entry (default: `"FaceLayer"`).
-
-### 4. Set up materials
-
-Create a master material that uses these parameters:
-- `StateBlendAlpha` → lerp between texture sets
-- `ParallaxOffset` → UV offset for parallax
-- `DepthIntensity` → POM or bump offset intensity
-- `AlbedoTexture` → Texture2DParameter (for preset system)
-- `NormalTexture` → Texture2DParameter (for preset system)
-- `DepthTexture` → Texture2DParameter (for preset system)
-- `DebugDepth` → switch output to depth heat map (optional)
-
-Use material instances per state with different Albedo/Normal/Depth textures.
-
-### 5. Create and assign a preset
-
-1. Create a `UFaceParallaxPreset` DataAsset in the Content Browser.
-2. Populate it with texture assignments for each view state and layer.
-3. Assign it to your character's `UFaceParallaxComponent.ActivePreset`.
-
-The component handles texture swapping automatically. No Blueprint scripting is required for basic operation.
-
-### 6. (Optional) Handle advanced logic in Blueprint
-
-Bind to `OnFaceStateChanged` for custom effects, sounds, or non-texture state reactions.
-
-### 7. (Optional) Set up the debug visualizer
-
-Bind a keyboard input (e.g., `V` key) to `ToggleVisualizer()`. Call `RebuildMeshFromDepthMap()` in the `OnFaceStateChanged` event.
-
-### 8. (Optional) Set up the Editor Utility Widget
-
-Create the EUW as described above to provide a visual editor for browsing and assigning art pieces.
-
----
-
-## Material Setup Example
-
-```
-                            ┌───────────────────────┐
-                            │  Master Material      │
-                            │  (Unlit or Lit)       │
-                            │                       │
-                            │  Parameters:          │
-                            │  - StateBlendAlpha    │
-                            │  - ParallaxOffset     │
-                            │  - DepthIntensity     │
-                            │  - AlbedoTexture      │
-                            │  - NormalTexture      │
-                            │  - DepthTexture       │
-                            │  - DebugDepth         │
-                            │  - IsTopDown          │
-                            └──────────┬────────────┘
-                                       │
-                ┌──────────────────────┼──────────────────────┐
-                │                      │                      │
-         ┌──────▼───────┐       ┌───────▼──────┐       ┌───────▼──────┐
-         │  MI_Front    │       │  MI_Profile  │       │  MI_Top      │
-         │  (textures   │       │  (textures   │       │  (textures   │
-         │   come from  │       │   come from  │       │   come from  │
-         │   preset)    │       │   preset)    │       │   preset)    │
-         └──────────────┘       └──────────────┘       └──────────────┘
-```
-
-With the preset system, you no longer need separate material instances per state — one material instance per layer is sufficient, and the preset drives which textures are loaded for each view angle.
+- **Zone Boundaries**: Adjust `ZoneBoundaryMultipliers` on the component to customize view zone widths
+- **Camera Source**: Set `CameraSource` to PlayerCamera0, SpecifiedActor, or Sequencer
+- **Continuous Blending**: Enable `bUseContinuousBlending` for smooth crossfades at zone boundaries
+- **Jiggle Physics**: Add nested art elements with jiggle for dynamic secondary motion
+- **Occlusion Pins**: Use 3D pin projection on nested elements for perspective-aware positioning
 
 ---
 
@@ -623,6 +512,7 @@ With the preset system, you no longer need separate material instances per state
 | `TopViewPitchThreshold` | 60.0 | View Angles |
 | `BottomViewPitchThreshold` | -60.0 | View Angles |
 | `HalfZoneWidth` | 22.5 | View Angles |
+| `ZoneBoundaryMultipliers` | {1,3,5,7} | View Angles |
 | `CrossfadeSpeed` | 15.0 | Transitions |
 | `HysteresisDegrees` | 2.0 | Transitions |
 | `MaxParallaxOffset` | 5.0 | Parallax |
@@ -632,155 +522,38 @@ With the preset system, you no longer need separate material instances per state
 | `bUseContinuousBlending` | true | Transitions |
 | `BlendWindowWidth` | 5.0 | Transitions |
 | `bAutoApplyPreset` | true | Preset |
-| `AlbedoParamName` | "AlbedoTexture" | Material Texture Params |
-| `NormalParamName` | "NormalTexture" | Material Texture Params |
-| `DepthParamName` | "DepthTexture" | Material Texture Params |
-| `AlbedoPrevParamName` | "AlbedoTexturePrev" | Material Texture Params |
-| `NormalPrevParamName` | "NormalTexturePrev" | Material Texture Params |
-| `DepthPrevParamName` | "DepthTexturePrev" | Material Texture Params |
 | `bBlinkingEnabled` | true | Blink |
-| `BlinkIntervalMin` | 3.0 | Blink |
-| `BlinkIntervalMax` | 7.0 | Blink |
+| `BlinkIntervalMin/Max` | 3.0/7.0 | Blink |
 | `BlinkFrameDuration` | 0.03 | Blink |
 | `CurrentExpression` | Neutral | Expression |
 | `ExpressionCrossfadeDuration` | 0.3 | Expression |
 | `bVisemeEnabled` | true | Viseme |
 | `VisemeFrameDuration` | 0.04 | Viseme |
-| `bDriveArtPositionFromYaw` | false | Art Transform Params |
-| `MaxYawArtOffset` | 0.05 | Art Transform Params |
-| `ArtPositionParamName` | "ArtPosition" | Art Transform Params |
-| `ArtScaleParamName` | "ArtScale" | Art Transform Params |
-| `ArtRotationParamName` | "ArtRotation" | Art Transform Params |
-| `GridResolution` (debug) | 48 | Debug Visualizer |
-| `HeightScale` (debug) | 10.0 | Debug Visualizer |
+| `bDriveArtPositionFromYaw` | false | Art Transform |
+| `MaxYawArtOffset` | 0.05 | Art Transform |
 | `bNestedArtEnabled` | true | Nested Art |
 | `ArtPivotParamName` | "ArtPivot" | Nested Art |
-| `NestedAnimParamName` | "NestedAnimFrame" | Nested Art |
-
----
-
----
-
-## Nested Art & Jiggle System
-
-Attach child art pieces to existing layers (whiskers on face, ears above head) with independent transforms, per-view visibility, jiggle physics, idle animation, and pivot point control.
-
-### How it works
-
-Nested elements are stored as `FFaceNestedArt` on each `FFaceArtSlot`. Each element renders through a separate primitive component tagged with `LayerTag_ElementName` (e.g., `FaceLayer_WhiskerL`). The component discovers these primitives during `InitializeMaterials`.
-
-### Key Concepts
-
-**Primitive Tag Convention** — Nested primitives are tagged `LayerTag_ElementName`. Example: a wig belonging to the `HairLayer` gets tag `HairLayer_Wig`. The component scans all primitives for tags matching this pattern.
-
-**Nested Transform** — Each element has a `RelativeTransform` (position, scale, rotation) relative to its parent layer. The final transform is:
-```
-ChildFinal = ParentEffective + ChildRelative + JiggleOffset
-```
-
-**Pivot Point** — A normalized UV coordinate (0–1) controlling rotation/scale origin. Pushed via the `ArtPivot` material parameter. Example: a cigarette rotates around its base, not its center.
-
-**Jiggle** — Spring-damper physics driven by camera angular velocity:
-- `Stiffness` — spring constant (higher = faster oscillation)
-- `Damping` — resistance (higher = settles faster)
-- `ImpulseScale` — how much camera movement feeds the jiggle
-- `JiggleAxis` — which axes jiggle (X, Y, or both)
-
-The jiggle offset is additive to the child's position and only affects the element itself, not its parent or siblings.
-
-**Idle Animation** — A looping flipbook defined by `IdleFrames` (array of `FFaceTextureSet`). Configurable `IdleFrameDuration` and `IdleSpeedMultiplier`. Animation cycles continuously; 0 frames = static.
-
-**Per-View Visibility** — `ViewVisibility` map on each element overrides visibility per view state. Unlisted states default to visible.
-
-**Static Nesting** — Non-jiggle elements can have `Children` (arbitrary depth). Jiggle elements are leaf nodes (cannot have children).
-
-### Data Structures
-
-| Struct | Fields | Purpose |
-|---|---|---|
-| `FFaceJiggleSettings` | Stiffness, Damping, ImpulseScale, JiggleAxis | Spring-damper physics parameters |
-| `FFaceNestedArt` | ElementName, Textures, RelativeTransform, PivotPoint, bJiggleEnabled, JiggleSettings, IdleFrames, IdleFrameDuration, IdleSpeedMultiplier, ViewVisibility, ParamBindings, Children | A child art piece attached to a slot |
-
-### Widget API — Nested Art Category
-
-The `UFaceParallaxEditorWidget` adds a **Nested Art** category with 27 BP functions:
-
-| Function | Purpose |
-|---|---|
-| `SetNestedArtEnabled` / `GetNestedArtEnabled` | Master toggle |
-| `GetNestedElementCount` | Count elements on a slot |
-| `GetNestedElement` / `SetNestedElement` | Get/set element by index |
-| `AddNestedElement` / `RemoveNestedElement` | Add/remove elements |
-| `SetNestedTextures` / `GetNestedTextures` | Element textures |
-| `SetNestedTransform` / `GetNestedTransform` | Relative transform |
-| `SetNestedPivot` / `GetNestedPivot` | Pivot point |
-| `SetNestedJiggleEnabled` | Toggle jiggle per element |
-| `SetNestedJiggleSettings` / `GetNestedJiggleSettings` | Jiggle physics params |
-| `SetNestedVisibility` / `GetNestedVisibility` | Per-view visibility |
-| `SetNestedIdleFrames` / `GetNestedIdleFrames` / `ClearNestedIdleFrames` | Idle animation frames |
-| `BatchSetNestedTexturesAllViews` / `DuplicateNestedElement` / `SyncNestedToAllViews` | Batch operations |
-| `GetNestedPin3D` / `SetNestedPin3D` | Pin 3D position on nested element |
-| `GetNestedPinUV` / `SetNestedPinFromUV` | Convert between pin position and UV |
-| `GetNestedEffectivePivot` | Effective pivot (pin or manual) |
-| `GetFaceProfile` / `SetFaceProfile` / `DetectFaceProfile` | 3D face profile for pin projection |
-
-The Widget API table in the previous section now has **19 categories**.
-
----
-
-## Deployment
-
-### Python — Editor Asset Creation (`deploy.py`)
-
-Runs **inside** the Unreal Editor Python console (or headless via `-run=pythonscript`) once the C++ code has compiled successfully. Creates the binary assets that can't be generated from text files:
-
-1. **`M_FaceParallax_Master`** — master material with all parameters declared and wired:
-   - Crossfade: `AlbedoTexture`/`NormalTexture`/`DepthTexture` lerped with `StateBlendAlpha` against `*Prev` counterparts
-   - UV chain: `TextureCoordinate` → `+ArtPosition` → `*ArtScale` → `+ParallaxOffset`
-   - Parameters: `ArtPivot`, `NestedAnimFrame`, `ExpressionBlendAlpha`, `Expression*Prev`, `DepthIntensity`, `DebugDepth`, `IsTopDown`, `IsTopView`, `ArtRotation`
-2. **Material Instances** — one `MI_FaceParallax_{LayerTag}` per layer, parented to master
-3. **`DA_FaceParallax_Default`** — `UFaceParallaxPreset` Data Asset with `ViewAssignments` populated as a `TMap<EFaceAngleState, FFaceViewStateLayerSet>` for all 10 states and all configured layers
-4. **`BP_FaceParallaxCharacter`** — Character Blueprint with `FaceParallaxComponent` attached, `HeadBoneName` and `LayerDefinitions` pre-configured, `ActivePreset` assigned
-
-**Usage:**
-```python
-# In-editor Python console:
-exec(open(r"D:\Projects\YourProject\deploy.py").read())
-
-# Or headless:
-UnrealEditor-Cmd.exe "D:\Projects\YourProject\YourProject.uproject" -run=pythonscript -script="deploy.py"
-```
-
-**Post-deployment manual steps:**
-- Place the face-layer quad meshes on the skeleton
-- Tag each quad with the layer name (e.g., `EyesLayer`, `HairLayer`) matching `FFaceLayerDef.LayerTag`
-- Verify `ArtPivot`, `ExpressionBlendAlpha`, and `NestedAnimFrame` parameter bindings if your materials use nested art, expression crossfade, or idle animation
-- The editor widget's **Import Art...** button handles texture importing and assignment via the C++ RebuildWidget UI
-
----
-
-## Build Dependencies
-
-- **Unreal Engine 5.x** (tested with 5.3+)
-- **Modules**: `Core`, `CoreUObject`, `Engine`, `InputCore`
-- **Editor modules** (for `UFaceParallaxEditorWidget`): `ContentBrowser`, `AssetRegistry`, `EditorScriptingUtilities`, `UnrealEd`, `DesktopPlatform`
-- **Plugin** (required for debug visualizer): `ProceduralMeshComponent`
 
 ---
 
 ## Project Files
 
 ```
-FaceParallaxTypes.h             — Shared types (EFaceAngleState, FFaceTextureSet, FFaceViewStateLayerSet, FFaceArtTransform, FFaceArtSlot, FFaceJiggleSettings, FFaceNestedArt, FFaceProfile3D, FFacePin3D)
-FaceParallaxComponent.h/.cpp    — Core parallax component with preset + transform + 3D pin projection support
-FaceParallaxPreset.h/.cpp       — DataAsset for storing texture + transform assignments per view state × layer
-DepthDebugVisualizerComponent.h/.cpp  — Procedural depth mesh visualizer
-FaceParallaxPreviewActor.h/.cpp       — Preview actor with scene capture, orbit camera, and part transform access
-FaceParallaxEditorWidget.h/.cpp — Editor widget with 19 categories of bindable Blueprint functions for every setting (includes Nested Art + 3D pin + UI + Targets)
-deploy.py                       — UE Editor Python script: creates master material, instances, preset, and character Blueprint
+FaceParallaxTypes.h                      — Shared types and structs
+FaceParallaxComponent.h/.cpp             — Core parallax component
+FaceParallaxPreset.h/.cpp                — Preset DataAsset
+DepthDebugVisualizerComponent.h/.cpp     — Depth debug visualizer
+FaceParallaxPreviewActor.h/.cpp          — Preview actor
+FaceParallaxEditorWidget.h/.cpp          — Editor widget
+deploy.py                                — UE Python asset creation script
+_gen_embed.py                            — Source re-encoder for deploy.py
+AGENTS.md                                — Agent guide with rules and test info
 
 Tests/
-  ParallaxMathTests.cpp       — Standalone C++ tests for state machine, transforms, edge cases, nested art, 3D pin projection (no UE)
-  SyntaxValidator.py          — Python script validating all .h/.cpp for brace/macro/syntax issues
-  run_tests.ps1               — PowerShell runner that compiles C++ tests + runs Python validator
+  ParallaxMathTests.cpp                  — 577 standalone C++ tests
+  SyntaxValidator.py                     — Python syntax validation
+  run_tests.ps1                          — Test runner
+  ue_build_test.ps1                      — UE build test
+
+SAMPLES/MyProject/                       — Standalone UE5 project for CI builds
 ```

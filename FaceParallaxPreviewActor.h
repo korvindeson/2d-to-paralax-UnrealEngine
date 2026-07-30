@@ -124,4 +124,8 @@ private:
     bool bAutoRotate = false;
 
     void UpdateCaptureTransform();
+    void MarkOrbitDirty() { bOrbitDirty = true; }
+
+    bool bOrbitDirty = true;
+    bool bCaptureDirty = true;
 };

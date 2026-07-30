@@ -57,11 +57,11 @@ public:
     int32 CameraPlayerIndex = 0;
 
     UFUNCTION(BlueprintCallable, Category = "Face Parallax|Camera")
-    void SetCameraSource(ECameraSource Source) { CameraSource = Source; }
+    void SetCameraSource(ECameraSource Source) { CameraSource = Source; bSequencerCacheValid = false; }
     UFUNCTION(BlueprintCallable, Category = "Face Parallax|Camera")
     ECameraSource GetCameraSource() const { return CameraSource; }
     UFUNCTION(BlueprintCallable, Category = "Face Parallax|Camera")
-    void SetCustomCameraActor(AActor* Actor) { CustomCameraActor = Actor; }
+    void SetCustomCameraActor(AActor* Actor) { CustomCameraActor = Actor; bSequencerCacheValid = false; }
     UFUNCTION(BlueprintCallable, Category = "Face Parallax|Camera")
     AActor* GetCustomCameraActor() const { return CustomCameraActor; }
 
@@ -78,6 +78,11 @@ public:
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|View Angles")
     float HalfZoneWidth = 22.5f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|View Angles",
+        meta = (DisplayName="Zone Boundary Multipliers",
+            ToolTip="4 multipliers [Front, ThreeQuarter, Profile, Back] applied to HalfZoneWidth to set zone boundaries. Default {1,3,5,7}"))
+    TArray<float> ZoneBoundaryMultipliers;
 
     UFUNCTION(BlueprintCallable, Category = "Face Parallax|View Angles")
     void SetTopViewPitchThreshold(float Threshold) { TopViewPitchThreshold = Threshold; }
@@ -96,6 +101,12 @@ public:
 
     UFUNCTION(BlueprintCallable, Category = "Face Parallax|View Angles")
     float GetHalfZoneWidth() const { return HalfZoneWidth; }
+
+    static float GetBoundaryOrDefault(const TArray<float>& Multipliers, int32 Index)
+    {
+        static const float Defaults[4] = {1.0f, 3.0f, 5.0f, 7.0f};
+        return Multipliers.IsValidIndex(Index) ? Multipliers[Index] : Defaults[Index];
+    }
 
     UFUNCTION(BlueprintCallable, Category = "Face Parallax|View Angles")
     float GetZoneCenterYaw(EFaceAngleState State) const;
@@ -932,9 +943,25 @@ public:
     // --- Camera resolution ---
     bool GetCameraLocationAndRotation(FVector& OutLoc, FRotator& OutRot) const;
 
+    // --- Sequencer camera cache ---
+    void RefreshSequencerCamera();
+    mutable TObjectPtr<AActor> SequencerCameraCache;
+    mutable bool bSequencerCacheValid = false;
+
     // --- Async texture loading ---
     TMap<FSoftObjectPath, TObjectPtr<UTexture2D>> AsyncTextureCache;
-    TArray<FSoftObjectPath> PendingTextureLoads;
-    void ProcessPendingTextureLoads();
+    TMap<FSoftObjectPath, TSharedPtr<struct FStreamableHandle>> ActiveTextureLoads;
+    void OnAsyncTexturesLoaded();
     UTexture2D* ResolveTexture(const TSoftObjectPtr<UTexture2D>& SoftPtr);
+
+    // --- Last-applied texture cache (S4) ---
+    TMap<FName, FFaceAppliedTextures> LastAppliedTextures;
+    TMap<FName, FFaceAppliedTextures> LastAppliedNestedTextures;
+
+    // --- Precomputed nested art FName keys (M5) ---
+    TMap<FName, TMap<FName, FName>> NestedArtStateKeyCache;          // [LayerTag][ElementName] -> StateKey
+    TMap<FName, TMap<FName, FName>> NestedArtChildTagCache;          // [ParentElementName][ElementName] -> ChildTag
+    TMap<FName, TMap<FName, TMap<FName, FName>>> NestedArtChildStateKeyCache; // [LayerTag][ParentElementName][ElementName] -> StateKey
+    bool bNestedArtCacheDirty = false;
+    void BuildNestedArtCache();
 };

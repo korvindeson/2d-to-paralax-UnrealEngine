@@ -3,10 +3,18 @@
 FFaceArtSlot UFaceParallaxPreset::GetSlot(EFaceAngleState State, FName LayerTag) const
 {
     const FFaceViewStateLayerSet* StateSet = ViewAssignments.Find(State);
-    if (!StateSet) return FFaceArtSlot();
+    if (!StateSet)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("[GetSlot] State %d not found in preset %s"), (int32)State, *GetNameSafe(this));
+        return FFaceArtSlot();
+    }
 
     const FFaceArtSlot* Slot = StateSet->Layers.Find(LayerTag);
-    if (!Slot) return FFaceArtSlot();
+    if (!Slot)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("[GetSlot] Layer '%s' not found for state %d in preset %s"), *LayerTag.ToString(), (int32)State, *GetNameSafe(this));
+        return FFaceArtSlot();
+    }
 
     return *Slot;
 }

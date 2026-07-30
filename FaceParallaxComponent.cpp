@@ -13,6 +13,7 @@
 #include "LevelSequenceActor.h"
 #include "CineCameraActor.h"
 #include "Engine/AssetManager.h"
+#include "Engine/StreamableManager.h"
 
 UFaceParallaxComponent::UFaceParallaxComponent()
 {
@@ -70,6 +71,8 @@ void UFaceParallaxComponent::BeginPlay()
     // Camera is resolved per-tick via GetCameraLocationAndRotation() — no longer requires CameraManager.
     // Legacy CameraManager var kept for backward compat; runtime uses CameraSource-based resolution.
     CameraManager = UGameplayStatics::GetPlayerCameraManager(this, 0);
+
+    RefreshSequencerCamera();
 
     InitializeMaterials();
     LayerParallaxOffsets.SetNum(LayerDefinitions.Num());
@@ -213,7 +216,6 @@ void UFaceParallaxComponent::TickComponent(float DeltaTime, ELevelTick TickType,
     }
 
     UpdateMaterialParameters();
-    ProcessPendingTextureLoads();
 }
 
 // ====================================================================
@@ -342,31 +344,15 @@ bool UFaceParallaxComponent::GetCameraLocationAndRotation(FVector& OutLoc, FRota
         }
         case ECameraSource::SequencerCamera:
         {
-            // Try to find a cine camera actor in the world
-            TArray<AActor*> FoundCams;
-            UGameplayStatics::GetAllActorsOfClass(Owner, ACineCameraActor::StaticClass(), FoundCams);
-            for (AActor* A : FoundCams)
+            if (!bSequencerCacheValid || !IsValid(SequencerCameraCache))
             {
-                ACineCameraActor* Cam = Cast<ACineCameraActor>(A);
-                if (Cam)
-                {
-                    OutLoc = Cam->GetActorLocation();
-                    OutRot = Cam->GetActorRotation();
-                    return true;
-                }
+                const_cast<UFaceParallaxComponent*>(this)->RefreshSequencerCamera();
             }
-            // Fallback: any camera actor
-            FoundCams.Empty();
-            UGameplayStatics::GetAllActorsOfClass(Owner, ACameraActor::StaticClass(), FoundCams);
-            for (AActor* A : FoundCams)
+            if (SequencerCameraCache)
             {
-                ACameraActor* Cam = Cast<ACameraActor>(A);
-                if (Cam)
-                {
-                    OutLoc = Cam->GetActorLocation();
-                    OutRot = Cam->GetActorRotation();
-                    return true;
-                }
+                OutLoc = SequencerCameraCache->GetActorLocation();
+                OutRot = SequencerCameraCache->GetActorRotation();
+                return true;
             }
             break;
         }
@@ -384,6 +370,31 @@ bool UFaceParallaxComponent::GetCameraLocationAndRotation(FVector& OutLoc, FRota
     }
 
     return false;
+}
+
+void UFaceParallaxComponent::RefreshSequencerCamera()
+{
+    SequencerCameraCache = nullptr;
+    bSequencerCacheValid = true;
+    AActor* Owner = GetOwner();
+    if (!Owner) return;
+    UWorld* World = Owner->GetWorld();
+    if (!World) return;
+
+    TArray<AActor*> Found;
+    UGameplayStatics::GetAllActorsOfClass(Owner, ACineCameraActor::StaticClass(), Found);
+    for (AActor* A : Found)
+    {
+        SequencerCameraCache = A;
+        return;
+    }
+    Found.Reset();
+    UGameplayStatics::GetAllActorsOfClass(Owner, ACameraActor::StaticClass(), Found);
+    for (AActor* A : Found)
+    {
+        SequencerCameraCache = A;
+        return;
+    }
 }
 
 void UFaceParallaxComponent::CalculateLookDelta(float& OutYaw, float& OutPitch)
@@ -421,38 +432,38 @@ EFaceAngleState UFaceParallaxComponent::DetermineStateFromAngles(float Yaw, floa
 
     if (HalfZoneWidth <= 0.0f) return EFaceAngleState::Front;
 
-    if (Yaw > -HalfZoneWidth && Yaw <= HalfZoneWidth) return EFaceAngleState::Front;
+    float BM[4];
+    for (int32 i = 0; i < 4; ++i)
+        BM[i] = GetBoundaryOrDefault(ZoneBoundaryMultipliers, i) * HalfZoneWidth;
 
-    float Z2 = HalfZoneWidth * 2.0f;
-    float Z3 = HalfZoneWidth * 3.0f;
-    float Z4 = HalfZoneWidth * 4.0f;
-    float Z5 = HalfZoneWidth * 5.0f;
-    float Z6 = HalfZoneWidth * 6.0f;
-    float Z7 = HalfZoneWidth * 7.0f;
+    if (Yaw > -BM[0] && Yaw <= BM[0]) return EFaceAngleState::Front;
 
-    if (Yaw > HalfZoneWidth && Yaw <= Z3)        return EFaceAngleState::ThreeQuarterRight;
-    if (Yaw > Z3 && Yaw <= Z5)                    return EFaceAngleState::RightProfile;
-    if (Yaw > Z5 && Yaw <= Z7)                    return EFaceAngleState::BackRight;
-    if (Yaw > Z7 || Yaw <= -Z7)                   return EFaceAngleState::Back;
-    if (Yaw > -Z7 && Yaw <= -Z5)                  return EFaceAngleState::BackLeft;
-    if (Yaw > -Z5 && Yaw <= -Z3)                  return EFaceAngleState::LeftProfile;
-    if (Yaw > -Z3 && Yaw <= -HalfZoneWidth)       return EFaceAngleState::ThreeQuarterLeft;
+    if (Yaw > BM[0] && Yaw <= BM[1])        return EFaceAngleState::ThreeQuarterRight;
+    if (Yaw > BM[1] && Yaw <= BM[2])        return EFaceAngleState::RightProfile;
+    if (Yaw > BM[2] && Yaw <= BM[3])        return EFaceAngleState::BackRight;
+    if (Yaw > BM[3] || Yaw <= -BM[3])        return EFaceAngleState::Back;
+    if (Yaw > -BM[3] && Yaw <= -BM[2])       return EFaceAngleState::BackLeft;
+    if (Yaw > -BM[2] && Yaw <= -BM[1])       return EFaceAngleState::LeftProfile;
+    if (Yaw > -BM[1] && Yaw <= -BM[0])       return EFaceAngleState::ThreeQuarterLeft;
 
     return EFaceAngleState::Front;
 }
 
 float UFaceParallaxComponent::GetZoneCenterYaw(EFaceAngleState State) const
 {
+    float BM[4];
+    for (int32 i = 0; i < 4; ++i)
+        BM[i] = GetBoundaryOrDefault(ZoneBoundaryMultipliers, i) * HalfZoneWidth;
     switch (State)
     {
         case EFaceAngleState::Front:              return 0.0f;
-        case EFaceAngleState::ThreeQuarterRight:  return HalfZoneWidth * 2.0f;
-        case EFaceAngleState::RightProfile:       return HalfZoneWidth * 4.0f;
-        case EFaceAngleState::BackRight:          return HalfZoneWidth * 6.0f;
+        case EFaceAngleState::ThreeQuarterRight:  return (BM[0] + BM[1]) * 0.5f;
+        case EFaceAngleState::RightProfile:       return (BM[1] + BM[2]) * 0.5f;
+        case EFaceAngleState::BackRight:          return (BM[2] + BM[3]) * 0.5f;
         case EFaceAngleState::Back:               return 180.0f;
-        case EFaceAngleState::BackLeft:           return -HalfZoneWidth * 6.0f;
-        case EFaceAngleState::LeftProfile:        return -HalfZoneWidth * 4.0f;
-        case EFaceAngleState::ThreeQuarterLeft:   return -HalfZoneWidth * 2.0f;
+        case EFaceAngleState::BackLeft:           return -(BM[2] + BM[3]) * 0.5f;
+        case EFaceAngleState::LeftProfile:        return -(BM[1] + BM[2]) * 0.5f;
+        case EFaceAngleState::ThreeQuarterLeft:   return -(BM[0] + BM[1]) * 0.5f;
         default:                                  return 0.0f;
     }
 }
@@ -512,7 +523,7 @@ void UFaceParallaxComponent::UpdateStateMachine(float Yaw, float Pitch, float De
                 SwooshSmearAngle = FMath::RadiansToDegrees(FMath::Atan2(Dpitch, Dyaw));
 
                 // Load art frames from preset if available (stored by target state)
-                SwooshFrames.Empty();
+                SwooshFrames.Reset();
                 if (ActivePreset)
                 {
                     for (const auto& LayerPair : FaceMaterialsByLayer)
@@ -927,6 +938,7 @@ void UFaceParallaxComponent::UpdateMaterialParameters()
 void UFaceParallaxComponent::ApplyPreset(UFaceParallaxPreset* Preset)
 {
     ActivePreset = Preset;
+    bNestedArtCacheDirty = true;
     if (ActivePreset)
     {
         DetectFaceProfileFromPreset();
@@ -973,7 +985,7 @@ void UFaceParallaxComponent::ForceSwoosh(EFaceAngleState TargetState)
     SwooshBlendOutElapsed = 0.0f;
     SwooshProceduralTick = 0;
 
-    SwooshFrames.Empty();
+    SwooshFrames.Reset();
     for (const auto& LayerPair : FaceMaterialsByLayer)
     {
         const FFaceArtSlot& Slot = ActivePreset->GetSlot(TargetState, LayerPair.Key);
@@ -1005,12 +1017,22 @@ void UFaceParallaxComponent::SetStateTextures(EFaceAngleState State)
 
         for (UMaterialInstanceDynamic* Mat : LayerPair.Value)
         {
-            if (TexSet.Albedo)
-                Mat->SetTextureParameterValue(AlbedoParamName, TexSet.Albedo);
-            if (TexSet.Normal)
-                Mat->SetTextureParameterValue(NormalParamName, TexSet.Normal);
-            if (TexSet.Depth)
-                Mat->SetTextureParameterValue(DepthParamName, TexSet.Depth);
+            FFaceAppliedTextures& Cached = LastAppliedTextures.FindOrAdd(LayerTag);
+            if (Cached.Albedo != TexSet.Albedo)
+            {
+                if (TexSet.Albedo) Mat->SetTextureParameterValue(AlbedoParamName, TexSet.Albedo);
+                Cached.Albedo = TexSet.Albedo;
+            }
+            if (Cached.Normal != TexSet.Normal)
+            {
+                if (TexSet.Normal) Mat->SetTextureParameterValue(NormalParamName, TexSet.Normal);
+                Cached.Normal = TexSet.Normal;
+            }
+            if (Cached.Depth != TexSet.Depth)
+            {
+                if (TexSet.Depth) Mat->SetTextureParameterValue(DepthParamName, TexSet.Depth);
+                Cached.Depth = TexSet.Depth;
+            }
         }
     }
 
@@ -1181,7 +1203,7 @@ void UFaceParallaxComponent::UpdateSwooshTick(float DeltaTime)
             BlendAlpha = 1.0f;
             SwooshPhase = ESwooshPhase::Inactive;
             bIsInTransition = false;
-            SwooshFrames.Empty();
+            SwooshFrames.Reset();
             OnSwooshCompleted.Broadcast(CurrentState, PreviousState);
         }
     }
@@ -1206,7 +1228,7 @@ void UFaceParallaxComponent::StopAnimationsOnStateChange()
     {
         bExpressionTransitioning = false;
         ExpressionBlendAlpha = 1.0f;
-        ExpressionPreviousTextureSets.Empty();
+        ExpressionPreviousTextureSets.Reset();
     }
 
     // Reset jiggle + idle animation states on state change
@@ -1290,7 +1312,7 @@ void UFaceParallaxComponent::SetExpression(EExpression NewExpression)
     if (!ActivePreset) return;
 
     // Capture current expression textures as previous
-    ExpressionPreviousTextureSets.Empty();
+    ExpressionPreviousTextureSets.Reset();
     for (const auto& LayerPair : FaceMaterialsByLayer)
     {
         FName LayerTag = LayerPair.Key;
@@ -1333,7 +1355,7 @@ void UFaceParallaxComponent::UpdateExpressionTick(float DeltaTime)
     {
         ExpressionBlendAlpha = 1.0f;
         bExpressionTransitioning = false;
-        ExpressionPreviousTextureSets.Empty();
+        ExpressionPreviousTextureSets.Reset();
     }
 }
 
@@ -1371,6 +1393,9 @@ void UFaceParallaxComponent::UpdateNestedArtTick(float DeltaTime)
 {
     if (!ActivePreset) return;
 
+    if (bNestedArtCacheDirty)
+        BuildNestedArtCache();
+
     // Cap delta-time to prevent numerical blowup on hitches
     DeltaTime = FMath::Min(DeltaTime, 0.05f);
 
@@ -1395,7 +1420,7 @@ void UFaceParallaxComponent::UpdateNestedArtTick(float DeltaTime)
         {
             if (!Element.bJiggleEnabled) continue;
 
-            FName StateKey = FName(*FString::Printf(TEXT("%s_%s"), *LayerTag.ToString(), *Element.ElementName.ToString()));
+            FName StateKey = NestedArtStateKeyCache[LayerTag][Element.ElementName];
             FNestedJiggleState& State = JiggleStates.FindOrAdd(StateKey);
             float& Accumulator = JiggleAccumulators.FindOrAdd(StateKey);
             Accumulator += DeltaTime;
@@ -1418,6 +1443,9 @@ void UFaceParallaxComponent::UpdateNestedArtTick(float DeltaTime)
                 State.Position += State.Velocity * SubStepDt;
                 ++Steps;
             }
+
+            if (Steps >= MaxSubSteps)
+                Accumulator = 0.0f;
         }
     }
 
@@ -1431,7 +1459,7 @@ void UFaceParallaxComponent::UpdateNestedArtTick(float DeltaTime)
         {
             if (Element.IdleFrames.Num() == 0) continue;
 
-            FName StateKey = FName(*FString::Printf(TEXT("%s_%s"), *LayerTag.ToString(), *Element.ElementName.ToString()));
+            FName StateKey = NestedArtStateKeyCache[LayerTag][Element.ElementName];
             FNestedAnimState& Anim = AnimStates.FindOrAdd(StateKey);
 
             float EffectiveDuration = Element.IdleFrameDuration / FMath::Max(0.001f, Element.IdleSpeedMultiplier);
@@ -1481,7 +1509,7 @@ void UFaceParallaxComponent::PushNestedArtParams()
 
         for (const FFaceNestedArt& Element : Slot.NestedElements)
         {
-            FName StateKey = FName(*FString::Printf(TEXT("%s_%s"), *LayerTag.ToString(), *Element.ElementName.ToString()));
+            FName StateKey = NestedArtStateKeyCache[LayerTag][Element.ElementName];
             TArray<UMaterialInstanceDynamic*>* ElemMats = NestedMaterialsByElement.Find(StateKey);
             if (!ElemMats || ElemMats->Num() == 0) continue;
 
@@ -1605,7 +1633,7 @@ void UFaceParallaxComponent::PushNestedArtParams()
 
 void UFaceParallaxComponent::PushNestedChildArt(const FFaceNestedArt& Element, const FFaceArtTransform& ParentTransform, FName LayerTag, FName ParentElementName)
 {
-    FName StateKey = FName(*FString::Printf(TEXT("%s_%s_%s"), *LayerTag.ToString(), *ParentElementName.ToString(), *Element.ElementName.ToString()));
+    FName StateKey = NestedArtChildStateKeyCache[LayerTag][ParentElementName][Element.ElementName];
     TArray<UMaterialInstanceDynamic*>* ElemMats = NestedMaterialsByElement.Find(StateKey);
     if (!ElemMats || ElemMats->Num() == 0) return;
 
@@ -1660,9 +1688,22 @@ void UFaceParallaxComponent::PushNestedChildArt(const FFaceNestedArt& Element, c
     for (UMaterialInstanceDynamic* Mat : *ElemMats)
     {
         if (!Mat) continue;
-        if (FinalTex.Albedo) Mat->SetTextureParameterValue(AlbedoParamName, FinalTex.Albedo);
-        if (FinalTex.Normal) Mat->SetTextureParameterValue(NormalParamName, FinalTex.Normal);
-        if (FinalTex.Depth)  Mat->SetTextureParameterValue(DepthParamName, FinalTex.Depth);
+        FFaceAppliedTextures& NestedCached = LastAppliedNestedTextures.FindOrAdd(StateKey);
+        if (NestedCached.Albedo != FinalTex.Albedo)
+        {
+            if (FinalTex.Albedo) Mat->SetTextureParameterValue(AlbedoParamName, FinalTex.Albedo);
+            NestedCached.Albedo = FinalTex.Albedo;
+        }
+        if (NestedCached.Normal != FinalTex.Normal)
+        {
+            if (FinalTex.Normal) Mat->SetTextureParameterValue(NormalParamName, FinalTex.Normal);
+            NestedCached.Normal = FinalTex.Normal;
+        }
+        if (NestedCached.Depth != FinalTex.Depth)
+        {
+            if (FinalTex.Depth) Mat->SetTextureParameterValue(DepthParamName, FinalTex.Depth);
+            NestedCached.Depth = FinalTex.Depth;
+        }
         Mat->SetVectorParameterValue(ArtPositionParamName, FLinearColor(NestedTransform.Position.X, NestedTransform.Position.Y, 0.0f, 0.0f));
         Mat->SetVectorParameterValue(ArtScaleParamName, FLinearColor(NestedTransform.Scale.X, NestedTransform.Scale.Y, 0.0f, 0.0f));
         Mat->SetScalarParameterValue(ArtRotationParamName, NestedTransform.Rotation);
@@ -1690,7 +1731,7 @@ void UFaceParallaxComponent::PushNestedChildArt(const FFaceNestedArt& Element, c
 
     if (!Element.bJiggleEnabled && Element.Children.Num() > 0)
     {
-        FName ChildTag = FName(*FString::Printf(TEXT("%s_%s"), *ParentElementName.ToString(), *Element.ElementName.ToString()));
+        FName ChildTag = NestedArtChildTagCache[ParentElementName][Element.ElementName];
         for (const FFaceNestedArt& Child : Element.Children)
         {
             PushNestedChildArt(Child, NestedTransform, LayerTag, ChildTag);
@@ -2132,38 +2173,48 @@ void UFaceParallaxComponent::AsyncLoadSlotTextures(EFaceAngleState State, FName 
     const FFaceArtSlot& Slot = ActivePreset->GetSlot(State, LayerTag);
     if (!Slot.Textures.IsValid()) return;
 
-    // Queue soft refs for loading
-    auto QueueLoad = [&](const TSoftObjectPtr<UTexture2D>& SoftPtr)
+    TArray<FSoftObjectPath> PathsToLoad;
+    auto QueuePath = [&](const TSoftObjectPtr<UTexture2D>& SoftPtr)
     {
         if (!SoftPtr.IsNull() && !SoftPtr.IsValid())
         {
             FSoftObjectPath Path = SoftPtr.ToSoftObjectPath();
-            if (!AsyncTextureCache.Contains(Path))
+            if (!AsyncTextureCache.Contains(Path) && !ActiveTextureLoads.Contains(Path))
             {
-                PendingTextureLoads.AddUnique(Path);
+                PathsToLoad.Add(Path);
                 AsyncTextureCache.Add(Path, nullptr);
             }
         }
     };
 
-    QueueLoad(Slot.Textures.SoftAlbedo);
-    QueueLoad(Slot.Textures.SoftNormal);
-    QueueLoad(Slot.Textures.SoftDepth);
+    QueuePath(Slot.Textures.SoftAlbedo);
+    QueuePath(Slot.Textures.SoftNormal);
+    QueuePath(Slot.Textures.SoftDepth);
 
-    // Also queue blink frames
     for (const FFaceTextureSet& FT : Slot.BlinkFrames)
     {
-        QueueLoad(FT.SoftAlbedo);
-        QueueLoad(FT.SoftNormal);
-        QueueLoad(FT.SoftDepth);
+        QueuePath(FT.SoftAlbedo);
+        QueuePath(FT.SoftNormal);
+        QueuePath(FT.SoftDepth);
     }
 
-    // Queue expression textures
     for (const auto& ExprPair : Slot.ExpressionTextures)
     {
-        QueueLoad(ExprPair.Value.SoftAlbedo);
-        QueueLoad(ExprPair.Value.SoftNormal);
-        QueueLoad(ExprPair.Value.SoftDepth);
+        QueuePath(ExprPair.Value.SoftAlbedo);
+        QueuePath(ExprPair.Value.SoftNormal);
+        QueuePath(ExprPair.Value.SoftDepth);
+    }
+
+    if (PathsToLoad.Num() > 0)
+    {
+        TSharedPtr<FStreamableHandle> Handle = UAssetManager::GetStreamableManager().RequestAsyncLoad(
+            PathsToLoad,
+            FStreamableDelegate::CreateUObject(this, &UFaceParallaxComponent::OnAsyncTexturesLoaded)
+        );
+        for (const FSoftObjectPath& P : PathsToLoad)
+        {
+            ActiveTextureLoads.Add(P, Handle);
+        }
     }
 }
 
@@ -2178,7 +2229,11 @@ void UFaceParallaxComponent::AsyncUnloadSlotTextures(EFaceAngleState State, FNam
         {
             FSoftObjectPath Path = SoftPtr.ToSoftObjectPath();
             AsyncTextureCache.Remove(Path);
-            PendingTextureLoads.Remove(Path);
+            if (TSharedPtr<FStreamableHandle>* Handle = ActiveTextureLoads.Find(Path))
+            {
+                if (Handle->IsValid()) (*Handle)->CancelHandle();
+                ActiveTextureLoads.Remove(Path);
+            }
         }
     };
 
@@ -2187,30 +2242,25 @@ void UFaceParallaxComponent::AsyncUnloadSlotTextures(EFaceAngleState State, FNam
     QueueUnload(Slot.Textures.SoftDepth);
 }
 
-void UFaceParallaxComponent::ProcessPendingTextureLoads()
+void UFaceParallaxComponent::OnAsyncTexturesLoaded()
 {
-    if (!bUseAsyncTextureLoading || PendingTextureLoads.Num() == 0) return;
+    if (!bUseAsyncTextureLoading) return;
 
-    TArray<FSoftObjectPath> Completed;
-    for (const FSoftObjectPath& Path : PendingTextureLoads)
+    TArray<FSoftObjectPath> LoadedPaths;
+    for (const auto& KV : ActiveTextureLoads)
     {
-        UTexture2D* Tex = Cast<UTexture2D>(Path.ResolveObject());
-        if (!Tex)
+        UObject* Obj = KV.Key.ResolveObject();
+        if (Obj)
         {
-            Tex = Cast<UTexture2D>(UAssetManager::GetStreamableManager().LoadSynchronous(Path));
-        }
-        if (Tex)
-        {
-            AsyncTextureCache[Path] = Tex;
-            Completed.Add(Path);
+            AsyncTextureCache[KV.Key] = Cast<UTexture2D>(Obj);
+            LoadedPaths.Add(KV.Key);
         }
     }
-
-    for (const FSoftObjectPath& C : Completed)
-        PendingTextureLoads.Remove(C);
+    for (const FSoftObjectPath& P : LoadedPaths)
+        ActiveTextureLoads.Remove(P);
 
     // Resolve loaded textures into slot hard refs
-    if (ActivePreset)
+    if (ActivePreset && LoadedPaths.Num() > 0)
     {
         TArray<EFaceAngleState> AllStates = {
             EFaceAngleState::Front, EFaceAngleState::ThreeQuarterRight,
@@ -2239,4 +2289,63 @@ UTexture2D* UFaceParallaxComponent::ResolveTexture(const TSoftObjectPtr<UTexture
     FSoftObjectPath Path = SoftPtr.ToSoftObjectPath();
     TObjectPtr<UTexture2D>* Found = AsyncTextureCache.Find(Path);
     return Found ? Found->Get() : nullptr;
+}
+
+void UFaceParallaxComponent::BuildNestedArtCache()
+{
+    NestedArtStateKeyCache.Reset();
+    NestedArtChildTagCache.Reset();
+    NestedArtChildStateKeyCache.Reset();
+    bNestedArtCacheDirty = false;
+
+    if (!ActivePreset) return;
+
+    TArray<EFaceAngleState> AllStates = {
+        EFaceAngleState::Front, EFaceAngleState::ThreeQuarterRight,
+        EFaceAngleState::RightProfile, EFaceAngleState::BackRight,
+        EFaceAngleState::Back, EFaceAngleState::BackLeft,
+        EFaceAngleState::LeftProfile, EFaceAngleState::ThreeQuarterLeft,
+        EFaceAngleState::Top, EFaceAngleState::Bottom
+    };
+
+    auto BuildForState = [&](EFaceAngleState State)
+    {
+        if (!ActivePreset->HasState(State)) return;
+        TArray<FName> Tags = ActivePreset->GetAllLayerTags(State);
+        for (FName LayerTag : Tags)
+        {
+            const FFaceArtSlot& Slot = ActivePreset->GetSlot(State, LayerTag);
+            // Parent-level state keys
+            TMap<FName, FName>& LayerCache = NestedArtStateKeyCache.FindOrAdd(LayerTag);
+            for (const FFaceNestedArt& Elem : Slot.NestedElements)
+            {
+                FName Key = FName(*FString::Printf(TEXT("%s_%s"), *LayerTag.ToString(), *Elem.ElementName.ToString()));
+                LayerCache.FindOrAdd(Elem.ElementName) = Key;
+
+                // Child state keys: LayerTag_ParentElementName_ElementName
+                TMap<FName, TMap<FName, FName>>& ParentLayer = NestedArtChildStateKeyCache.FindOrAdd(LayerTag);
+                TMap<FName, FName>& ChildCache = ParentLayer.FindOrAdd(Elem.ElementName);
+                for (const FFaceNestedArt& Child : Elem.Children)
+                {
+                    FName ChildKey = FName(*FString::Printf(TEXT("%s_%s_%s"),
+                        *LayerTag.ToString(), *Elem.ElementName.ToString(), *Child.ElementName.ToString()));
+                    ChildCache.FindOrAdd(Child.ElementName) = ChildKey;
+                }
+            }
+            // Child tag cache: ParentElementName_ElementName
+            for (const FFaceNestedArt& Elem : Slot.NestedElements)
+            {
+                TMap<FName, FName>& ParentCache = NestedArtChildTagCache.FindOrAdd(Elem.ElementName);
+                for (const FFaceNestedArt& Child : Elem.Children)
+                {
+                    FName ChildTag = FName(*FString::Printf(TEXT("%s_%s"),
+                        *Elem.ElementName.ToString(), *Child.ElementName.ToString()));
+                    ParentCache.FindOrAdd(Child.ElementName) = ChildTag;
+                }
+            }
+        }
+    };
+
+    for (EFaceAngleState S : AllStates)
+        BuildForState(S);
 }

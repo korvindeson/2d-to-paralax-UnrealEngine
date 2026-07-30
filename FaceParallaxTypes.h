@@ -214,6 +214,16 @@ struct FFaceParamBinding
     bool bInvert = false;
 };
 
+// Cache of last-applied texture pointers to avoid redundant material parameter pushes.
+USTRUCT(BlueprintType)
+struct FFaceAppliedTextures
+{
+    GENERATED_BODY()
+    UTexture2D* Albedo = nullptr;
+    UTexture2D* Normal = nullptr;
+    UTexture2D* Depth = nullptr;
+};
+
 USTRUCT(BlueprintType)
 struct FFaceJiggleSettings
 {

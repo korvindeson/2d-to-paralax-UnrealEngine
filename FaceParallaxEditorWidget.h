@@ -31,6 +31,7 @@ class UFaceParallaxEditorWidget : public UUserWidget
 
 public:
     virtual TSharedRef<SWidget> RebuildWidget() override;
+    virtual void BeginDestroy() override;
     // ===== TARGETS =====
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Editor|Targets",
         meta = (DisplayName = "Preview Actor"))
@@ -777,6 +778,16 @@ private:
     bool bAutoFitOnAssign = true;
     TArray<FName> LayerNames;
     int32 GetLayerIndex(FName Tag) const;
+
+    // Diagnostic overlay
+    TSharedPtr<class SMultiLineEditableTextBox> DiagnosticLog;
+
+    // Object modification callback for auto-refresh
+    FDelegateHandle AssetModifiedHandle;
+    void OnAssetModified(UObject* Object);
+
+    void LogDiagnostic(const FString& Message);
+    void RunDiagnostics();
 
     bool ValidatePreset() const;
     bool ValidatePreviewActor() const;

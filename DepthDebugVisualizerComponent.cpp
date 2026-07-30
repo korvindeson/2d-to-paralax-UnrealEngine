@@ -129,6 +129,15 @@ void UDepthDebugVisualizerComponent::SampleDepthMap(UTexture2D* Texture,
         return;
     }
 
+    // Validate texture compression — raw pixel reads require uncompressed formats
+    TextureCompressionSettings Compression = Texture->CompressionSettings;
+    if (Compression != TC_EditorIcon && Compression != TC_VectorDisplacementmap && Compression != TC_HDR)
+    {
+        UE_LOG(LogTemp, Warning,
+            TEXT("[UDepthDebugVisualizerComponent] Texture '%s' has compression %d which may not support raw pixel reads. Use TC_EditorIcon, TC_VectorDisplacementmap, TC_HDR, or TC_HDR_Float."),
+            *Texture->GetName(), (int32)Compression);
+    }
+
     // Save original address modes and set to Clamp for safe sampling
     bAddressModeSaved = true;
     OriginalAddressX = (uint8)Texture->AddressX;

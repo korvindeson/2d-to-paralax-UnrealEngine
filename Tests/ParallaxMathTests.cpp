@@ -119,22 +119,29 @@ bool IsInStateZone(double yaw, double pitch, EFaceAngleState state) {
     return yawDiff <= STATE_CONFIG.YawRange[idx] && pitchDiff <= STATE_CONFIG.PitchRange[idx];
 }
 
-EFaceAngleState DetermineStateFromAngles(double yaw, double pitch) {
-    // Uses same zone-based logic as the component (default HalfZoneWidth = 22.5).
-    // Top/Bottom thresholds match default TopViewPitchThreshold = 60, BottomViewPitchThreshold = -60.
+// --- DetermineStateFromAngles with custom ZoneBoundaryMultipliers ---
+EFaceAngleState DetermineStateFromAngles(double yaw, double pitch, const double multipliers[4]) {
+    double BM[4];
+    for (int i = 0; i < 4; ++i)
+        BM[i] = multipliers[i] * HZW;
+
     if (pitch > 60.0) return EFaceAngleState::Top;
     if (pitch < -60.0) return EFaceAngleState::Bottom;
 
-    // Horizontal zones: each spans HZW (22.5 deg) on either side of its center
-    if (yaw > -HZW && yaw <= HZW) return EFaceAngleState::Front;
-    if (yaw > HZW  && yaw <= Z3)  return EFaceAngleState::ThreeQuarterRight;
-    if (yaw > Z3   && yaw <= Z5)  return EFaceAngleState::RightProfile;
-    if (yaw > Z5   && yaw <= Z7)  return EFaceAngleState::BackRight;
-    if (yaw > Z7   || yaw <= -Z7) return EFaceAngleState::Back;
-    if (yaw > -Z7  && yaw <= -Z5) return EFaceAngleState::BackLeft;
-    if (yaw > -Z5  && yaw <= -Z3) return EFaceAngleState::LeftProfile;
-    if (yaw > -Z3  && yaw <= -HZW)return EFaceAngleState::ThreeQuarterLeft;
+    if (yaw > -BM[0] && yaw <= BM[0]) return EFaceAngleState::Front;
+    if (yaw > BM[0] && yaw <= BM[1])  return EFaceAngleState::ThreeQuarterRight;
+    if (yaw > BM[1] && yaw <= BM[2])  return EFaceAngleState::RightProfile;
+    if (yaw > BM[2] && yaw <= BM[3])  return EFaceAngleState::BackRight;
+    if (yaw > BM[3] || yaw <= -BM[3]) return EFaceAngleState::Back;
+    if (yaw > -BM[3] && yaw <= -BM[2]) return EFaceAngleState::BackLeft;
+    if (yaw > -BM[2] && yaw <= -BM[1]) return EFaceAngleState::LeftProfile;
+    if (yaw > -BM[1] && yaw <= -BM[0]) return EFaceAngleState::ThreeQuarterLeft;
     return EFaceAngleState::Front;
+}
+
+EFaceAngleState DetermineStateFromAngles(double yaw, double pitch) {
+    static const double Defaults[4] = {1.0, 3.0, 5.0, 7.0};
+    return DetermineStateFromAngles(yaw, pitch, Defaults);
 }
 
 // --- Hysteresis state machine ---
@@ -3345,6 +3352,69 @@ void TestZoneBoundaries() {
     printf("  [Zone Boundary Tests: 24 tests]\n");
 }
 
+void TestCustomZoneBoundaryMultipliers() {
+    printf("=== Custom Zone Boundary Multipliers (M6) ===\n");
+
+    // Default multipliers {1,3,5,7} produce same behavior as original
+    static const double Defaults[4] = {1.0, 3.0, 5.0, 7.0};
+    TEST("Default: Front at 0",
+        DetermineStateFromAngles(0, 0, Defaults) == EFaceAngleState::Front);
+    TEST("Default: Front at 22.49",
+        DetermineStateFromAngles(22.49, 0, Defaults) == EFaceAngleState::Front);
+    TEST("Default: 3QR at 22.51",
+        DetermineStateFromAngles(22.51, 0, Defaults) == EFaceAngleState::ThreeQuarterRight);
+    TEST("Default: Back at 157.51",
+        DetermineStateFromAngles(157.51, 0, Defaults) == EFaceAngleState::Back);
+
+    // Wide front zone: multipliers {2,3,5,7}
+    static const double WideFront[4] = {2.0, 3.0, 5.0, 7.0};
+    TEST("WideFront: still Front at 22.5",
+        DetermineStateFromAngles(22.5, 0, WideFront) == EFaceAngleState::Front);
+    TEST("WideFront: Front at 44.99",
+        DetermineStateFromAngles(44.99, 0, WideFront) == EFaceAngleState::Front);
+    TEST("WideFront: 3QR at 45.01",
+        DetermineStateFromAngles(45.01, 0, WideFront) == EFaceAngleState::ThreeQuarterRight);
+
+    // Narrow front zone: multipliers {0.5,3,5,7}
+    static const double NarrowFront[4] = {0.5, 3.0, 5.0, 7.0};
+    TEST("NarrowFront: 3QR at 11.26",
+        DetermineStateFromAngles(11.26, 0, NarrowFront) == EFaceAngleState::ThreeQuarterRight);
+    TEST("NarrowFront: Front at 11.24",
+        DetermineStateFromAngles(11.24, 0, NarrowFront) == EFaceAngleState::Front);
+
+    // Symmetric left-side with wide front
+    TEST("WideFront: Left side Front at -22.5",
+        DetermineStateFromAngles(-22.5, 0, WideFront) == EFaceAngleState::Front);
+    TEST("WideFront: 3QL at -45.01",
+        DetermineStateFromAngles(-45.01, 0, WideFront) == EFaceAngleState::ThreeQuarterLeft);
+
+    // All zones equal width: multipliers {1,2,3,4}
+    static const double EqualWidth[4] = {1.0, 2.0, 3.0, 4.0};
+    TEST("EqualWidth: Front at 0",
+        DetermineStateFromAngles(0, 0, EqualWidth) == EFaceAngleState::Front);
+    TEST("EqualWidth: 3QR at 22.51",
+        DetermineStateFromAngles(22.51, 0, EqualWidth) == EFaceAngleState::ThreeQuarterRight);
+    TEST("EqualWidth: Profile at 45.01",
+        DetermineStateFromAngles(45.01, 0, EqualWidth) == EFaceAngleState::RightProfile);
+    TEST("EqualWidth: BackR at 67.51",
+        DetermineStateFromAngles(67.51, 0, EqualWidth) == EFaceAngleState::BackRight);
+    TEST("EqualWidth: Back at 90.01",
+        DetermineStateFromAngles(90.01, 0, EqualWidth) == EFaceAngleState::Back);
+    TEST("EqualWidth: Front at -22.49",
+        DetermineStateFromAngles(-22.49, 0, EqualWidth) == EFaceAngleState::Front);
+    TEST("EqualWidth: 3QL at -22.51",
+        DetermineStateFromAngles(-22.51, 0, EqualWidth) == EFaceAngleState::ThreeQuarterLeft);
+
+    // Pitch thresholds unaffected by horizontal multipliers
+    static const double AnyMults[4] = {9.0, 9.0, 9.0, 9.0};
+    TEST("Pitch unaffected: Top above threshold",
+        DetermineStateFromAngles(0, 61, AnyMults) == EFaceAngleState::Top);
+    TEST("Pitch unaffected: Bottom below threshold",
+        DetermineStateFromAngles(0, -61, AnyMults) == EFaceAngleState::Bottom);
+
+    printf("  [Custom Zone Boundary Multipliers: 20 tests]\n");
+}
+
 // ====================================================================
 // BLEND PREVIEW TESTS
 // ====================================================================
@@ -3525,6 +3595,7 @@ int main() {
     TestPinProjection();
     TestBatchOperations();
     TestZoneBoundaries();
+    TestCustomZoneBoundaryMultipliers();
     TestBlendPreview();
     TestStatusMatrix();
 

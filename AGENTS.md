@@ -7,14 +7,14 @@
 ## File Map
 
 | File | Purpose |
-|---|---|---|
-| `FaceParallaxTypes.h` | Shared types: `EFaceAngleState`, `FFaceTextureSet`, `FFaceArtTransform`, `FFaceArtSlot`, `FFaceViewStateLayerSet`, `FFaceJiggleSettings`, `FFaceNestedArt`, `FFaceParamBinding`, `FFaceProfile3D`, `FFacePin3D` |
+|---|---|
+| `FaceParallaxTypes.h` | Shared types: `EFaceAngleState`, `FFaceTextureSet`, `FFaceArtTransform`, `FFaceArtSlot`, `FFaceViewStateLayerSet`, `FFaceJiggleSettings`, `FFaceNestedArt`, `FFaceParamBinding`, `FFaceProfile3D`, `FFacePin3D`, `FFaceAppliedTextures` |
 | `FaceParallaxComponent.h/.cpp` | Core component — state machine, parallax offsets, material parameter push, preset application, jiggle physics, idle animation, nested art transforms, 3D pin projection, face profile detection. 145 BP-accessible functions. |
 | `FaceParallaxPreset.h/.cpp` | DataAsset — stores per-state × per-layer texture + transform assignments. Includes batch operations and Pin3D accessors. |
 | `DepthDebugVisualizerComponent.h/.cpp` | Procedural depth mesh from depth map texture |
 | `FaceParallaxPreviewActor.h/.cpp` | Preview actor with scene capture, orbit camera, part transform access |
 | `FaceParallaxEditorWidget.h/.cpp` | Editor widget — 221 UFUNCTIONs across 17 categories. Slate `RebuildWidget()` with inline lambdas (no string-dispatch). |
-| `Tests/ParallaxMathTests.cpp` | Standalone C++17 tests (no UE dep) — state machine, transforms, blink/expression/viseme, swoosh, parameters, nested art + jiggle, 3D pin projection, batch ops (505 tests) |
+| `Tests/ParallaxMathTests.cpp` | Standalone C++17 tests (no UE dep) — state machine, transforms, blink/expression/viseme, swoosh, parameters, nested art + jiggle, 3D pin projection, batch ops, zone multipliers (577 tests) |
 | `Tests/SyntaxValidator.py` | Python syntax validator — brace/macro balance, include guards |
 | `Tests/run_tests.ps1` | Master test runner — syntax validator + C++ math tests + optional UE build test |
 | `Tests/ue_build_test.ps1` | UE build test — compiles SAMPLES project with Build.bat, verifies DLL |
@@ -37,6 +37,7 @@
 10. **After editing C++ files, run `python _gen_embed.py`** to re-encode sources into `deploy.py`'s `EMBEDDED_SOURCES`. Keeps deployer self-contained.
 11. **Widget naming in Slate code uses direct member pointers** (`SliderOrbitYaw`, `PreviewImageWidget`) — no string-based dispatch. Button/slider/checkbox lambdas call UFUNCTIONs directly.
 12. **After a full UBT build** (not LiveCoding), clean `Intermediate/` in the SAMPLES project before next build to avoid stale build graph.
+13. **`GetBoundaryOrDefault` helper** is a `static` function on `UFaceParallaxComponent` — used by `DetermineStateFromAngles` and `GetZoneCenterYaw` to read from `ZoneBoundaryMultipliers` array with fallback to defaults `{1,3,5,7}`.
 
 ## Known Test Gaps
 
@@ -49,24 +50,8 @@
 
 ## Verify Your Changes
 
-Before completing any task, run **all three**:
+Before completing any task, run:
 
-```powershell
-# 1. Python syntax validation
-python Tests\SyntaxValidator.py --path .
-
-# 2. C++ math tests (requires g++ from msys64 ucrt64)
-$env:PATH = "C:\msys64\ucrt64\bin;$env:PATH"
-g++ -std=c++17 -o ParallaxMathTests.exe Tests\ParallaxMathTests.cpp -Werror -Wall -Wextra
-./ParallaxMathTests.exe
-
-# 3. UE build test (requires Build.bat on PATH, or run via run_tests.ps1)
-.\Tests\run_tests.ps1 -IncludeUEBuild
-```
-
-All must exit with code 0.
-
-Quick single-command equivalent:
 ```powershell
 .\Tests\run_tests.ps1 -IncludeUEBuild
 ```

@@ -17,6 +17,31 @@
 #include "EditorDirectories.h"
 #include "Misc/FileHelper.h"
 #include "Editor.h"
+#include "Widgets/Input/SMultiLineEditableTextBox.h"
+#include "UObject/ObjectSaveContext.h"
+
+namespace
+{
+    struct FPresetTransactionScope
+    {
+        UFaceParallaxPreset* Preset;
+        FPresetTransactionScope(UFaceParallaxPreset* InPreset, const FString& Desc)
+            : Preset(InPreset)
+        {
+            if (GEditor)
+            {
+                GEditor->BeginTransaction(FText::FromString(Desc));
+                if (Preset)
+                    Preset->Modify();
+            }
+        }
+        ~FPresetTransactionScope()
+        {
+            if (GEditor)
+                GEditor->EndTransaction();
+        }
+    };
+}
 
 bool UFaceParallaxEditorWidget::ValidatePreset() const
 {
@@ -214,6 +239,7 @@ void UFaceParallaxEditorWidget::SetLayerRotation(EFaceAngleState State, FName La
 void UFaceParallaxEditorWidget::SetLayerTransform(EFaceAngleState State, FName LayerTag,
     const FFaceArtTransform& Transform)
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set Layer Transform"));
     if (!ValidatePreset()) return;
     ActivePreset->SetCanonicalTransform(State, LayerTag, Transform);
 
@@ -225,6 +251,7 @@ void UFaceParallaxEditorWidget::SetLayerTransform(EFaceAngleState State, FName L
 
 void UFaceParallaxEditorWidget::ResetLayerTransform(EFaceAngleState State, FName LayerTag)
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Reset Layer Transform"));
     if (!ValidatePreset()) return;
     ActivePreset->SetCanonicalTransform(State, LayerTag, FFaceArtTransform());
 
@@ -272,6 +299,7 @@ void UFaceParallaxEditorWidget::ApplyAutoFitToAllSlots()
 
 void UFaceParallaxEditorWidget::SyncLayerToAllViews(EFaceAngleState State, FName LayerTag)
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Sync Layer to All Views"));
     if (!ValidatePreset()) return;
     ActivePreset->SyncCanonicalToAllViews(State, LayerTag);
 
@@ -283,6 +311,7 @@ void UFaceParallaxEditorWidget::SyncLayerToAllViews(EFaceAngleState State, FName
 
 void UFaceParallaxEditorWidget::SyncAllLayersToAllViews()
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Sync All Layers to All Views"));
     if (!ValidatePreset()) return;
 
     for (const auto& StatePair : ActivePreset->ViewAssignments)
@@ -321,6 +350,7 @@ FFaceArtTransform UFaceParallaxEditorWidget::GetViewOverride(EFaceAngleState Sta
 void UFaceParallaxEditorWidget::SetViewOverride(EFaceAngleState State, FName LayerTag,
     EFaceAngleState OverrideView, const FFaceArtTransform& Override)
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set View Override"));
     if (!ValidatePreset()) return;
     ActivePreset->SetViewOverride(State, LayerTag, OverrideView, Override);
 
@@ -333,6 +363,7 @@ void UFaceParallaxEditorWidget::SetViewOverride(EFaceAngleState State, FName Lay
 void UFaceParallaxEditorWidget::ClearViewOverride(EFaceAngleState State, FName LayerTag,
     EFaceAngleState OverrideView)
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Clear View Override"));
     if (!ValidatePreset()) return;
     ActivePreset->ClearViewOverride(State, LayerTag, OverrideView);
 
@@ -344,6 +375,7 @@ void UFaceParallaxEditorWidget::ClearViewOverride(EFaceAngleState State, FName L
 
 void UFaceParallaxEditorWidget::ClearAllOverridesForSlot(EFaceAngleState State, FName LayerTag)
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Clear All Overrides for Slot"));
     if (!ValidatePreset()) return;
     ActivePreset->ClearAllOverridesForSlot(State, LayerTag);
 
@@ -355,6 +387,7 @@ void UFaceParallaxEditorWidget::ClearAllOverridesForSlot(EFaceAngleState State, 
 
 void UFaceParallaxEditorWidget::ClearAllOverrides()
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Clear All Overrides"));
     if (!ValidatePreset()) return;
     ActivePreset->ClearAllOverrides();
 
@@ -389,6 +422,7 @@ FFaceTextureSet UFaceParallaxEditorWidget::GetSlotTextures(EFaceAngleState State
 void UFaceParallaxEditorWidget::SetSlotTextures(EFaceAngleState State, FName LayerTag,
     const FFaceTextureSet& Textures)
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set Slot Textures"));
     if (!ValidatePreset()) return;
     ActivePreset->SetTexturesForSlot(State, LayerTag, Textures);
 
@@ -1405,6 +1439,7 @@ bool UFaceParallaxEditorWidget::IsSlotFullyAssigned(EFaceAngleState State, FName
 
 void UFaceParallaxEditorWidget::ClearState(EFaceAngleState State)
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Clear State"));
     if (!ValidatePreset()) return;
     ActivePreset->ClearState(State);
 
@@ -1416,6 +1451,7 @@ void UFaceParallaxEditorWidget::ClearState(EFaceAngleState State)
 
 void UFaceParallaxEditorWidget::ClearAll()
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Clear All"));
     if (!ValidatePreset()) return;
     ActivePreset->ClearAll();
 
@@ -1508,6 +1544,7 @@ float UFaceParallaxEditorWidget::GetLayerRotation(EFaceAngleState State, FName L
 
 void UFaceParallaxEditorWidget::BatchSetTextures(EFaceAngleState State, FName LayerTag, const TArray<FFaceTextureSet>& Textures)
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Batch Set Textures"));
     if (!ValidatePreset()) return;
     ActivePreset->BatchSetTextures(State, LayerTag, Textures);
 
@@ -1519,6 +1556,7 @@ void UFaceParallaxEditorWidget::BatchSetTextures(EFaceAngleState State, FName La
 
 void UFaceParallaxEditorWidget::ClearAllTextures()
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Clear All Textures"));
     if (!ValidatePreset()) return;
     ActivePreset->ClearAllTextures();
 
@@ -1530,6 +1568,7 @@ void UFaceParallaxEditorWidget::ClearAllTextures()
 
 void UFaceParallaxEditorWidget::DuplicateState(EFaceAngleState SourceState, EFaceAngleState DestState)
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Duplicate State"));
     if (!ValidatePreset()) return;
     ActivePreset->DuplicateState(SourceState, DestState);
 
@@ -2666,6 +2705,23 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
                 [BotArea]];
     }
 
+    // --- Diagnostic Log ---
+    DiagnosticLog = SNew(SMultiLineEditableTextBox)
+        .Font(FCoreStyle::GetDefaultFontStyle("Mono", 8))
+        .IsReadOnly(true);
+    Root->AddSlot().AutoHeight()
+        [SNew(SBox).HeightOverride(100)
+            [DiagnosticLog.ToSharedRef()]];
+
+    // Bind asset registry callback for auto-refresh
+    if (!AssetModifiedHandle.IsValid())
+    {
+        AssetModifiedHandle = FCoreUObjectDelegates::OnObjectModified.AddUObject(this, &UFaceParallaxEditorWidget::OnAssetModified);
+    }
+
+    // Run initial diagnostics
+    RunDiagnostics();
+
     // Initial UI population
     RefreshUI();
 
@@ -3619,6 +3675,7 @@ TArray<FString> UFaceParallaxEditorWidget::FindParamUsages(FName ParamName) cons
 
 void UFaceParallaxEditorWidget::SnapshotPreset()
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Snapshot Preset"));
     if (!ActivePreset) return;
     // Duplicate the preset into a temporary package
     UPackage* TempPkg = CreatePackage(TEXT("/Temp/FaceParallaxSnapshot"));
@@ -3673,6 +3730,81 @@ void UFaceParallaxEditorWidget::RestoreSnapshot()
 bool UFaceParallaxEditorWidget::HasSnapshot() const
 {
     return SnapshotPresetBackup != nullptr;
+}
+
+void UFaceParallaxEditorWidget::BeginDestroy()
+{
+    if (AssetModifiedHandle.IsValid())
+    {
+        FCoreUObjectDelegates::OnObjectModified.Remove(AssetModifiedHandle);
+        AssetModifiedHandle.Reset();
+    }
+    Super::BeginDestroy();
+}
+
+void UFaceParallaxEditorWidget::OnAssetModified(UObject* Object)
+{
+    if (ActivePreset && Object == ActivePreset)
+        RefreshUI();
+}
+
+void UFaceParallaxEditorWidget::LogDiagnostic(const FString& Message)
+{
+    if (DiagnosticLog.IsValid())
+    {
+        FString Current = DiagnosticLog->GetText().ToString();
+        FString Updated = Current.IsEmpty() ? Message : Current + TEXT("\n") + Message;
+        DiagnosticLog->SetText(FText::FromString(Updated));
+    }
+}
+
+void UFaceParallaxEditorWidget::RunDiagnostics()
+{
+    if (!DiagnosticLog.IsValid()) return;
+    DiagnosticLog->SetText(FText::GetEmpty());
+
+    if (!ActivePreset)
+    {
+        LogDiagnostic(TEXT("[ERROR] No ActivePreset assigned."));
+        return;
+    }
+
+    LogDiagnostic(FString::Printf(TEXT("Preset: %s"), *ActivePreset->GetName()));
+    LogDiagnostic(FString::Printf(TEXT("Canvas: %.0f x %.0f"), ActivePreset->CanvasSize.X, ActivePreset->CanvasSize.Y));
+
+    int32 TotalSlots = ActivePreset->GetTotalAssignedSlots();
+    LogDiagnostic(FString::Printf(TEXT("Total assigned slots: %d"), TotalSlots));
+
+    TArray<EFaceAngleState> Missing = GetMissingStates();
+    if (Missing.Num() > 0)
+    {
+        FString States;
+        for (auto S : Missing)
+            States += FString::Printf(TEXT("%d "), (int32)S);
+        LogDiagnostic(FString::Printf(TEXT("[WARN] Missing states: %s"), *States));
+    }
+
+    TArray<EFaceAngleState> AllStates = {
+        EFaceAngleState::Front, EFaceAngleState::ThreeQuarterRight,
+        EFaceAngleState::RightProfile, EFaceAngleState::BackRight,
+        EFaceAngleState::Back, EFaceAngleState::BackLeft,
+        EFaceAngleState::LeftProfile, EFaceAngleState::ThreeQuarterLeft,
+        EFaceAngleState::Top, EFaceAngleState::Bottom
+    };
+    for (auto S : AllStates)
+    {
+        if (!ActivePreset->HasState(S)) continue;
+        TArray<FName> MissingLayers = GetMissingLayers(S);
+        if (MissingLayers.Num() > 0)
+        {
+            FString Layers;
+            for (auto& L : MissingLayers)
+                Layers += L.ToString() + TEXT(" ");
+            LogDiagnostic(FString::Printf(TEXT("  State %d missing layers: %s"), (int32)S, *Layers));
+        }
+    }
+
+    LogDiagnostic(TEXT("--- Diagnostics complete ---"));
 }
 
 #endif // WITH_EDITOR
