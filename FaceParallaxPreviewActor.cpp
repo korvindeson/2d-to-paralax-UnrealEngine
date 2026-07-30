@@ -1,4 +1,6 @@
 #include "FaceParallaxPreviewActor.h"
+
+#if WITH_EDITOR
 #include "FaceParallaxComponent.h"
 #include "FaceParallaxPreset.h"
 #include "DepthDebugVisualizerComponent.h"
@@ -189,3 +191,5 @@ void AFaceParallaxPreviewActor::RefreshPreview()
         FaceParallax->ApplyCurrentStateTextures();
     }
 }
+
+#endif // WITH_EDITOR

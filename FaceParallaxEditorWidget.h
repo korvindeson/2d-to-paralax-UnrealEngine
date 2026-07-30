@@ -2,7 +2,6 @@
 
 #include "CoreMinimal.h"
 #include "Blueprint/UserWidget.h"
-
 #include "Styling/SlateBrush.h"
 #include "Styling/SlateColor.h"
 #include "Widgets/Images/SImage.h"
@@ -870,10 +869,18 @@ private:
     UPROPERTY()
     TObjectPtr<UFaceParallaxPreset> SnapshotPresetBackup;
 
+    // ===== TAG VALIDATOR =====
+    TSharedPtr<STextBlock> TextTagValidator;
+
+    // ===== MATERIAL CROSS-REFERENCER =====
+    TSharedPtr<STextBlock> TextMaterialCrossRef;
+
     // ===== INTERNAL HELPERS =====
     void RebuildZoneDiagram();
     void RebuildStatusMatrix();
     void RebuildCrossLayerPanel();
+    void RebuildTagValidator();
+    void RebuildMaterialCrossRef();
     void ApplySearchFilter(const FString& Filter);
 
     TSharedPtr<SScrollBox> PropScroll;

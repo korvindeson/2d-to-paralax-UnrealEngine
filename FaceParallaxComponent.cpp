@@ -6,7 +6,13 @@
 #include "Kismet/GameplayStatics.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialParameterCollection.h"
+#include "Materials/MaterialParameterCollectionInstance.h"
 #include "Components/PrimitiveComponent.h"
+#include "Engine/World.h"
+#include "LevelSequenceActor.h"
+#include "CineCameraActor.h"
+#include "Engine/AssetManager.h"
 
 UFaceParallaxComponent::UFaceParallaxComponent()
 {
@@ -61,11 +67,9 @@ void UFaceParallaxComponent::BeginPlay()
         LogWarning("No USkeletalMeshComponent found on owner.");
     }
 
+    // Camera is resolved per-tick via GetCameraLocationAndRotation() — no longer requires CameraManager.
+    // Legacy CameraManager var kept for backward compat; runtime uses CameraSource-based resolution.
     CameraManager = UGameplayStatics::GetPlayerCameraManager(this, 0);
-    if (!CameraManager)
-    {
-        LogWarning("No APlayerCameraManager found.");
-    }
 
     InitializeMaterials();
     LayerParallaxOffsets.SetNum(LayerDefinitions.Num());
@@ -158,7 +162,15 @@ void UFaceParallaxComponent::TickComponent(float DeltaTime, ELevelTick TickType,
 {
     Super::TickComponent(DeltaTime, TickType, ThisTickFunction);
 
-    if (!OwnerMesh || !CameraManager) return;
+    if (!OwnerMesh) return;
+
+    FVector CamLoc;
+    FRotator CamRot;
+    if (!GetCameraLocationAndRotation(CamLoc, CamRot))
+    {
+        CameraManager = nullptr;
+        return;
+    }
 
     float DeltaYaw, DeltaPitch;
     CalculateLookDelta(DeltaYaw, DeltaPitch);
@@ -166,9 +178,11 @@ void UFaceParallaxComponent::TickComponent(float DeltaTime, ELevelTick TickType,
     CurrentYaw = DeltaYaw;
     CurrentPitch = DeltaPitch;
 
-    // Compute angular velocity for swoosh detection
-    float AngularVelocity = (FMath::Abs(DeltaYaw - PreviousFrameYaw) + FMath::Abs(DeltaPitch - PreviousFramePitch))
+    // Smoothed angular velocity for swoosh detection (EMA filter)
+    float RawAngularVelocity = (FMath::Abs(DeltaYaw - PreviousFrameYaw) + FMath::Abs(DeltaPitch - PreviousFramePitch))
         / FMath::Max(DeltaTime, 0.0001f);
+    float SmoothFactor = FMath::Clamp(SwooshSmoothingAlpha, 0.01f, 1.0f);
+    SwooshSmoothedVelocity = FMath::Lerp(SwooshSmoothedVelocity, RawAngularVelocity, SmoothFactor);
 
     // Save frame delta before overwriting — needed by jiggle impulse
     FrameDyaw = DeltaYaw - PreviousFrameYaw;
@@ -176,7 +190,7 @@ void UFaceParallaxComponent::TickComponent(float DeltaTime, ELevelTick TickType,
     PreviousFrameYaw = DeltaYaw;
     PreviousFramePitch = DeltaPitch;
 
-    UpdateStateMachine(DeltaYaw, DeltaPitch, DeltaTime, AngularVelocity);
+    UpdateStateMachine(DeltaYaw, DeltaPitch, DeltaTime, SwooshSmoothedVelocity);
 
     // Blend preview override: force BlendAlpha when editor preview is active
     if (bBlendPreviewOverride)
@@ -199,6 +213,7 @@ void UFaceParallaxComponent::TickComponent(float DeltaTime, ELevelTick TickType,
     }
 
     UpdateMaterialParameters();
+    ProcessPendingTextureLoads();
 }
 
 // ====================================================================
@@ -292,10 +307,96 @@ void UFaceParallaxComponent::UpdateParametersTick(float DeltaTime)
     }
 }
 
+bool UFaceParallaxComponent::GetCameraLocationAndRotation(FVector& OutLoc, FRotator& OutRot) const
+{
+    AActor* Owner = GetOwner();
+    if (!Owner) return false;
+
+    UWorld* World = Owner->GetWorld();
+    if (!World) return false;
+
+    switch (CameraSource)
+    {
+        case ECameraSource::PlayerCamera0:
+        case ECameraSource::PlayerCamera1:
+        {
+            int32 Idx = (CameraSource == ECameraSource::PlayerCamera1) ? 1 : 0;
+            APlayerCameraManager* PCM = UGameplayStatics::GetPlayerCameraManager(Owner, Idx);
+            if (PCM)
+            {
+                OutLoc = PCM->GetCameraLocation();
+                OutRot = PCM->GetCameraRotation();
+                return true;
+            }
+            break;
+        }
+        case ECameraSource::SpecifiedActor:
+        {
+            if (CustomCameraActor)
+            {
+                OutLoc = CustomCameraActor->GetActorLocation();
+                OutRot = CustomCameraActor->GetActorRotation();
+                return true;
+            }
+            break;
+        }
+        case ECameraSource::SequencerCamera:
+        {
+            // Try to find a cine camera actor in the world
+            TArray<AActor*> FoundCams;
+            UGameplayStatics::GetAllActorsOfClass(Owner, ACineCameraActor::StaticClass(), FoundCams);
+            for (AActor* A : FoundCams)
+            {
+                ACineCameraActor* Cam = Cast<ACineCameraActor>(A);
+                if (Cam)
+                {
+                    OutLoc = Cam->GetActorLocation();
+                    OutRot = Cam->GetActorRotation();
+                    return true;
+                }
+            }
+            // Fallback: any camera actor
+            FoundCams.Empty();
+            UGameplayStatics::GetAllActorsOfClass(Owner, ACameraActor::StaticClass(), FoundCams);
+            for (AActor* A : FoundCams)
+            {
+                ACameraActor* Cam = Cast<ACameraActor>(A);
+                if (Cam)
+                {
+                    OutLoc = Cam->GetActorLocation();
+                    OutRot = Cam->GetActorRotation();
+                    return true;
+                }
+            }
+            break;
+        }
+        default:
+            break;
+    }
+
+    // Last resort: fall back to player camera 0
+    APlayerCameraManager* PCM = UGameplayStatics::GetPlayerCameraManager(Owner, 0);
+    if (PCM)
+    {
+        OutLoc = PCM->GetCameraLocation();
+        OutRot = PCM->GetCameraRotation();
+        return true;
+    }
+
+    return false;
+}
+
 void UFaceParallaxComponent::CalculateLookDelta(float& OutYaw, float& OutPitch)
 {
     FVector HeadLoc = OwnerMesh->GetSocketLocation(HeadBoneName);
-    FVector CamLoc = CameraManager->GetCameraLocation();
+    FVector CamLoc;
+    FRotator CamRot;
+    if (!GetCameraLocationAndRotation(CamLoc, CamRot))
+    {
+        OutYaw = 0.0f;
+        OutPitch = 0.0f;
+        return;
+    }
     FVector ToCamera = (CamLoc - HeadLoc).GetSafeNormal();
 
     if (ToCamera.IsNearlyZero())
@@ -569,6 +670,25 @@ void UFaceParallaxComponent::UpdateMaterialParameters()
     float NormalizedYawDev = (HalfZoneWidth > 0.0f)
         ? FMath::Clamp(YawDeviation / HalfZoneWidth, -1.0f, 1.0f)
         : 0.0f;
+
+    // MPC optimization: push shared scalar params once instead of per-MID
+    UMaterialParameterCollectionInstance* MPCInstance = nullptr;
+    if (bUseMPC && ParallaxMPC)
+    {
+        AActor* Owner = GetOwner();
+        UWorld* World = Owner ? Owner->GetWorld() : nullptr;
+        if (World) MPCInstance = World->GetParameterCollectionInstance(ParallaxMPC);
+    }
+
+    if (MPCInstance)
+    {
+        MPCInstance->SetScalarParameterValue(FName("StateBlendAlpha"), BlendAlpha);
+        MPCInstance->SetScalarParameterValue(FName("DepthIntensity"), DepthMapIntensity);
+        MPCInstance->SetScalarParameterValue(FName("DebugDepth"), bEnableMaterialDebugMode ? 1.0f : 0.0f);
+        MPCInstance->SetScalarParameterValue(FName("IsTopDown"), bAnyTopOrBottom ? 1.0f : 0.0f);
+        MPCInstance->SetScalarParameterValue(FName("IsTopView"), bIsTop ? 1.0f : 0.0f);
+    }
+
     int32 GlobalLayerIdx = 0;
     for (const auto& LayerPair : FaceMaterialsByLayer)
     {
@@ -596,7 +716,7 @@ void UFaceParallaxComponent::UpdateMaterialParameters()
         // Previous state textures for crossfade
         const FFaceTextureSet* PrevTexSet = PreviousTextureSets.Find(LayerTag);
 
-        // Blended parallax offset — compute both states' offsets and lerp during transitions
+        // Blended parallax offset
         FVector2D BlendedOffset = FVector2D::ZeroVector;
         if (GlobalLayerIdx < LayerParallaxOffsets.Num())
         {
@@ -616,13 +736,18 @@ void UFaceParallaxComponent::UpdateMaterialParameters()
         {
             if (!Mat) continue;
 
-            Mat->SetScalarParameterValue(FName("StateBlendAlpha"), BlendAlpha);
+            // When MPC is active, skip scalar params that are in the MPC
+            if (!MPCInstance)
+            {
+                Mat->SetScalarParameterValue(FName("StateBlendAlpha"), BlendAlpha);
+                Mat->SetScalarParameterValue(FName("DepthIntensity"), LayerDepthIntensity);
+                Mat->SetScalarParameterValue(FName("DebugDepth"), bEnableMaterialDebugMode ? 1.0f : 0.0f);
+                Mat->SetScalarParameterValue(FName("IsTopDown"), bAnyTopOrBottom ? 1.0f : 0.0f);
+                Mat->SetScalarParameterValue(FName("IsTopView"), bIsTop ? 1.0f : 0.0f);
+            }
+
             Mat->SetVectorParameterValue(FName("ParallaxOffset"),
                 FLinearColor(BlendedOffset.X, BlendedOffset.Y, 0.0f, 0.0f));
-            Mat->SetScalarParameterValue(FName("DepthIntensity"), LayerDepthIntensity);
-            Mat->SetScalarParameterValue(FName("DebugDepth"), bEnableMaterialDebugMode ? 1.0f : 0.0f);
-            Mat->SetScalarParameterValue(FName("IsTopDown"), bAnyTopOrBottom ? 1.0f : 0.0f);
-            Mat->SetScalarParameterValue(FName("IsTopView"), bIsTop ? 1.0f : 0.0f);
 
             // Previous state textures for crossfade blending
             if (PrevTexSet && PrevTexSet->IsValid())
@@ -1256,6 +1381,10 @@ void UFaceParallaxComponent::UpdateNestedArtTick(float DeltaTime)
     FVector2D Impulse(FrameDyaw, FrameDpitch);
     Impulse *= AngularVel * 0.001f; // Normalize to reasonable scale
 
+    // Fixed-timestep sub-stepping for jiggle physics
+    float SubStepDt = 1.0f / FMath::Max(JiggleSubStepsPerSecond, 15);
+    int32 MaxSubSteps = FMath::Min((int32)(DeltaTime / SubStepDt) + 1, 10); // cap to prevent spiral of death
+
     // Process all nested elements from all layers
     for (const auto& LayerPair : FaceMaterialsByLayer)
     {
@@ -1268,19 +1397,27 @@ void UFaceParallaxComponent::UpdateNestedArtTick(float DeltaTime)
 
             FName StateKey = FName(*FString::Printf(TEXT("%s_%s"), *LayerTag.ToString(), *Element.ElementName.ToString()));
             FNestedJiggleState& State = JiggleStates.FindOrAdd(StateKey);
+            float& Accumulator = JiggleAccumulators.FindOrAdd(StateKey);
+            Accumulator += DeltaTime;
 
-            // Apply impulse
+            // Apply impulse once per tick (not per sub-step)
             State.Velocity += Impulse * Element.JiggleSettings.JiggleAxis * Element.JiggleSettings.ImpulseScale;
 
-            // Spring-damper integration (semi-implicit Euler)
+            // Sub-stepped integration
             const float Stiffness = Element.JiggleSettings.Stiffness;
             const float Damping = Element.JiggleSettings.Damping;
-            FVector2D SpringForce = -State.Position * Stiffness;
-            FVector2D DampingForce = -State.Velocity * Damping;
-            FVector2D Acceleration = SpringForce + DampingForce;
+            int32 Steps = 0;
+            while (Accumulator >= SubStepDt && Steps < MaxSubSteps)
+            {
+                Accumulator -= SubStepDt;
+                FVector2D SpringForce = -State.Position * Stiffness;
+                FVector2D DampingForce = -State.Velocity * Damping;
+                FVector2D Acceleration = SpringForce + DampingForce;
 
-            State.Velocity += Acceleration * DeltaTime;
-            State.Position += State.Velocity * DeltaTime;
+                State.Velocity += Acceleration * SubStepDt;
+                State.Position += State.Velocity * SubStepDt;
+                ++Steps;
+            }
         }
     }
 
@@ -1750,45 +1887,70 @@ void UFaceParallaxComponent::DetectFaceProfileFromPreset()
 {
     if (!ActivePreset) return;
 
-    // Find the first layer in Front state for width/height
+    TArray<EFaceAngleState> AllStates = {
+        EFaceAngleState::Front, EFaceAngleState::ThreeQuarterRight,
+        EFaceAngleState::RightProfile, EFaceAngleState::BackRight,
+        EFaceAngleState::Back, EFaceAngleState::BackLeft,
+        EFaceAngleState::LeftProfile, EFaceAngleState::ThreeQuarterLeft,
+        EFaceAngleState::Top, EFaceAngleState::Bottom
+    };
+
+    // First pass: use Front state for width/height, RightProfile/LeftProfile for depth
     TArray<FName> FrontLayers = ActivePreset->GetAllLayerTags(EFaceAngleState::Front);
     if (FrontLayers.Num() > 0)
     {
         const FFaceArtSlot& Slot = ActivePreset->GetSlot(EFaceAngleState::Front, FrontLayers[0]);
-        if (Slot.Textures.Albedo)
+        if (Slot.Textures.Albedo || Slot.Textures.SoftAlbedo.IsValid())
         {
-            int32 TexW = Slot.Textures.SourceTexWidth > 0 ? Slot.Textures.SourceTexWidth : Slot.Textures.Albedo->GetSizeX();
-            int32 TexH = Slot.Textures.SourceTexHeight > 0 ? Slot.Textures.SourceTexHeight : Slot.Textures.Albedo->GetSizeY();
+            int32 TexW = Slot.Textures.SourceTexWidth;
+            int32 TexH = Slot.Textures.SourceTexHeight;
             if (TexW > 0) FaceProfile.FaceHalfWidth = (float)TexW * 0.5f;
             if (TexH > 0) FaceProfile.FaceHalfHeight = (float)TexH * 0.5f;
         }
     }
 
-    // Find the first layer in RightProfile state for depth
     TArray<FName> ProfileLayers = ActivePreset->GetAllLayerTags(EFaceAngleState::RightProfile);
     if (ProfileLayers.Num() > 0)
     {
         const FFaceArtSlot& Slot = ActivePreset->GetSlot(EFaceAngleState::RightProfile, ProfileLayers[0]);
-        if (Slot.Textures.Albedo)
-        {
-            int32 TexW = Slot.Textures.SourceTexWidth > 0 ? Slot.Textures.SourceTexWidth : Slot.Textures.Albedo->GetSizeX();
-            if (TexW > 0) FaceProfile.FaceHalfDepth = (float)TexW * 0.5f;
-        }
+        int32 TexW = Slot.Textures.SourceTexWidth;
+        if (TexW > 0) FaceProfile.FaceHalfDepth = (float)TexW * 0.5f;
     }
 
-    // Fall back to LeftProfile if RightProfile has no textures
     if (FaceProfile.FaceHalfDepth <= 0.5f)
     {
         TArray<FName> LeftProfileLayers = ActivePreset->GetAllLayerTags(EFaceAngleState::LeftProfile);
         if (LeftProfileLayers.Num() > 0)
         {
             const FFaceArtSlot& Slot = ActivePreset->GetSlot(EFaceAngleState::LeftProfile, LeftProfileLayers[0]);
-            if (Slot.Textures.Albedo)
+            int32 TexW = Slot.Textures.SourceTexWidth;
+            if (TexW > 0) FaceProfile.FaceHalfDepth = (float)TexW * 0.5f;
+        }
+    }
+
+    // Fallback: scan all states for max dimensions
+    if (FaceProfile.FaceHalfWidth <= 0.5f || FaceProfile.FaceHalfHeight <= 0.5f)
+    {
+        float MaxWidth = 0.0f, MaxHeight = 0.0f;
+        for (EFaceAngleState S : AllStates)
+        {
+            if (!ActivePreset->HasState(S)) continue;
+            TArray<FName> Tags = ActivePreset->GetAllLayerTags(S);
+            for (FName Tag : Tags)
             {
-                int32 TexW = Slot.Textures.SourceTexWidth > 0 ? Slot.Textures.SourceTexWidth : Slot.Textures.Albedo->GetSizeX();
-                if (TexW > 0) FaceProfile.FaceHalfDepth = (float)TexW * 0.5f;
+                const FFaceArtSlot& Slot = ActivePreset->GetSlot(S, Tag);
+                int32 TexW = Slot.Textures.SourceTexWidth;
+                int32 TexH = Slot.Textures.SourceTexHeight;
+                if (TexW > 0) MaxWidth = FMath::Max(MaxWidth, (float)TexW);
+                if (TexH > 0) MaxHeight = FMath::Max(MaxHeight, (float)TexH);
             }
         }
+        if (MaxWidth > 0.0f && FaceProfile.FaceHalfWidth <= 0.5f)
+            FaceProfile.FaceHalfWidth = MaxWidth * 0.5f;
+        if (MaxHeight > 0.0f && FaceProfile.FaceHalfHeight <= 0.5f)
+            FaceProfile.FaceHalfHeight = MaxHeight * 0.5f;
+        if (MaxWidth > 0.0f && FaceProfile.FaceHalfDepth <= 0.5f)
+            FaceProfile.FaceHalfDepth = MaxWidth * 0.5f;
     }
 }
 
@@ -1929,7 +2091,7 @@ TArray<FString> UFaceParallaxComponent::FindParamNameReferences(FName ParamName)
         };
         for (EFaceAngleState St : States)
         {
-            TArray<FName> Tags = ActivePreset->GetLayerTagsForState(St);
+            TArray<FName> Tags = ActivePreset->GetAllLayerTags(St);
             for (FName Tag : Tags)
             {
                 const FFaceArtSlot& Slot = ActivePreset->GetSlot(St, Tag);
@@ -1958,4 +2120,123 @@ TArray<FString> UFaceParallaxComponent::FindParamNameReferences(FName ParamName)
     }
 
     return Results;
+}
+
+// ====================================================================
+// ASYNC TEXTURE LOADING
+// ====================================================================
+
+void UFaceParallaxComponent::AsyncLoadSlotTextures(EFaceAngleState State, FName LayerTag)
+{
+    if (!ActivePreset || !bUseAsyncTextureLoading) return;
+    const FFaceArtSlot& Slot = ActivePreset->GetSlot(State, LayerTag);
+    if (!Slot.Textures.IsValid()) return;
+
+    // Queue soft refs for loading
+    auto QueueLoad = [&](const TSoftObjectPtr<UTexture2D>& SoftPtr)
+    {
+        if (!SoftPtr.IsNull() && !SoftPtr.IsValid())
+        {
+            FSoftObjectPath Path = SoftPtr.ToSoftObjectPath();
+            if (!AsyncTextureCache.Contains(Path))
+            {
+                PendingTextureLoads.AddUnique(Path);
+                AsyncTextureCache.Add(Path, nullptr);
+            }
+        }
+    };
+
+    QueueLoad(Slot.Textures.SoftAlbedo);
+    QueueLoad(Slot.Textures.SoftNormal);
+    QueueLoad(Slot.Textures.SoftDepth);
+
+    // Also queue blink frames
+    for (const FFaceTextureSet& FT : Slot.BlinkFrames)
+    {
+        QueueLoad(FT.SoftAlbedo);
+        QueueLoad(FT.SoftNormal);
+        QueueLoad(FT.SoftDepth);
+    }
+
+    // Queue expression textures
+    for (const auto& ExprPair : Slot.ExpressionTextures)
+    {
+        QueueLoad(ExprPair.Value.SoftAlbedo);
+        QueueLoad(ExprPair.Value.SoftNormal);
+        QueueLoad(ExprPair.Value.SoftDepth);
+    }
+}
+
+void UFaceParallaxComponent::AsyncUnloadSlotTextures(EFaceAngleState State, FName LayerTag)
+{
+    if (!ActivePreset || !bUseAsyncTextureLoading) return;
+    const FFaceArtSlot& Slot = ActivePreset->GetSlot(State, LayerTag);
+
+    auto QueueUnload = [&](const TSoftObjectPtr<UTexture2D>& SoftPtr)
+    {
+        if (!SoftPtr.IsNull())
+        {
+            FSoftObjectPath Path = SoftPtr.ToSoftObjectPath();
+            AsyncTextureCache.Remove(Path);
+            PendingTextureLoads.Remove(Path);
+        }
+    };
+
+    QueueUnload(Slot.Textures.SoftAlbedo);
+    QueueUnload(Slot.Textures.SoftNormal);
+    QueueUnload(Slot.Textures.SoftDepth);
+}
+
+void UFaceParallaxComponent::ProcessPendingTextureLoads()
+{
+    if (!bUseAsyncTextureLoading || PendingTextureLoads.Num() == 0) return;
+
+    TArray<FSoftObjectPath> Completed;
+    for (const FSoftObjectPath& Path : PendingTextureLoads)
+    {
+        UTexture2D* Tex = Cast<UTexture2D>(Path.ResolveObject());
+        if (!Tex)
+        {
+            Tex = Cast<UTexture2D>(UAssetManager::GetStreamableManager().LoadSynchronous(Path));
+        }
+        if (Tex)
+        {
+            AsyncTextureCache[Path] = Tex;
+            Completed.Add(Path);
+        }
+    }
+
+    for (const FSoftObjectPath& C : Completed)
+        PendingTextureLoads.Remove(C);
+
+    // Resolve loaded textures into slot hard refs
+    if (ActivePreset)
+    {
+        TArray<EFaceAngleState> AllStates = {
+            EFaceAngleState::Front, EFaceAngleState::ThreeQuarterRight,
+            EFaceAngleState::RightProfile, EFaceAngleState::BackRight,
+            EFaceAngleState::Back, EFaceAngleState::BackLeft,
+            EFaceAngleState::LeftProfile, EFaceAngleState::ThreeQuarterLeft,
+            EFaceAngleState::Top, EFaceAngleState::Bottom
+        };
+        for (EFaceAngleState S : AllStates)
+        {
+            TArray<FName> Tags = ActivePreset->GetAllLayerTags(S);
+            for (FName Tag : Tags)
+            {
+                FFaceArtSlot& Slot = ActivePreset->GetSlotMutable(S, Tag);
+                Slot.Textures.Albedo = ResolveTexture(Slot.Textures.SoftAlbedo);
+                Slot.Textures.Normal = ResolveTexture(Slot.Textures.SoftNormal);
+                Slot.Textures.Depth = ResolveTexture(Slot.Textures.SoftDepth);
+            }
+        }
+    }
+}
+
+UTexture2D* UFaceParallaxComponent::ResolveTexture(const TSoftObjectPtr<UTexture2D>& SoftPtr)
+{
+    if (SoftPtr.IsNull()) return nullptr;
+    FSoftObjectPath Path = SoftPtr.ToSoftObjectPath();
+    TObjectPtr<UTexture2D>* Found = AsyncTextureCache.Find(Path);
+    return Found ? Found->Get() : nullptr;
 }

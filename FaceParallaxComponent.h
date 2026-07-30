@@ -44,6 +44,27 @@ protected:
 public:
     virtual void TickComponent(float DeltaTime, ELevelTick TickType, FActorComponentTickFunction* ThisTickFunction) override;
 
+    // --- CAMERA SOURCE ---
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Camera")
+    ECameraSource CameraSource = ECameraSource::PlayerCamera0;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Camera",
+        meta = (EditCondition = "CameraSource == ECameraSource::SpecifiedActor"))
+    TObjectPtr<AActor> CustomCameraActor;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Camera",
+        meta = (ClampMin = "0", ClampMax = "3"))
+    int32 CameraPlayerIndex = 0;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Camera")
+    void SetCameraSource(ECameraSource Source) { CameraSource = Source; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Camera")
+    ECameraSource GetCameraSource() const { return CameraSource; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Camera")
+    void SetCustomCameraActor(AActor* Actor) { CustomCameraActor = Actor; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Camera")
+    AActor* GetCustomCameraActor() const { return CustomCameraActor; }
+
     // --- SKELETAL MESH SETTINGS ---
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Skeletal Mesh")
     FName HeadBoneName = "head";
@@ -144,6 +165,14 @@ public:
         meta = (ClampMin = "0.0", ClampMax = "1.0"))
     float SwooshSize = 0.5f;
 
+    // Smoothed angular velocity (exponential moving average) for swoosh detection
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Swoosh",
+        meta = (ClampMin = "0.01", ClampMax = "1.0", DisplayName = "Swoosh Angular Velocity Smoothing"))
+    float SwooshSmoothingAlpha = 0.3f;
+
+    UPROPERTY(BlueprintReadOnly, Category = "Face Parallax|Swoosh")
+    float SwooshSmoothedVelocity = 0.0f;
+
     UFUNCTION(BlueprintCallable, Category = "Face Parallax|Swoosh")
     void ForceSwoosh(EFaceAngleState TargetState);
 
@@ -185,6 +214,11 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Nested Art",
         meta = (DisplayName = "Nested Anim Frame Param Name"))
     FName NestedAnimParamName = "NestedAnimFrame";
+
+    // Fixed-timestep jiggle physics
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Nested Art",
+        meta = (ClampMin = "15", ClampMax = "480", DisplayName = "Jiggle Sub-Steps Per Second"))
+    int32 JiggleSubStepsPerSecond = 120;
 
     UFUNCTION(BlueprintCallable, Category = "Face Parallax|Nested Art")
     void SetNestedArtEnabled(bool bEnabled) { bNestedArtEnabled = bEnabled; }
@@ -734,6 +768,38 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Face Parallax|Debug")
     void ClearBlendPreview();
 
+    // --- MPC OPTIMIZATION ---
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Optimization",
+        meta = (DisplayName = "Use Material Parameter Collection"))
+    bool bUseMPC = false;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Optimization",
+        meta = (EditCondition = "bUseMPC"))
+    TObjectPtr<class UMaterialParameterCollection> ParallaxMPC;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Optimization")
+    bool bUseAsyncTextureLoading = false;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Optimization")
+    void SetUseMPC(bool bEnabled) { bUseMPC = bEnabled; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Optimization")
+    bool GetUseMPC() const { return bUseMPC; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Optimization")
+    void SetParallaxMPC(class UMaterialParameterCollection* MPC) { ParallaxMPC = MPC; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Optimization")
+    class UMaterialParameterCollection* GetParallaxMPC() const { return ParallaxMPC; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Optimization")
+    void SetUseAsyncTextureLoading(bool bEnabled) { bUseAsyncTextureLoading = bEnabled; }
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Optimization")
+    bool GetUseAsyncTextureLoading() const { return bUseAsyncTextureLoading; }
+
+    // --- ASYNC TEXTURE LOAD ---
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Optimization")
+    void AsyncLoadSlotTextures(EFaceAngleState State, FName LayerTag);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Optimization")
+    void AsyncUnloadSlotTextures(EFaceAngleState State, FName LayerTag);
+
     // --- ZONE MATH (editor-facing) ---
     UFUNCTION(BlueprintCallable, Category = "Face Parallax|Debug")
     static FName GetStateLabel(EFaceAngleState State);
@@ -827,6 +893,9 @@ private:
     TMap<FName, FNestedJiggleState> JiggleStates;
     TMap<FName, FNestedAnimState> AnimStates;
 
+    // Jiggle fixed-timestep accumulator
+    TMap<FName, float> JiggleAccumulators;
+
     TMap<FName, TArray<UMaterialInstanceDynamic*>> NestedMaterialsByElement;
 
     void UpdateNestedArtTick(float DeltaTime);
@@ -859,4 +928,13 @@ public:
     void StopAnimationsOnStateChange();
 
     void LogWarning(const FString& Message) const;
+
+    // --- Camera resolution ---
+    bool GetCameraLocationAndRotation(FVector& OutLoc, FRotator& OutRot) const;
+
+    // --- Async texture loading ---
+    TMap<FSoftObjectPath, TObjectPtr<UTexture2D>> AsyncTextureCache;
+    TArray<FSoftObjectPath> PendingTextureLoads;
+    void ProcessPendingTextureLoads();
+    UTexture2D* ResolveTexture(const TSoftObjectPtr<UTexture2D>& SoftPtr);
 };

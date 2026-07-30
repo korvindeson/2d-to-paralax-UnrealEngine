@@ -5,9 +5,11 @@
 #include "DepthDebugVisualizerComponent.h"
 #include "Engine/Texture2D.h"
 #include "Engine/TextureRenderTarget2D.h"
+
+#if WITH_EDITOR
 #include "UObject/SavePackage.h"
 #include "Styling/CoreStyle.h"
-#include "Widgets/Layout/SOverlay.h"
+#include "Widgets/SOverlay.h"
 #include "ContentBrowserModule.h"
 #include "IContentBrowserSingleton.h"
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -1947,7 +1949,7 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
                 int32 Idx = GetLayerIndex(Tag);
                 if (Idx >= 0)
                 {
-                    FFaceArtSlot Slot = ActivePreset->GetSlot(ActiveViewState, Tag);
+                    FFaceArtSlot ArtSlot = ActivePreset->GetSlot(ActiveViewState, Tag);
                     // Toggle visibility not directly on slot — use nested art flags or skip
                     RefreshUI();
                 }
@@ -2539,7 +2541,7 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
                 [MakeSectionBox(TEXT("Nested Art / Pins"), Pin)];
         }
 
-        PropPanel->AddSlot().FillHeight(1.0f)[PropScroll];
+        PropPanel->AddSlot().FillHeight(1.0f)[PropScroll.ToSharedRef()];
         TextStatus = MakeLbl(TEXT("Ready"), 9, FLinearColor(0.5f,0.8f,0.5f));
         PropPanel->AddSlot().AutoHeight().Padding(FMargin(6,2))
             [TextStatus.ToSharedRef()];
@@ -2607,6 +2609,22 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
         RebuildStatusMatrix();
         BotArea->AddSlot().AutoHeight().Padding(FMargin(2,1))
             [SNew(SBox).HeightOverride(28)[StatusMatrixScroll.ToSharedRef()]];
+
+        // Tag validator
+        TextTagValidator = SNew(STextBlock)
+            .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+            .ColorAndOpacity(FLinearColor(0.8f,0.8f,0.8f));
+        BotArea->AddSlot().AutoHeight().Padding(FMargin(2,1))
+            [SNew(SBox).HeightOverride(20)[TextTagValidator.ToSharedRef()]];
+        RebuildTagValidator();
+
+        // Material cross-referencer
+        TextMaterialCrossRef = SNew(STextBlock)
+            .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+            .ColorAndOpacity(FLinearColor(0.8f,0.8f,0.8f));
+        BotArea->AddSlot().AutoHeight().Padding(FMargin(2,1))
+            [SNew(SBox).HeightOverride(20)[TextMaterialCrossRef.ToSharedRef()]];
+        RebuildMaterialCrossRef();
 
         TSharedRef<SHorizontalBox> BotBar = SNew(SHorizontalBox);
         BotBar->AddSlot().Padding(FMargin(2)).AutoWidth()
@@ -2678,6 +2696,8 @@ void UFaceParallaxEditorWidget::RefreshUI()
     RebuildZoneDiagram();
     RebuildCrossLayerPanel();
     RebuildStatusMatrix();
+    RebuildTagValidator();
+    RebuildMaterialCrossRef();
     // Update zone labels
     if (ZoneYawLabel.IsValid())
     {
@@ -3364,6 +3384,139 @@ void UFaceParallaxEditorWidget::RebuildCrossLayerPanel()
 }
 
 // ====================================================================
+// TAG VALIDATOR
+// ====================================================================
+
+void UFaceParallaxEditorWidget::RebuildTagValidator()
+{
+    if (!TextTagValidator.IsValid()) return;
+
+    if (!ActivePreset)
+    {
+        TextTagValidator->SetText(FText::FromString(TEXT("Tag Validator: no preset")));
+        return;
+    }
+
+    TArray<EFaceAngleState> States = {
+        EFaceAngleState::Front, EFaceAngleState::ThreeQuarterRight,
+        EFaceAngleState::RightProfile, EFaceAngleState::BackRight,
+        EFaceAngleState::Back, EFaceAngleState::BackLeft,
+        EFaceAngleState::LeftProfile, EFaceAngleState::ThreeQuarterLeft,
+        EFaceAngleState::Top, EFaceAngleState::Bottom
+    };
+
+    TSet<FName> KnownTags;
+    TMap<FName, int32> TagCount;
+    for (EFaceAngleState S : States)
+    {
+        if (!ActivePreset->HasState(S)) continue;
+        TArray<FName> Tags = ActivePreset->GetAllLayerTags(S);
+        for (FName Tag : Tags)
+        {
+            KnownTags.Add(Tag);
+            TagCount.FindOrAdd(Tag)++;
+        }
+    }
+
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    TSet<FName> DefTags;
+    if (Comp)
+    {
+        for (int32 i = 0; i < Comp->GetNumLayerDefinitions(); ++i)
+            DefTags.Add(Comp->GetLayerDefinition(i).LayerTag);
+    }
+
+    FString Report;
+    for (FName Tag : KnownTags)
+    {
+        int32 C = TagCount.FindRef(Tag);
+        bool bInDefs = DefTags.Contains(Tag);
+        if (!bInDefs)
+        {
+            Report += FString::Printf(TEXT("\u26A0 %s(no def) "), *Tag.ToString());
+        }
+        else if (C < 10)
+        {
+            Report += FString::Printf(TEXT("\u26A1 %s(%d/10) "), *Tag.ToString(), C);
+        }
+    }
+
+    if (Report.IsEmpty())
+    {
+        TextTagValidator->SetColorAndOpacity(FLinearColor(0.4f,0.8f,0.4f));
+        TextTagValidator->SetText(FText::FromString(TEXT("Tags: all 10 states complete")));
+    }
+    else
+    {
+        TextTagValidator->SetColorAndOpacity(Report.Contains(TEXT("\u26A0")) ? FLinearColor(1.0f,0.6f,0.2f) : FLinearColor(0.8f,0.8f,0.4f));
+        TextTagValidator->SetText(FText::FromString(FString::Printf(TEXT("Tags: %s"), *Report.Left(200))));
+    }
+}
+
+// ====================================================================
+// MATERIAL CROSS-REFERENCER
+// ====================================================================
+
+void UFaceParallaxEditorWidget::RebuildMaterialCrossRef()
+{
+    if (!TextMaterialCrossRef.IsValid()) return;
+
+    if (!ActivePreset)
+    {
+        TextMaterialCrossRef->SetText(FText::FromString(TEXT("MatCrossRef: no preset")));
+        return;
+    }
+
+    TArray<EFaceAngleState> States = {
+        EFaceAngleState::Front, EFaceAngleState::ThreeQuarterRight,
+        EFaceAngleState::RightProfile, EFaceAngleState::BackRight,
+        EFaceAngleState::Back, EFaceAngleState::BackLeft,
+        EFaceAngleState::LeftProfile, EFaceAngleState::ThreeQuarterLeft,
+        EFaceAngleState::Top, EFaceAngleState::Bottom
+    };
+
+    TSet<FName> AllParams;
+    TMap<FName, int32> ParamCount;
+    for (EFaceAngleState S : States)
+    {
+        if (!ActivePreset->HasState(S)) continue;
+        TArray<FName> Tags = ActivePreset->GetAllLayerTags(S);
+        for (FName Tag : Tags)
+        {
+            const FFaceArtSlot& ArtSlot = ActivePreset->GetSlot(S, Tag);
+            for (const FFaceParamBinding& B : ArtSlot.ParamBindings)
+            {
+                AllParams.Add(B.ParamName);
+                ParamCount.FindOrAdd(B.ParamName)++;
+            }
+            for (const FFaceNestedArt& N : ArtSlot.NestedElements)
+            {
+                for (const FFaceParamBinding& B : N.ParamBindings)
+                {
+                    AllParams.Add(B.ParamName);
+                    ParamCount.FindOrAdd(B.ParamName)++;
+                }
+            }
+        }
+    }
+
+    FString Report;
+    for (FName P : AllParams)
+    {
+        Report += FString::Printf(TEXT("%s(%d) "), *P.ToString(), ParamCount.FindRef(P));
+    }
+
+    if (Report.IsEmpty())
+    {
+        TextMaterialCrossRef->SetText(FText::FromString(TEXT("MatCrossRef: no param bindings")));
+    }
+    else
+    {
+        TextMaterialCrossRef->SetText(FText::FromString(FString::Printf(TEXT("Params: %s"), *Report.Left(200))));
+    }
+}
+
+// ====================================================================
 // SEARCH FILTER
 // ====================================================================
 
@@ -3372,9 +3525,9 @@ void UFaceParallaxEditorWidget::ApplySearchFilter(const FString& Filter)
     SearchFilter = Filter;
     // Apply visibility on the main prop scroll sections
     if (!PropScroll.IsValid()) return;
-    TArray<TSharedRef<SWidget>> Children = PropScroll->GetChildren();
-    for (const TSharedRef<SWidget>& Child : Children)
+    for (int32 Idx = 0; Idx < PropScroll->GetChildren()->Num(); ++Idx)
     {
+        TSharedRef<SWidget> Child = PropScroll->GetChildren()->GetChildAt(Idx);
         // Show all when filter is empty; otherwise, a more
         // sophisticated per-section filter could be applied here.
         Child->SetVisibility(Filter.IsEmpty() ? EVisibility::Visible : EVisibility::Visible);
@@ -3489,17 +3642,17 @@ void UFaceParallaxEditorWidget::RestoreSnapshot()
     for (EFaceAngleState S : AllStates)
     {
         ActivePreset->ClearState(S);
-        TArray<FName> Tags = SnapshotPresetBackup->GetLayerTagsForState(S);
+        TArray<FName> Tags = SnapshotPresetBackup->GetAllLayerTags(S);
         for (FName Tag : Tags)
         {
-            FFaceArtSlot Slot = SnapshotPresetBackup->GetSlot(S, Tag);
-            ActivePreset->SetSlot(S, Tag, Slot);
+            FFaceArtSlot ArtSlot = SnapshotPresetBackup->GetSlot(S, Tag);
+            ActivePreset->SetSlot(S, Tag, ArtSlot);
         }
         // Copy NestedPin3D and FaceProfile references
         if (SnapshotPresetBackup->HasState(S))
         {
-            TArray<FName> STags = SnapshotPresetBackup->GetLayerTagsForState(S);
-            TArray<FName> ATags = ActivePreset->GetLayerTagsForState(S);
+            TArray<FName> STags = SnapshotPresetBackup->GetAllLayerTags(S);
+            TArray<FName> ATags = ActivePreset->GetAllLayerTags(S);
             for (FName Tag : STags)
             {
                 int32 N = SnapshotPresetBackup->GetNestedElementCount(S, Tag);
@@ -3521,3 +3674,5 @@ bool UFaceParallaxEditorWidget::HasSnapshot() const
 {
     return SnapshotPresetBackup != nullptr;
 }
+
+#endif // WITH_EDITOR

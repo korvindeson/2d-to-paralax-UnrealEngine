@@ -9,6 +9,16 @@
 #endif
 
 UENUM(BlueprintType)
+enum class ECameraSource : uint8
+{
+    PlayerCamera0    UMETA(DisplayName = "Player Camera 0"),
+    PlayerCamera1    UMETA(DisplayName = "Player Camera 1"),
+    SpecifiedActor   UMETA(DisplayName = "Specified Actor"),
+    SequencerCamera  UMETA(DisplayName = "Sequencer Camera"),
+    Custom           UMETA(DisplayName = "Custom")
+};
+
+UENUM(BlueprintType)
 enum class EFaceAngleState : uint8
 {
     Front               UMETA(DisplayName = "Front View"),
@@ -28,6 +38,7 @@ struct FFaceTextureSet
 {
     GENERATED_BODY()
 
+    // Hard references (synchronous, always loaded)
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Texture Set")
     TObjectPtr<UTexture2D> Albedo = nullptr;
 
@@ -37,11 +48,24 @@ struct FFaceTextureSet
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Texture Set")
     TObjectPtr<UTexture2D> Depth = nullptr;
 
+    // Soft references (for async loading / re-import)
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Texture Set")
+    TSoftObjectPtr<UTexture2D> SoftAlbedo;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Texture Set")
+    TSoftObjectPtr<UTexture2D> SoftNormal;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Texture Set")
+    TSoftObjectPtr<UTexture2D> SoftDepth;
+
     UPROPERTY()
     int32 SourceTexWidth = 0;
 
     UPROPERTY()
     int32 SourceTexHeight = 0;
+
+    UPROPERTY()
+    FDateTime LastImportTimestamp;
 
     bool IsValid() const
     {
@@ -60,6 +84,22 @@ struct FFaceTextureSet
             SourceTexWidth = Albedo->GetSizeX();
             SourceTexHeight = Albedo->GetSizeY();
         }
+    }
+
+    // Synchronize soft refs from hard refs
+    void SyncSoftRefs()
+    {
+        if (Albedo) SoftAlbedo = Albedo;
+        if (Normal) SoftNormal = Normal;
+        if (Depth) SoftDepth = Depth;
+    }
+
+    // Resolve hard refs from soft refs
+    void LoadFromSoftRefs()
+    {
+        if (SoftAlbedo.IsValid()) Albedo = SoftAlbedo.Get();
+        if (SoftNormal.IsValid()) Normal = SoftNormal.Get();
+        if (SoftDepth.IsValid()) Depth = SoftDepth.Get();
     }
 };
 
