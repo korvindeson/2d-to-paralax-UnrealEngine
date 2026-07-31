@@ -2128,7 +2128,7 @@ FFaceArtTransform UFaceParallaxComponent::ComputeNestedEffectiveTransform(
     // a position offset that keeps the element attached to the 3D point.
     if (Element.Pin3D.bPinned)
     {
-        FVector2D PinnedUV = ProjectPinToUVInternal(Element.Pin3D.Position3D, CurrentState);
+        FVector2D PinnedUV = ProjectPinToUVInternal(Element.Pin3D.Position3D);
         // Reference: the unpinned pivot is the element's PivotPoint (0..1).
         // Map UV delta to a position offset relative to canvas size.
         FVector2D UVDelta = PinnedUV - Element.PivotPoint;
@@ -2140,6 +2140,22 @@ FFaceArtTransform UFaceParallaxComponent::ComputeNestedEffectiveTransform(
     Result.Position = BasePos + PinOffset + JiggleOffset;
     Result.Scale = ParentTransform.Scale * Element.RelativeTransform.Scale;
     Result.Rotation = ParentTransform.Rotation + Element.RelativeTransform.Rotation;
+
+    // View-angle rotation: as the camera turns away from the rendered
+    // state's zone center, rotate the element (around its pin pivot,
+    // since GetEffectivePivot returns the projected pin UV when pinned).
+    // NOTE: accumulated AFTER the parent/relative composition — the
+    // previous placement of this block before Result.Rotation was
+    // assigned meant the += landed on a zeroed rotation and was
+    // immediately overwritten.
+    if (Element.Pin3D.bPinned && Element.Pin3D.bEnableViewAngleRotation)
+    {
+        const float YawCenter = GetZoneCenterYaw(CurrentState);
+        const float YawDev = CurrentYaw - YawCenter;
+        Result.Rotation += PinRotationFromYawDev(YawDev, HalfZoneWidth,
+            Element.Pin3D.MinRotation, Element.Pin3D.MaxRotation,
+            Element.Pin3D.RotationSensitivity);
+    }
     return Result;
 }
 
@@ -2301,18 +2317,26 @@ FVector2D UFaceParallaxComponent::GetEffectivePivot(const FFaceNestedArt& Elemen
 {
     if (Element.Pin3D.bPinned)
     {
-        return ProjectPinToUVInternal(Element.Pin3D.Position3D, CurrentState);
+        return ProjectPinToUVInternal(Element.Pin3D.Position3D);
     }
     return Element.PivotPoint;
 }
 
-FVector2D UFaceParallaxComponent::ProjectPinToUVInternal(const FVector& Pin3D, EFaceAngleState ViewState) const
+float UFaceParallaxComponent::PinRotationFromYawDev(float YawDev, float HalfZoneWidth,
+    float MinRotation, float MaxRotation, float RotationSensitivity)
 {
-    // Use live camera angle for continuous tracking; fall back to zone center
-    // for the public BP API (which passes a specific state).
-    float YawDeg = CurrentYaw;
-    float PitchDeg = CurrentPitch;
+    // Wrap to [-180, 180]
+    while (YawDev > 180.0f) YawDev -= 360.0f;
+    while (YawDev < -180.0f) YawDev += 360.0f;
 
+    const float HalfWidth = FMath::Max(1.0f, HalfZoneWidth);
+    const float NormDev = FMath::Clamp(YawDev / HalfWidth, -1.0f, 1.0f);
+    const float Mapped = FMath::Lerp(MinRotation, MaxRotation, 0.5f * (NormDev + 1.0f));
+    return Mapped * RotationSensitivity;
+}
+
+FVector2D UFaceParallaxComponent::ProjectPinToUVAtAngles(const FVector& Pin3D, float YawDeg, float PitchDeg, const FFaceProfile3D& Profile)
+{
     float YawRad = FMath::DegreesToRadians(YawDeg);
     float CosY = FMath::Cos(YawRad);
     float SinY = FMath::Sin(YawRad);
@@ -2322,17 +2346,17 @@ FVector2D UFaceParallaxComponent::ProjectPinToUVInternal(const FVector& Pin3D, E
     float SinP = FMath::Sin(PitchRad);
 
     // 3D pin in face-local space
-    float WX = Pin3D.X * FaceProfile.FaceHalfWidth;
-    float WY = Pin3D.Y * FaceProfile.FaceHalfHeight;
-    float WZ = Pin3D.Z * FaceProfile.FaceHalfDepth;
+    float WX = Pin3D.X * Profile.FaceHalfWidth;
+    float WY = Pin3D.Y * Profile.FaceHalfHeight;
+    float WZ = Pin3D.Z * Profile.FaceHalfDepth;
 
     // Yaw: project XZ onto view plane
     float ViewX = WX * CosY + WZ * SinY;
-    float VisibleX = FaceProfile.FaceHalfWidth * FMath::Abs(CosY) + FaceProfile.FaceHalfDepth * FMath::Abs(SinY);
+    float VisibleX = Profile.FaceHalfWidth * FMath::Abs(CosY) + Profile.FaceHalfDepth * FMath::Abs(SinY);
 
     // Pitch: project Y and Z*SinP
     float ViewY = WY * CosP;
-    float VisibleY = FaceProfile.FaceHalfHeight * FMath::Abs(CosP) + FaceProfile.FaceHalfDepth * FMath::Abs(SinP);
+    float VisibleY = Profile.FaceHalfHeight * FMath::Abs(CosP) + Profile.FaceHalfDepth * FMath::Abs(SinP);
 
     float UVx = 0.5f;
     float UVy = 0.5f;
@@ -2342,9 +2366,27 @@ FVector2D UFaceParallaxComponent::ProjectPinToUVInternal(const FVector& Pin3D, E
     return FVector2D(FMath::Clamp(UVx, 0.0f, 1.0f), FMath::Clamp(UVy, 0.0f, 1.0f));
 }
 
+FVector2D UFaceParallaxComponent::ProjectPinToUVInternal(const FVector& Pin3D) const
+{
+    // Use live camera angle for continuous tracking of the rendered state.
+    return ProjectPinToUVAtAngles(Pin3D, CurrentYaw, CurrentPitch, FaceProfile);
+}
+
+FVector2D UFaceParallaxComponent::ProjectPinToUVForStateInternal(const FVector& Pin3D, EFaceAngleState ViewState) const
+{
+    // Use the zone-center camera angle for a specific view state (authoring:
+    // "what UV does this pin map to in the Right Profile view?").
+    return ProjectPinToUVAtAngles(Pin3D, GetZoneCenterYaw(ViewState), GetZoneCenterPitch(ViewState), FaceProfile);
+}
+
 FVector2D UFaceParallaxComponent::ProjectPinToUV(FVector Pin3D, EFaceAngleState ViewState) const
 {
-    return ProjectPinToUVInternal(Pin3D, ViewState);
+    return ProjectPinToUVForStateInternal(Pin3D, ViewState);
+}
+
+FVector2D UFaceParallaxComponent::ProjectPinToUVForState(FVector Pin3D, EFaceAngleState ViewState) const
+{
+    return ProjectPinToUVForStateInternal(Pin3D, ViewState);
 }
 
 void UFaceParallaxComponent::DetectFaceProfileFromPreset()

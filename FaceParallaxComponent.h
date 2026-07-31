@@ -315,6 +315,11 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Face Parallax|Nested Art")
     FVector2D ProjectPinToUV(FVector Pin3D, EFaceAngleState ViewState) const;
 
+    // Projects using the zone-center camera angle for a specific view state
+    // (authoring: "what UV does this pin map to in the Right Profile view?").
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Nested Art")
+    FVector2D ProjectPinToUVForState(FVector Pin3D, EFaceAngleState ViewState) const;
+
     UFUNCTION(BlueprintCallable, Category = "Face Parallax|Nested Art")
     void SetNestedPin3D(EFaceAngleState State, FName LayerTag, int32 Index, const FFacePin3D& Pin);
 
@@ -370,6 +375,13 @@ public:
         const TArray<FVector2D>& Front, const TArray<FVector2D>& Right,
         const TArray<FVector2D>& Left, const TArray<FVector2D>& Top,
         const TArray<FVector2D>& Bottom, FVector2D LocalPoint);
+
+    // Pin view-angle rotation: maps yaw deviation from a state's zone center
+    // to a rotation angle. Deviation is wrapped to [-180,180], normalized by
+    // the half-zone width (clamped to [-1,1]), then lerped Min->Max across
+    // the range and scaled by sensitivity. Pure math (unit-tested).
+    static float PinRotationFromYawDev(float YawDev, float HalfZoneWidth,
+        float MinRotation, float MaxRotation, float RotationSensitivity);
 
     mutable TMap<EFaceAngleState, TArray<FVector2D>> OutlinePointCache;
 
@@ -1075,7 +1087,9 @@ private:
     FFaceArtTransform ComputeNestedEffectiveTransform(const FFaceNestedArt& Element, const FFaceArtTransform& ParentTransform, const FVector2D& JiggleOffset) const;
 
     FVector2D GetEffectivePivot(const FFaceNestedArt& Element) const;
-    FVector2D ProjectPinToUVInternal(const FVector& Pin3D, EFaceAngleState ViewState) const;
+    FVector2D ProjectPinToUVInternal(const FVector& Pin3D) const;
+    FVector2D ProjectPinToUVForStateInternal(const FVector& Pin3D, EFaceAngleState ViewState) const;
+    static FVector2D ProjectPinToUVAtAngles(const FVector& Pin3D, float YawDeg, float PitchDeg, const FFaceProfile3D& Profile);
 
     void UpdateBlinkTick(float DeltaTime);
     void UpdateExpressionTick(float DeltaTime);

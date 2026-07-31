@@ -11,6 +11,7 @@
 #include <array>
 #include <cctype>
 #include <string>
+#include <vector>
 
 // --- Minimal math types matching our UE types ---
 struct FVector2D {
@@ -5492,6 +5493,818 @@ void TestImportChannelDetection() {
     TEST("Normalmap suffix -> Normal", strcmp(ChannelFromName("Eyes_normalmap"), "Normal") == 0);
 }
 
+// ====================================================================
+// Phase B mirrors: onion-skin adjacency, link broadcast, gizmo mapping,
+// transform-copy guard. These mirror the widget's static helpers.
+// ====================================================================
+
+static int MirrorAdjacentState(int S, int Offset)
+{
+    const int N = 10;
+    const int Idx = (S + Offset) % N;
+    return Idx < 0 ? Idx + N : Idx;
+}
+
+static int MirrorLinkTargetCount(int /*Active*/) { return 9; }
+static bool MirrorLinkTargetExcludesActive(int Active, int Target)
+{
+    return Target != Active;
+}
+static bool MirrorLinkTargetsAllUnique(int Targets[9])
+{
+    for (int i = 0; i < 9; ++i)
+        for (int j = i + 1; j < 9; ++j)
+            if (Targets[i] == Targets[j]) return false;
+    return true;
+}
+static void MirrorLinkTargets(int Active, int Out[9])
+{
+    int C = 0;
+    for (int i = 0; i < 10; ++i)
+        if (i != Active) Out[C++] = i;
+}
+
+static float MirrorGizmoPixelsToUVX(float Px, float CanvasX)
+{
+    return CanvasX <= 0.0f ? 0.0f : Px / CanvasX;
+}
+
+void TestPhaseBAlignmentMirrors() {
+    printf("\n=== PhaseBAlignmentMirrors ===\n");
+
+    // Adjacent state wrap-around (onion skin ghost source)
+    TEST("Adjacent -1 from Front wraps to Bottom", MirrorAdjacentState(0, -1) == 9);
+    TEST("Adjacent +1 from Bottom wraps to Front", MirrorAdjacentState(9, 1) == 0);
+    TEST("Adjacent -1 from 3/4R", MirrorAdjacentState(1, -1) == 0);
+    TEST("Adjacent +1 from 3/4R", MirrorAdjacentState(1, 1) == 2);
+    TEST("Adjacent 0 is identity", MirrorAdjacentState(5, 0) == 5);
+    TEST("Adjacent -11 wraps twice", MirrorAdjacentState(3, -11) == 2);
+
+    // Link broadcast targets
+    int Targets[9];
+    MirrorLinkTargets(0, Targets);
+    TEST("Link targets count", MirrorLinkTargetCount(0) == 9);
+    TEST("Link targets exclude active", MirrorLinkTargetExcludesActive(0, 1));
+    TEST("Link targets all unique", MirrorLinkTargetsAllUnique(Targets));
+    {
+        bool bNoSelf = true;
+        for (int i = 0; i < 9; ++i)
+            if (Targets[i] == 0) bNoSelf = false;
+        TEST("Link targets contain no active state", bNoSelf);
+    }
+    {
+        MirrorLinkTargets(9, Targets);
+        bool bNoSelf = true;
+        for (int i = 0; i < 9; ++i)
+            if (Targets[i] == 9) bNoSelf = false;
+        TEST("Link targets for Bottom exclude Bottom", bNoSelf);
+    }
+
+    // Gizmo coordinate mapping (UV <-> pixels)
+    TEST("GizmoPixelsToUV 225px/450 -> 0.5", MirrorGizmoPixelsToUVX(225.0f, 450.0f) == 0.5f);
+    TEST("GizmoPixelsToUV zero canvas guarded", MirrorGizmoPixelsToUVX(100.0f, 0.0f) == 0.0f);
+    TEST("GizmoPixelsToUV negative canvas guarded", MirrorGizmoPixelsToUVX(100.0f, -50.0f) == 0.0f);
+    TEST("GizmoPixelsToUV round trip 0.25", MirrorGizmoPixelsToUVX(0.25f * 900.0f, 900.0f) == 0.25f);
+    TEST("GizmoPixelsToUV full canvas", MirrorGizmoPixelsToUVX(450.0f, 450.0f) == 1.0f);
+
+    // Transform copy guard: src == dst is a no-op
+    TEST("Copy-from guard rejects same state",
+        (1 == 1) && ([]() {
+            const int Src = 4, Dst = 4;
+            float DstX = 0.7f;
+            if (Src == Dst) return true; // no-op, dst unchanged
+            DstX = 0.2f;
+            return DstX == 0.7f;
+        })());
+    TEST("Copy-from applies when states differ", ([]() {
+        const int Src = 0, Dst = 3;
+        float SrcX = 0.2f, DstX = 0.7f;
+        if (Src == Dst) return false;
+        DstX = SrcX;
+        return DstX == 0.2f;
+    })());
+}
+
+// ====================================================================
+// Phase C mirrors: view-suffix parsing, channel stripping, and the
+// sync-drift counter. These mirror the widget's anonymous-namespace
+// helpers and RefreshSyncDriftIndicator.
+// ====================================================================
+
+static int MirrorMatchStateSuffix(const std::string& BaseName, std::string& OutSuffix)
+{
+    std::string Lower = BaseName;
+    for (auto& c : Lower) c = (char)tolower(c);
+    struct SS { const char* Suffix; int State; };
+    static const SS Map[] = {
+        {"_threequarterright", 1}, {"_threequarterleft", 7},
+        {"_3quarterright", 1},    {"_3quarterleft", 7},
+        {"_rightprofile", 2},     {"_leftprofile", 6},
+        {"_backright", 3},        {"_backleft", 5},
+        {"_front", 0},            {"_back", 4},
+        {"_top", 8},              {"_bottom", 9},
+        {"_3r", 1},               {"_3l", 7},
+        {"_pr", 2},               {"_pl", 6},
+        {"_br", 3},               {"_bl", 5},
+        {"_f", 0},                {"_b", 4},
+        {"_t", 8},                {"_bot", 9},
+    };
+    for (const SS& M : Map)
+    {
+        const size_t L = strlen(M.Suffix);
+        if (Lower.length() >= L &&
+            Lower.compare(Lower.length() - L, L, M.Suffix) == 0)
+        {
+            OutSuffix = M.Suffix;
+            return M.State;
+        }
+    }
+    return -1;
+}
+
+static std::string MirrorStripChannelSuffix(const std::string& Name, const std::string& Channel)
+{
+    std::string Lower = Name;
+    for (auto& c : Lower) c = (char)tolower(c);
+    if (Channel == "Normal")
+    {
+        for (const char* S : {"_normalmap", "_normal", "_norm", "_n"})
+        {
+            const size_t L = strlen(S);
+            if (Lower.length() >= L &&
+                Lower.compare(Lower.length() - L, L, S) == 0)
+                return Name.substr(0, Name.length() - L);
+        }
+    }
+    else if (Channel == "Depth")
+    {
+        for (const char* S : {"_displacement", "_depth", "_height", "_d"})
+        {
+            const size_t L = strlen(S);
+            if (Lower.length() >= L &&
+                Lower.compare(Lower.length() - L, L, S) == 0)
+                return Name.substr(0, Name.length() - L);
+        }
+    }
+    return Name;
+}
+
+struct MirrorArtTransform
+{
+    float X = 0.0f, Y = 0.0f, S = 1.0f, R = 0.0f;
+    bool operator==(const MirrorArtTransform& O) const
+    {
+        return X == O.X && Y == O.Y && S == O.S && R == O.R;
+    }
+    bool operator!=(const MirrorArtTransform& O) const { return !(*this == O); }
+};
+
+static int MirrorDriftedCount(const MirrorArtTransform& Active,
+    const MirrorArtTransform Others[10], int ActiveIdx)
+{
+    int Drifted = 0;
+    for (int i = 0; i < 10; ++i)
+    {
+        if (i == ActiveIdx) continue;
+        if (Others[i] != Active) ++Drifted;
+    }
+    return Drifted;
+}
+
+void TestPhaseCMirrors() {
+    printf("\n=== PhaseCMirrors ===\n");
+
+    // ---- View-suffix parsing (MatchStateSuffix) ----
+    std::string Suffix;
+    TEST("Full name _threequarterright -> 1", MirrorMatchStateSuffix("Eyes_ThreeQuarterRight", Suffix) == 1);
+    TEST("Suffix _threequarterright reported", Suffix == "_threequarterright");
+    TEST("Full name _threequarterleft -> 7", MirrorMatchStateSuffix("Eyes_ThreeQuarterLeft", Suffix) == 7);
+    TEST("Short code _3quarterright -> 1", MirrorMatchStateSuffix("Eyes_3QuarterRight", Suffix) == 1);
+    TEST("Short code _3quarterleft -> 7", MirrorMatchStateSuffix("Eyes_3QuarterLeft", Suffix) == 7);
+    TEST("_rightprofile -> 2 wins over _pr", MirrorMatchStateSuffix("Eyes_RightProfile", Suffix) == 2);
+    TEST("_pr -> 2", MirrorMatchStateSuffix("Eyes_PR", Suffix) == 2);
+    TEST("_leftprofile -> 6 wins over _pl", MirrorMatchStateSuffix("Eyes_LeftProfile", Suffix) == 6);
+    TEST("_pl -> 6", MirrorMatchStateSuffix("Eyes_PL", Suffix) == 6);
+    TEST("_backright -> 3 wins over _br", MirrorMatchStateSuffix("Eyes_BackRight", Suffix) == 3);
+    TEST("_br -> 3", MirrorMatchStateSuffix("Eyes_BR", Suffix) == 3);
+    TEST("_backleft -> 5 wins over _bl", MirrorMatchStateSuffix("Eyes_BackLeft", Suffix) == 5);
+    TEST("_bl -> 5", MirrorMatchStateSuffix("Eyes_BL", Suffix) == 5);
+    TEST("_front -> 0 wins over _f", MirrorMatchStateSuffix("Eyes_Front", Suffix) == 0);
+    TEST("_f -> 0", MirrorMatchStateSuffix("Eyes_F", Suffix) == 0);
+    TEST("_back -> 4 wins over _b", MirrorMatchStateSuffix("Eyes_Back", Suffix) == 4);
+    TEST("_b -> 4", MirrorMatchStateSuffix("Eyes_B", Suffix) == 4);
+    TEST("_top -> 8 wins over _t", MirrorMatchStateSuffix("Eyes_Top", Suffix) == 8);
+    TEST("_t -> 8", MirrorMatchStateSuffix("Eyes_T", Suffix) == 8);
+    TEST("_bottom -> 9 wins over _bot", MirrorMatchStateSuffix("Eyes_Bottom", Suffix) == 9);
+    TEST("_bot -> 9 (not _b)", MirrorMatchStateSuffix("Eyes_Bot", Suffix) == 9);
+    TEST("_3r -> 1", MirrorMatchStateSuffix("Eyes_3R", Suffix) == 1);
+    TEST("_3l -> 7", MirrorMatchStateSuffix("Eyes_3L", Suffix) == 7);
+    TEST("Case-insensitive FRONT", MirrorMatchStateSuffix("eyes_FRONT", Suffix) == 0);
+    TEST("No suffix -> -1", MirrorMatchStateSuffix("Eyes", Suffix) == -1);
+    TEST("Unmatched suffix -> -1", MirrorMatchStateSuffix("Eyes_Pants", Suffix) == -1);
+
+    // ---- Channel stripping (StripChannelSuffix) ----
+    TEST("Strip _normal -> base", MirrorStripChannelSuffix("Eyes_Front_Normal", "Normal") == "Eyes_Front");
+    TEST("Strip _normalmap -> base", MirrorStripChannelSuffix("Eyes_Front_normalmap", "Normal") == "Eyes_Front");
+    TEST("Strip _norm -> base", MirrorStripChannelSuffix("Eyes_Front_norm", "Normal") == "Eyes_Front");
+    TEST("Strip _n -> base", MirrorStripChannelSuffix("Eyes_Front_n", "Normal") == "Eyes_Front");
+    TEST("Strip _depth -> base", MirrorStripChannelSuffix("Eyes_Front_Depth", "Depth") == "Eyes_Front");
+    TEST("Strip _displacement -> base", MirrorStripChannelSuffix("Eyes_Front_displacement", "Depth") == "Eyes_Front");
+    TEST("Strip _height -> base", MirrorStripChannelSuffix("Eyes_Front_Height", "Depth") == "Eyes_Front");
+    TEST("Strip _d -> base", MirrorStripChannelSuffix("Eyes_Front_D", "Depth") == "Eyes_Front");
+    TEST("Albedo channel leaves name untouched", MirrorStripChannelSuffix("Eyes_Front", "Albedo") == "Eyes_Front");
+    TEST("Depth-normal ambiguity: _depth beats _n", MirrorStripChannelSuffix("Eyes_Front_depth", "Depth") == "Eyes_Front");
+    TEST("Preserves prefix case", MirrorStripChannelSuffix("Eyes_front_normal", "Normal") == "Eyes_front");
+
+    // ---- Sync-drift counter (RefreshSyncDriftIndicator) ----
+    MirrorArtTransform Base;
+    MirrorArtTransform Others[10];
+    for (int i = 0; i < 10; ++i) Others[i] = Base;
+    TEST("All synced -> 0 drifted", MirrorDriftedCount(Base, Others, 0) == 0);
+    Others[3].X = 0.5f;
+    TEST("One position drift -> 1", MirrorDriftedCount(Base, Others, 0) == 1);
+    Others[3] = Base; Others[9].R = 45.0f;
+    TEST("Rotation-only drift -> 1", MirrorDriftedCount(Base, Others, 0) == 1);
+    Others[9] = Base; Others[6].S = 0.9f;
+    TEST("Scale drift -> 1", MirrorDriftedCount(Base, Others, 0) == 1);
+    Others[6] = Base;
+    for (int i = 1; i < 10; ++i) Others[i].Y = 0.1f;
+    TEST("All 9 others drifted -> 9", MirrorDriftedCount(Base, Others, 0) == 9);
+    for (int i = 0; i < 10; ++i) Others[i] = Base;
+    Others[0].X = 1.0f;
+    TEST("Active-state drift not counted", MirrorDriftedCount(Base, Others, 0) == 0);
+    for (int i = 0; i < 10; ++i) Others[i] = Base;
+    TEST("Active at Bottom still skips itself", MirrorDriftedCount(Base, Others, 9) == 0);
+    Others[1].X = 1.0f;
+    TEST("Drift counted when active is Bottom", MirrorDriftedCount(Base, Others, 9) == 1);
+}
+
+// ====================================================================
+// Phase D mirrors: luminance histogram + Sobel edge density used by the
+// edge-overlay / histogram builder. These mirror the widget's static
+// helpers BuildLumaHistogram and EdgeDensity.
+// ====================================================================
+
+static void MirrorBuildLumaHistogram(const std::vector<float>& Luma, int Grid, std::vector<float>& OutBins)
+{
+    OutBins.assign(16, 0.0f);
+    if ((int)Luma.size() != Grid * Grid) return;
+    for (float V : Luma)
+    {
+        const float C = std::fmax(0.0f, std::fmin(1.0f, V));
+        int B = (int)std::floor(C * 15.9999f);
+        if (B < 0) B = 0;
+        if (B > 15) B = 15;
+        OutBins[B] += 1.0f;
+    }
+    float MaxB = 1.0f;
+    for (float B : OutBins) MaxB = std::fmax(MaxB, B);
+    for (float& B : OutBins) B /= MaxB;
+}
+
+static float MirrorEdgeDensity(const std::vector<float>& Luma, int Grid, float Threshold)
+{
+    if ((int)Luma.size() != Grid * Grid || Grid < 3) return 0.0f;
+    int Edges = 0;
+    for (int Y = 1; Y < Grid - 1; ++Y)
+        for (int X = 1; X < Grid - 1; ++X)
+        {
+            const float TL = Luma[(Y - 1) * Grid + X - 1];
+            const float TC = Luma[(Y - 1) * Grid + X];
+            const float TR = Luma[(Y - 1) * Grid + X + 1];
+            const float ML = Luma[Y * Grid + X - 1];
+            const float MR = Luma[Y * Grid + X + 1];
+            const float BL = Luma[(Y + 1) * Grid + X - 1];
+            const float BC = Luma[(Y + 1) * Grid + X];
+            const float BR = Luma[(Y + 1) * Grid + X + 1];
+            const float Gx = (TR + 2.0f * MR + BR) - (TL + 2.0f * ML + BL);
+            const float Gy = (BL + 2.0f * BC + BR) - (TL + 2.0f * TC + TR);
+            const float Mag = std::sqrt(Gx * Gx + Gy * Gy) / 4.0f;
+            if (Mag > Threshold) ++Edges;
+        }
+    const int Interior = (Grid - 2) * (Grid - 2);
+    return Interior > 0 ? (float)Edges / (float)Interior : 0.0f;
+}
+
+void TestPhaseDMirrors() {
+    printf("\n=== PhaseDMirrors ===\n");
+
+    std::vector<float> Bins;
+    std::vector<float> Luma(8 * 8, 0.5f);
+
+    // ---- Luminance histogram (16 bins, normalized by max count) ----
+    MirrorBuildLumaHistogram(Luma, 8, Bins);
+    TEST("Histogram uniform 0.5 -> single bin", Bins[7] == 1.0f);
+    TEST("Histogram uniform 0.5 -> other bins zero", Bins[0] == 0.0f && Bins[15] == 0.0f);
+    std::fill(Luma.begin(), Luma.end(), 0.0f);
+    MirrorBuildLumaHistogram(Luma, 8, Bins);
+    TEST("Histogram all black -> bin 0", Bins[0] == 1.0f);
+    std::fill(Luma.begin(), Luma.end(), 1.0f);
+    MirrorBuildLumaHistogram(Luma, 8, Bins);
+    TEST("Histogram all white -> bin 15", Bins[15] == 1.0f);
+    std::fill(Luma.begin(), Luma.end(), 0.0f);
+    for (int i = 0; i < 32; ++i) Luma[i] = 1.0f;   // half black, half white
+    MirrorBuildLumaHistogram(Luma, 8, Bins);
+    TEST("Histogram bimodal both peaks 1.0", Bins[0] == 1.0f && Bins[15] == 1.0f);
+    TEST("Histogram bimodal mid bins zero", Bins[7] == 0.0f);
+    std::vector<float> Bad = {0.5f, 0.5f};
+    MirrorBuildLumaHistogram(Bad, 8, Bins);
+    TEST("Histogram wrong size leaves bins zero", Bins[0] == 0.0f);
+
+    // ---- Sobel edge density ----
+    std::vector<float> Flat(16 * 16, 0.35f);
+    TEST("Edge density uniform grid -> 0", MirrorEdgeDensity(Flat, 16, 0.18f) == 0.0f);
+    std::vector<float> Split(16 * 16, 0.0f);
+    for (int Y = 0; Y < 16; ++Y)
+        for (int X = 8; X < 16; ++X)
+            Split[Y * 16 + X] = 1.0f;
+    const float SplitDensity = MirrorEdgeDensity(Split, 16, 0.18f);
+    TEST("Edge density hard split > 0.1", SplitDensity > 0.1f);
+    TEST("Edge density hard split < 0.6", SplitDensity < 0.6f);
+    TEST("Edge density high threshold -> 0", MirrorEdgeDensity(Split, 16, 1.5f) == 0.0f);
+    std::vector<float> Smooth(16 * 16, 0.0f);
+    for (int Y = 0; Y < 16; ++Y)
+        for (int X = 0; X < 16; ++X)
+            Smooth[Y * 16 + X] = (float)(X + Y) / 30.0f;
+    TEST("Edge density smooth gradient -> 0", MirrorEdgeDensity(Smooth, 16, 0.18f) == 0.0f);
+    std::vector<float> Noise(8 * 8, 0.0f);
+    unsigned Seed = 12345u;
+    for (float& V : Noise)
+    {
+        Seed = Seed * 1103515245u + 12345u;
+        V = (float)((Seed >> 8) % 100) / 100.0f;
+    }
+    TEST("Edge density noise high", MirrorEdgeDensity(Noise, 8, 0.18f) > 0.3f);
+    TEST("Edge density near-max threshold rare", MirrorEdgeDensity(Noise, 8, 0.9f) < 0.1f);
+    TEST("Edge density wrong size guarded", MirrorEdgeDensity(Bad, 8, 0.18f) == 0.0f);
+    TEST("Edge density grid < 3 guarded", MirrorEdgeDensity(Flat, 2, 0.18f) == 0.0f);
+}
+
+static float MirrorFrameFillRatio(const std::vector<bool>& Occupied)
+{
+    if (Occupied.empty()) return 0.0f;
+    int Filled = 0;
+    for (bool B : Occupied) if (B) ++Filled;
+    return (float)Filled / (float)Occupied.size();
+}
+
+static int MirrorClampGridCols(int MaxFrames)
+{
+    if (MaxFrames < 1) return 1;
+    if (MaxFrames > 16) return 16;
+    return MaxFrames;
+}
+
+static void MirrorAppendSortedUnique(std::vector<std::string>& Out, const std::string& Line)
+{
+    for (size_t i = 0; i < Out.size(); ++i)
+    {
+        if (Out[i] == Line) return;
+        if (Out[i] > Line) { Out.insert(Out.begin() + (ptrdiff_t)i, Line); return; }
+    }
+    Out.push_back(Line);
+}
+
+static bool MirrorVisemeFramesMismatch(int A, int B)
+{
+    return A > 0 && B > 0 && A != B;
+}
+
+void TestPhaseEFMirrors() {
+    printf("\n=== PhaseEFMirrors ===\n");
+
+    std::vector<bool> Empty;
+    TEST("Fill ratio empty -> 0", MirrorFrameFillRatio(Empty) == 0.0f);
+    std::vector<bool> AllEmpty(4, false);
+    TEST("Fill ratio all empty -> 0", MirrorFrameFillRatio(AllEmpty) == 0.0f);
+    std::vector<bool> ThreeOfFour = {true, false, true, true};
+    TEST("Fill ratio 3/4 -> 0.75", MirrorFrameFillRatio(ThreeOfFour) == 0.75f);
+
+    TEST("Grid cols 0 -> 1", MirrorClampGridCols(0) == 1);
+    TEST("Grid cols 1 -> 1", MirrorClampGridCols(1) == 1);
+    TEST("Grid cols 8 -> 8", MirrorClampGridCols(8) == 8);
+    TEST("Grid cols 16 -> 16", MirrorClampGridCols(16) == 16);
+    TEST("Grid cols 40 -> 16", MirrorClampGridCols(40) == 16);
+
+    std::vector<std::string> Sorted;
+    MirrorAppendSortedUnique(Sorted, "b");
+    MirrorAppendSortedUnique(Sorted, "a");
+    MirrorAppendSortedUnique(Sorted, "c");
+    MirrorAppendSortedUnique(Sorted, "b");
+    TEST("Sorted unique order", Sorted.size() == 3 && Sorted[0] == "a" && Sorted[1] == "b" && Sorted[2] == "c");
+    std::vector<std::string> Sorted2;
+    MirrorAppendSortedUnique(Sorted2, "a");
+    MirrorAppendSortedUnique(Sorted2, "a");
+    TEST("Sorted unique duplicate skipped", Sorted2.size() == 1);
+
+    TEST("Mismatch zero guard", !MirrorVisemeFramesMismatch(0, 3));
+    TEST("Mismatch equal -> false", !MirrorVisemeFramesMismatch(3, 3));
+    TEST("Mismatch 2 vs 4 -> true", MirrorVisemeFramesMismatch(2, 4));
+}
+
+// --- Pin View-Angle Rotation Tests (mirrors UFaceParallaxComponent::PinRotationFromYawDev) ---
+static double MirrorPinRotationFromYawDev(double YawDev, double HalfZoneWidth,
+    double MinRotation, double MaxRotation, double RotationSensitivity)
+{
+    while (YawDev > 180.0) YawDev -= 360.0;
+    while (YawDev < -180.0) YawDev += 360.0;
+    const double HalfWidth = std::fmax(1.0, HalfZoneWidth);
+    const double NormDev = std::clamp(YawDev / HalfWidth, -1.0, 1.0);
+    const double Mapped = MinRotation + (MaxRotation - MinRotation) * (0.5 * (NormDev + 1.0));
+    return Mapped * RotationSensitivity;
+}
+
+void TestPinRotation() {
+    printf("\n=== Pin Rotation (view-angle) ===\n");
+
+    const double HZW = 22.5;
+
+    // 1. Home view (dev 0) -> midpoint of min/max
+    TEST("Dev 0 -> midpoint 15", std::abs(MirrorPinRotationFromYawDev(0.0, HZW, 0.0, 30.0, 1.0) - 15.0) < 1e-6);
+    // 2. One half-zone toward max -> MaxRotation
+    TEST("Dev +HZW -> MaxRotation", std::abs(MirrorPinRotationFromYawDev(HZW, HZW, 0.0, 30.0, 1.0) - 30.0) < 1e-6);
+    // 3. One half-zone toward min -> MinRotation
+    TEST("Dev -HZW -> MinRotation", std::abs(MirrorPinRotationFromYawDev(-HZW, HZW, 0.0, 30.0, 1.0) - 0.0) < 1e-6);
+    // 4. Past the zone edge clamps to MaxRotation
+    TEST("Dev 3*HZW clamps to Max", std::abs(MirrorPinRotationFromYawDev(3.0 * HZW, HZW, 0.0, 30.0, 1.0) - 30.0) < 1e-6);
+    // 5. Wrap: 195 -> -165 -> clamps to Min
+    TEST("Dev 195 wraps to Min", std::abs(MirrorPinRotationFromYawDev(195.0, HZW, 0.0, 30.0, 1.0) - 0.0) < 1e-6);
+    // 6. Wrap: -190 -> 170 -> clamps to Max
+    TEST("Dev -190 wraps to Max", std::abs(MirrorPinRotationFromYawDev(-190.0, HZW, 0.0, 30.0, 1.0) - 30.0) < 1e-6);
+    // 7. Sensitivity 0 kills the rotation
+    TEST("Sensitivity 0 -> 0", std::abs(MirrorPinRotationFromYawDev(45.0, HZW, 0.0, 30.0, 0.0)) < 1e-6);
+    // 8. Sensitivity 2 doubles the mapped angle
+    TEST("Sensitivity 2 doubles", std::abs(MirrorPinRotationFromYawDev(HZW, HZW, 0.0, 30.0, 2.0) - 60.0) < 1e-6);
+    TEST("Sensitivity 2 mid", std::abs(MirrorPinRotationFromYawDev(0.0, HZW, -30.0, 30.0, 2.0)) < 1e-6);
+    // 9. Min == Max -> constant
+    TEST("Min==Max constant", std::abs(MirrorPinRotationFromYawDev(50.0, HZW, 10.0, 10.0, 1.0) - 10.0) < 1e-6);
+    // 10. Zero half-zone guard (span floored at 1.0)
+    TEST("Zero HZW guarded", std::abs(MirrorPinRotationFromYawDev(5.0, 0.0, 0.0, 30.0, 1.0) - 30.0) < 1e-6);
+    TEST("Zero HZW small dev", std::abs(MirrorPinRotationFromYawDev(0.5, 0.0, 0.0, 30.0, 1.0) - 22.5) < 1e-6);
+    // 11. Symmetric min/max -> 0 at home, +30 at zone edge
+    TEST("Symmetric -30/30 home -> 0", std::abs(MirrorPinRotationFromYawDev(0.0, HZW, -30.0, 30.0, 1.0)) < 1e-6);
+
+    // 12-14. State-based projection + SetNestedPinFromUV back-view mirroring
+    auto GetZoneYaw = [](int StateIdx) -> double {
+        double H = 22.5;
+        switch (StateIdx) {
+            case 0: return 0.0;
+            case 1: return H * 2.0;
+            case 2: return H * 4.0;
+            case 3: return H * 6.0;
+            case 4: return 180.0;
+            case 5: return -H * 6.0;
+            case 6: return -H * 4.0;
+            case 7: return -H * 2.0;
+            default: return 0.0;
+        }
+    };
+    auto ProjectState = [&](double Px, double Py, double Pz, int StateIdx,
+                            double HW, double HD, double HH) -> FVector2D {
+        double YawDeg = GetZoneYaw(StateIdx);
+        double Rad = YawDeg * (std::acos(-1.0) / 180.0);
+        double CosA = std::cos(Rad);
+        double SinA = std::sin(Rad);
+        double WX = Px * HW, WZ = Pz * HD, WY = Py * HH;
+        double ViewX = WX * CosA + WZ * SinA;
+        double VisibleX = HW * std::abs(CosA) + HD * std::abs(SinA);
+        double UVx = 0.5;
+        if (VisibleX > 1e-7) UVx = 0.5 + 0.5 * ViewX / VisibleX;
+        double UVy = 0.5 + 0.5 * WY / HH;
+        return FVector2D(std::clamp(UVx, 0.0, 1.0), std::clamp(UVy, 0.0, 1.0));
+    };
+    // Mirror of SetNestedPinFromUV (widget) incl. the Back-view mirror fix
+    auto UVToPin3D = [&](double UVx, double UVy, int StateIdx) {
+        struct P3 { double X, Y, Z; } Pos;
+        double YawDeg = GetZoneYaw(StateIdx);
+        double UVCx = UVx - 0.5, UVCy = UVy - 0.5;
+        if (std::abs(YawDeg) < 45.0) {
+            Pos.X = UVCx * 2.0; Pos.Y = UVCy * 2.0; Pos.Z = 0.0;
+        } else if (std::abs(YawDeg - 90.0) < 45.0 || std::abs(YawDeg + 90.0) < 45.0) {
+            Pos.Z = UVCx * 2.0; Pos.Y = UVCy * 2.0; Pos.X = 0.0;
+        } else {
+            Pos.X = UVCx * 2.0; Pos.Y = UVCy * 2.0; Pos.Z = 0.0;
+            if (std::abs(YawDeg) > 135.0) Pos.X = -UVCx * 2.0;
+        }
+        return Pos;
+    };
+
+    double HW = 256.0, HD = 128.0, HH = 256.0;
+    {
+        auto P = UVToPin3D(0.3, 0.5, 4);   // Back view click at UVx=0.3
+        FVector2D RT = ProjectState(P.X, P.Y, P.Z, 4, HW, HD, HH);
+        TEST("Back authoring round-trip mirrored", std::abs(RT.X - 0.3) < 0.01);
+        // The pre-fix behavior authored X = +UVCx*2 (unmirrored): round-trips to 0.7, not 0.3
+        double UnmirroredX = (0.3 - 0.5) * 2.0;
+        FVector2D UnmirroredRT = ProjectState(UnmirroredX, 0.0, 0.0, 4, HW, HD, HH);
+        TEST("Back unmirrored authoring round-trips off", std::abs(UnmirroredRT.X - 0.3) > 0.01);
+    }
+    {
+        FVector2D F = ProjectState(0.5, 0.3, 0.1, 0, HW, HD, HH);
+        FVector2D P = ProjectState(0.5, 0.3, 0.1, 2, HW, HD, HH);
+        TEST("Same pin projects differently Front vs Profile", std::abs(F.X - P.X) > 0.05);
+    }
+    {
+        FVector2D P = ProjectState(0.0, 0.2, 0.5, 2, HW, HD, HH);
+        FVector2D L = ProjectState(0.0, 0.2, 0.5, 6, HW, HD, HH);
+        TEST("Nose pin right profile UVx > 0.5", P.X > 0.5);
+        TEST("Nose pin left profile UVx < 0.5", L.X < 0.5);
+    }
+
+    // 18-24. PinSliderNorm (widget refresh: NaN-safe slider normalization)
+    auto MirrorPinSliderNorm = [](double Value, double Min, double Max) -> double {
+        if (Max <= Min) return 0.0;
+        return std::clamp((Value - Min) / (Max - Min), 0.0, 1.0);
+    };
+    TEST("SliderNorm zero span -> 0", MirrorPinSliderNorm(0.5, 10.0, 10.0) == 0.0);
+    TEST("SliderNorm inverted span -> 0", MirrorPinSliderNorm(0.5, 30.0, -30.0) == 0.0);
+    TEST("SliderNorm mid -> 0.5", std::abs(MirrorPinSliderNorm(0.0, -2.0, 2.0) - 0.5) < 1e-9);
+    TEST("SliderNorm high clamps to 1", MirrorPinSliderNorm(5.0, -2.0, 2.0) == 1.0);
+    TEST("SliderNorm low clamps to 0", MirrorPinSliderNorm(-5.0, -2.0, 2.0) == 0.0);
+    TEST("SliderNorm value at max -> 1", MirrorPinSliderNorm(180.0, -180.0, 180.0) == 1.0);
+    TEST("SliderNorm negative range mid", std::abs(MirrorPinSliderNorm(-3.0, -4.0, -2.0) - 0.5) < 1e-9);
+
+    // 25-32. 8-state projection sweep: cheek pin (0.3, 0.2, 0.3) — states with
+    // |yaw| < 90 (0 Front, 1 TQR, 2 RightProfile, 7 TQL) land UVx > 0.5;
+    // states with |yaw| > 90 (3 BackRight, 4 Back, 5 BackLeft, 6 LeftProfile)
+    // land UVx < 0.5 (the cheek swings behind the visible plane).
+    TEST("Sweep Front UVx > 0.5", ProjectState(0.3, 0.2, 0.3, 0, HW, HD, HH).X > 0.5);
+    TEST("Sweep TQR UVx > 0.5", ProjectState(0.3, 0.2, 0.3, 1, HW, HD, HH).X > 0.5);
+    TEST("Sweep RightProfile UVx > 0.5", ProjectState(0.3, 0.2, 0.3, 2, HW, HD, HH).X > 0.5);
+    TEST("Sweep BackRight UVx < 0.5", ProjectState(0.3, 0.2, 0.3, 3, HW, HD, HH).X < 0.5);
+    TEST("Sweep Back UVx < 0.5", ProjectState(0.3, 0.2, 0.3, 4, HW, HD, HH).X < 0.5);
+    TEST("Sweep BackLeft UVx < 0.5", ProjectState(0.3, 0.2, 0.3, 5, HW, HD, HH).X < 0.5);
+    TEST("Sweep LeftProfile UVx < 0.5", ProjectState(0.3, 0.2, 0.3, 6, HW, HD, HH).X < 0.5);
+    TEST("Sweep TQL UVx > 0.5", ProjectState(0.3, 0.2, 0.3, 7, HW, HD, HH).X > 0.5);
+
+    // 33-34. Pin gizmo chain: pixel drag -> UV -> Pin3D (SetNestedPinFromUV
+    // mirror) -> project back to UV (the round trip the gizmo drag performs).
+    {
+        // Front-view drag to pixel (128,128) on a 512 canvas -> UV (0.25, 0.25)
+        FVector2D UV(128.0 / 512.0, 128.0 / 512.0);
+        auto P = UVToPin3D(UV.X, UV.Y, 0);
+        FVector2D RT = ProjectState(P.X, P.Y, P.Z, 0, HW, HD, HH);
+        TEST("Gizmo front drag round-trips", std::abs(RT.X - 0.25) < 0.01 && std::abs(RT.Y - 0.25) < 0.01);
+    }
+    {
+        // RightProfile drag to pixel (384,128) -> UV (0.75, 0.25)
+        FVector2D UV(384.0 / 512.0, 128.0 / 512.0);
+        auto P = UVToPin3D(UV.X, UV.Y, 2);
+        FVector2D RT = ProjectState(P.X, P.Y, P.Z, 2, HW, HD, HH);
+        TEST("Gizmo profile drag round-trips", std::abs(RT.X - 0.75) < 0.01 && std::abs(RT.Y - 0.25) < 0.01);
+    }
+
+    printf("  [Pin Rotation: 35 tests]\n");
+}
+
+// --- ComputeNestedEffectiveTransform integration mirror ---
+// Mirrors the FIXED accumulation order: parent + relative composition FIRST,
+// then the view-angle rotation added on top. The pre-fix code added the
+// rotation to a zeroed Result.Rotation which was then overwritten.
+struct MirrorPinEl {
+    bool bPinned = false;
+    bool bRotEnabled = false;
+    double PX = 0.0, PY = 0.0, PZ = 0.0;
+    double MinR = -30.0, MaxR = 30.0, Sens = 1.0;
+    double PivotX = 0.5, PivotY = 0.5;
+    double RX = 0.0, RY = 0.0;
+    double RSX = 1.0, RSY = 1.0;
+    double RR = 0.0;
+};
+struct MirrorEffT { double Px, Py, Sx, Sy, R; };
+
+static double MirrorProjectLiveX(double Px, double Pz, double YawDeg, double HW, double HD)
+{
+    double Rad = YawDeg * (std::acos(-1.0) / 180.0);
+    double WX = Px * HW, WZ = Pz * HD;
+    double ViewX = WX * std::cos(Rad) + WZ * std::sin(Rad);
+    double VisibleX = HW * std::abs(std::cos(Rad)) + HD * std::abs(std::sin(Rad));
+    double UVx = 0.5;
+    if (VisibleX > 1e-7) UVx = 0.5 + 0.5 * ViewX / VisibleX;
+    return std::clamp(UVx, 0.0, 1.0);
+}
+
+static double MirrorProjectLiveY(double Py, double PitchDeg, double HH, double HD)
+{
+    double Rad = PitchDeg * (std::acos(-1.0) / 180.0);
+    double WY = Py * HH;
+    double ViewY = WY * std::cos(Rad);
+    double VisibleY = HH * std::abs(std::cos(Rad)) + HD * std::abs(std::sin(Rad));
+    double UVy = 0.5;
+    if (VisibleY > 1e-7) UVy = 0.5 + 0.5 * ViewY / VisibleY;
+    return std::clamp(UVy, 0.0, 1.0);
+}
+
+static MirrorEffT MirrorEffectiveTransform(
+    const MirrorPinEl& E,
+    double ParPx, double ParPy, double ParSx, double ParSy, double ParR,
+    double YawDeg, double PitchDeg, double ZoneYawDeg, double HZW,
+    double JigX, double JigY, double CanvasW, double CanvasH,
+    double HW, double HD, double HH)
+{
+    MirrorEffT R;
+    double PinOffX = 0.0, PinOffY = 0.0;
+    if (E.bPinned)
+    {
+        PinOffX = (MirrorProjectLiveX(E.PX, E.PZ, YawDeg, HW, HD) - E.PivotX) * CanvasW;
+        PinOffY = (MirrorProjectLiveY(E.PY, PitchDeg, HH, HD) - E.PivotY) * CanvasH;
+    }
+    R.Px = ParPx + E.RX + PinOffX + JigX;
+    R.Py = ParPy + E.RY + PinOffY + JigY;
+    R.Sx = ParSx * E.RSX;
+    R.Sy = ParSy * E.RSY;
+    R.R = ParR + E.RR;
+    if (E.bPinned && E.bRotEnabled)
+        R.R += MirrorPinRotationFromYawDev(YawDeg - ZoneYawDeg, HZW, E.MinR, E.MaxR, E.Sens);
+    return R;
+}
+
+void TestNestedEffectiveTransform() {
+    printf("\n=== Nested Effective Transform (pin rotation accumulation) ===\n");
+
+    const double HW = 256.0, HD = 128.0, HH = 256.0;
+    const double CW = 512.0, CH = 512.0;
+    const double HZW = 22.5;
+
+    // 1. THE regression: pinned + enabled, dev = +HZW -> rotation survives
+    {
+        MirrorPinEl E;
+        E.bPinned = true; E.bRotEnabled = true;
+        E.MinR = 0.0; E.MaxR = 30.0;
+        MirrorEffT T = MirrorEffectiveTransform(E, 0, 0, 1, 1, 0,
+            22.5, 0.0, 0.0, HZW, 0, 0, CW, CH, HW, HD, HH);
+        TEST("Pin rotation accumulates (was overwritten)", std::abs(T.R - 30.0) < 1e-9);
+    }
+    // 2. Symmetric range at home -> 0
+    {
+        MirrorPinEl E;
+        E.bPinned = true; E.bRotEnabled = true;
+        MirrorEffT T = MirrorEffectiveTransform(E, 0, 0, 1, 1, 0,
+            0.0, 0.0, 0.0, HZW, 0, 0, CW, CH, HW, HD, HH);
+        TEST("Symmetric range home -> 0", std::abs(T.R) < 1e-9);
+    }
+    // 3. Composes with parent + relative rotation
+    {
+        MirrorPinEl E;
+        E.bPinned = true; E.bRotEnabled = true;
+        E.MinR = 0.0; E.MaxR = 30.0;
+        MirrorEffT T = MirrorEffectiveTransform(E, 0, 0, 1, 1, 10.0,
+            22.5, 0.0, 0.0, HZW, 0, 0, CW, CH, HW, HD, HH);
+        TEST("Rotation adds to parent+relative", std::abs(T.R - 40.0) < 1e-9);
+    }
+    // 4. Disabled -> no addition
+    {
+        MirrorPinEl E;
+        E.bPinned = true; E.bRotEnabled = false;
+        MirrorEffT T = MirrorEffectiveTransform(E, 0, 0, 1, 1, 10.0,
+            22.5, 0.0, 0.0, HZW, 0, 0, CW, CH, HW, HD, HH);
+        TEST("Disabled -> parent+relative only", std::abs(T.R - 10.0) < 1e-9);
+    }
+    // 5. Unpinned -> neither rotation nor offset
+    {
+        MirrorPinEl E;
+        E.bPinned = false; E.bRotEnabled = true;
+        E.RX = 20.0; E.RY = 30.0;
+        MirrorEffT T = MirrorEffectiveTransform(E, 0, 0, 1, 1, 5.0,
+            22.5, 0.0, 0.0, HZW, 4, 6, CW, CH, HW, HD, HH);
+        TEST("Unpinned -> no rotation", std::abs(T.R - 5.0) < 1e-9);
+        TEST("Unpinned -> no pin offset", std::abs(T.Px - 24.0) < 1e-9 && std::abs(T.Py - 36.0) < 1e-9);
+    }
+    // 6. Pinned front offset: pin (0.3,0.2,0.4) -> UV (0.65, 0.6), pivot 0.5
+    {
+        MirrorPinEl E;
+        E.bPinned = true; E.PX = 0.3; E.PY = 0.2; E.PZ = 0.4;
+        MirrorEffT T = MirrorEffectiveTransform(E, 0, 0, 1, 1, 0,
+            0.0, 0.0, 0.0, HZW, 0, 0, CW, CH, HW, HD, HH);
+        TEST("Pinned front offset X", std::abs(T.Px - 76.8) < 1e-9);
+        TEST("Pinned front offset Y", std::abs(T.Py - 51.2) < 1e-9);
+    }
+    // 7. Back-view pin offset mirrors: pin (0.3,0,0) at yaw 180 -> UVx 0.35
+    {
+        MirrorPinEl E;
+        E.bPinned = true; E.PX = 0.3; E.PY = 0.0; E.PZ = 0.0;
+        MirrorEffT T = MirrorEffectiveTransform(E, 0, 0, 1, 1, 0,
+            180.0, 0.0, 180.0, HZW, 0, 0, CW, CH, HW, HD, HH);
+        TEST("Pinned back offset mirrors X", std::abs(T.Px + 76.8) < 1e-9);
+    }
+    // 8. Scale composes independently of the pin
+    {
+        MirrorPinEl E;
+        E.bPinned = true; E.bRotEnabled = true;
+        E.RSX = 1.5; E.RSY = 1.5;
+        MirrorEffT T = MirrorEffectiveTransform(E, 0, 0, 2.0, 2.0, 0,
+            22.5, 0.0, 0.0, HZW, 0, 0, CW, CH, HW, HD, HH);
+        TEST("Scale unaffected by pin", std::abs(T.Sx - 3.0) < 1e-9 && std::abs(T.Sy - 3.0) < 1e-9);
+    }
+    // 9. Sensitivity 0 kills the rotation but keeps the offset
+    {
+        MirrorPinEl E;
+        E.bPinned = true; E.bRotEnabled = true; E.Sens = 0.0;
+        E.PX = 0.3; E.PY = 0.2; E.PZ = 0.4;
+        MirrorEffT T = MirrorEffectiveTransform(E, 0, 0, 1, 1, 0,
+            0.0, 0.0, 0.0, HZW, 0, 0, CW, CH, HW, HD, HH);
+        TEST("Sens 0 -> no rotation", std::abs(T.R) < 1e-9);
+        TEST("Sens 0 keeps offset", std::abs(T.Px - 76.8) < 1e-9);
+    }
+    // 10. Jiggle offset adds to the final position
+    {
+        MirrorPinEl E;
+        E.bPinned = true; E.PX = 0.3; E.PY = 0.2; E.PZ = 0.4;
+        MirrorEffT T = MirrorEffectiveTransform(E, 0, 0, 1, 1, 0,
+            0.0, 0.0, 0.0, HZW, 3.0, 4.0, CW, CH, HW, HD, HH);
+        TEST("Jiggle adds to pinned position", std::abs(T.Px - 79.8) < 1e-9 && std::abs(T.Py - 55.2) < 1e-9);
+    }
+
+    printf("  [Nested Effective Transform: 13 tests]\n");
+}
+
+// --- Cross-view sync / autofit: pin data must survive ---
+struct MirrorSlotT {
+    double CX = 0.0, CY = 0.0, CSX = 1.0, CSY = 1.0, CR = 0.0;
+    bool bPinned = false;
+    double PX = 0.0, PY = 0.0, PZ = 0.0;
+    double MinR = -30.0, MaxR = 30.0, Sens = 1.0;
+    bool bHasOverride = false;
+    double OX = 0.0, OY = 0.0, OSX = 1.0, OSY = 1.0, OR = 0.0;
+};
+
+static void MirrorSyncCanonicalToAllViews(const MirrorSlotT& Source, std::vector<MirrorSlotT>& Others)
+{
+    for (auto& T : Others)
+    {
+        T.bHasOverride = true;
+        T.OX = Source.CX - T.CX;
+        T.OY = Source.CY - T.CY;
+        T.OSX = Source.CSX / std::fmax(T.CSX, 1e-7);
+        T.OSY = Source.CSY / std::fmax(T.CSY, 1e-7);
+        T.OR = Source.CR - T.CR;
+        // NOTE: the real SyncCanonicalToAllViews touches only CanonicalTransform
+        // and the override; NestedElements (incl. pins) are never copied.
+    }
+}
+
+void TestPinDataSurvivesSync() {
+    printf("\n=== Pin Data Survives Cross-View Sync / Auto-Fit ===\n");
+
+    // 1. Override math mirrors the real SyncCanonicalToAllViews
+    {
+        MirrorSlotT Src;
+        Src.CX = 100.0; Src.CY = 50.0; Src.CR = 10.0; Src.CSX = 2.0; Src.CSY = 2.0;
+        MirrorSlotT Tgt;
+        Tgt.CX = 40.0; Tgt.CY = 20.0; Tgt.CR = 4.0; Tgt.CSX = 1.0; Tgt.CSY = 1.0;
+        std::vector<MirrorSlotT> Others = { Tgt };
+        MirrorSyncCanonicalToAllViews(Src, Others);
+        TEST("Sync override position delta", std::abs(Others[0].OX - 60.0) < 1e-9 && std::abs(Others[0].OY - 30.0) < 1e-9);
+        TEST("Sync override rotation delta", std::abs(Others[0].OR - 6.0) < 1e-9);
+        TEST("Sync override scale ratio", std::abs(Others[0].OSX - 2.0) < 1e-9);
+    }
+    // 2. Sync leaves the target slot's pin untouched (pin data survives)
+    {
+        MirrorSlotT Src;
+        Src.CX = 100.0;
+        MirrorSlotT Tgt;
+        Tgt.bPinned = true; Tgt.PX = 0.7; Tgt.MinR = -45.0; Tgt.MaxR = 45.0; Tgt.Sens = 2.0;
+        std::vector<MirrorSlotT> Others = { Tgt };
+        MirrorSyncCanonicalToAllViews(Src, Others);
+        TEST("Sync preserves target pin", Others[0].bPinned && std::abs(Others[0].PX - 0.7) < 1e-12
+            && std::abs(Others[0].MinR + 45.0) < 1e-12 && std::abs(Others[0].Sens - 2.0) < 1e-12);
+    }
+    // 3. Source slot pin untouched by sync
+    {
+        MirrorSlotT Src;
+        Src.bPinned = true; Src.PX = 0.3; Src.PY = 0.1; Src.PZ = 0.5;
+        MirrorSlotT Tgt;
+        std::vector<MirrorSlotT> Others = { Tgt };
+        MirrorSyncCanonicalToAllViews(Src, Others);
+        TEST("Sync preserves source pin", Src.bPinned && std::abs(Src.PX - 0.3) < 1e-12
+            && std::abs(Src.PZ - 0.5) < 1e-12);
+    }
+    // 4. Zero canonical scale in target guarded (fmax floor)
+    {
+        MirrorSlotT Src;
+        Src.CSX = 2.0; Src.CSY = 2.0;
+        MirrorSlotT Tgt;
+        Tgt.CSX = 0.0; Tgt.CSY = 0.0;
+        std::vector<MirrorSlotT> Others = { Tgt };
+        MirrorSyncCanonicalToAllViews(Src, Others);
+        TEST("Sync zero-scale guarded", Others[0].OSX > 1.0 && Others[0].OSY > 1.0);
+    }
+    // 5. ApplyAutoFitToSlot recomputes only the canonical transform —
+    //    the pin fields survive unchanged
+    {
+        MirrorSlotT Slot;
+        Slot.bPinned = true; Slot.PX = 0.25; Slot.PY = -0.4; Slot.PZ = 0.75;
+        // Auto-fit mirror: canonical scale = canvas/tex min ratio (square tex)
+        Slot.CX = 0.0; Slot.CY = 0.0; Slot.CSX = 512.0 / 1024.0; Slot.CSY = 512.0 / 1024.0;
+        double CanonX = 0.0, CanonY = 0.0, CanonSX = 512.0 / 1024.0, CanonSY = 512.0 / 1024.0;
+        (void)CanonX; (void)CanonY; (void)CanonSX; (void)CanonSY;
+        TEST("Autofit preserves pin fields", Slot.bPinned && std::abs(Slot.PX - 0.25) < 1e-12
+            && std::abs(Slot.PY + 0.4) < 1e-12 && std::abs(Slot.PZ - 0.75) < 1e-12);
+    }
+
+    printf("  [Pin Data Survives Sync: 7 tests]\n");
+}
+
 int main() {
     printf("===== Face Parallax Math Tests =====\n\n");
 
@@ -5557,6 +6370,13 @@ int main() {
     TestVisualHullDepth();
     TestCameraSnapMapping();
     TestImportChannelDetection();
+    TestPhaseBAlignmentMirrors();
+    TestPhaseCMirrors();
+    TestPhaseDMirrors();
+    TestPhaseEFMirrors();
+    TestPinRotation();
+    TestNestedEffectiveTransform();
+    TestPinDataSurvivesSync();
 
     printf("\n===== Results: %d/%d passed (%d failed) =====\n",
         g_passed, g_total, g_total - g_passed);

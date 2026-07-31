@@ -46,7 +46,7 @@ The system renders a 2D character face that responds to camera angle — switchi
 | `FaceParallaxEditorWidget.h/.cpp` | Editor Widget | C++ `UUserWidget` subclass providing bindable functions for every setting across 19 categories. Diagnostic log overlay, auto-refresh via `FCoreUObjectDelegates::OnObjectModified`. |
 | `deploy.py` | Deployment script | Creates master material, material instances, preset data asset, and character BP inside the Unreal Editor Python console |
 | `_gen_embed.py` | Maintenance script | Re-encodes all `.h`/`.cpp` files into `deploy.py`'s `EMBEDDED_SOURCES` for self-contained deployment |
-| `Tests/ParallaxMathTests.cpp` | Math tests | Standalone C++17 (no UE dep) — 774 tests covering state machine, transforms, blink/expression/viseme, swoosh, parameters, nested art + jiggle, 3D pin projection, batch ops, zone multipliers |
+| `Tests/ParallaxMathTests.cpp` | Math tests | Standalone C++17 (no UE dep) — 1011 tests covering state machine, transforms, blink/expression/viseme, swoosh, parameters, nested art + jiggle, 3D pin projection + view-angle rotation, batch ops, zone multipliers |
 | `Tests/SyntaxValidator.py` | Syntax validator | Brace/macro balance, include guards — enforces clean parsing on all source files |
 | `Tests/run_tests.ps1` | Test runner | Syntax validator + C++ math tests + optional UE build test |
 | `Tests/ue_build_test.ps1` | UE build test | Compiles SAMPLES project with `Build.bat`, verifies DLL output |
@@ -257,6 +257,8 @@ Preset → {
 | `ClearState` / `ClearAll` | Removal methods |
 | `GetAllLayerTags(State)` | List all layer tags for a state |
 | `GetNestedElement` / `SetNestedElement` / `AddNestedElement` / `RemoveNestedElement` | Nested art access |
+| `PinRotationFromYawDev(YawDev, HalfZoneWidth, MinRot, MaxRot, Sens)` | Static view-angle→rotation mapping (wrap, normalize, lerp, sensitivity) — unit-mirrored |
+| `ProjectPinToUV(Pin3D, ViewState)` / `ProjectPinToUVForState(Pin3D, ViewState)` | Project a 3D pin to UV using the zone-center camera angle of a view state |
 | `GetNestedPin3D` / `SetNestedPin3D` | Pin projection access |
 | `GetSwooshArt` / `SetSwooshArt` / `HasSwooshArt` / `ClearSwooshArt` | Swoosh art access |
 | `GetParamBindings` / `SetParamBindings` | Parameter binding access |
@@ -298,6 +300,28 @@ Attach child art pieces to existing layers with independent transforms, spring-d
 **Primitive Tag Convention:** Nested primitives tagged `LayerTag_ElementName` (e.g., `HairLayer_Wig`). Precomputed FName state key cache avoids per-frame string formatting — cache built via `BuildNestedArtCache()` on dirty flag.
 
 **Key concepts:** Relative transform, pivot point (normalized UV), jiggle (Stiffness/Damping/ImpulseScale/JiggleAxis), idle animation (looping flipbook), per-view visibility, static nesting (arbitrary depth, jiggle elements are leaf nodes).
+
+### 3D Pins & View-Angle Rotation
+
+`FFacePin3D` holds the attachment point and optional rotation behavior:
+
+| Field | Meaning |
+|---|---|
+| `bPinned` | Enables 3D pin projection: the element's pivot is the projected UV of `Position3D` (face-local `-1..1` per axis) at the live camera angle, so the element stays attached to its 3D point as the head turns |
+| `Position3D` | Face-local pin position (X left/right, Y up/down, Z toward the nose) |
+| `bEnableViewAngleRotation` | Enables rotation driven by view angle |
+| `MinRotation` / `MaxRotation` | Rotation sweep in degrees (defaults ±30) |
+| `RotationSensitivity` | Multiplier on the mapped rotation |
+
+**Rotation math:** `PinRotationFromYawDev` (static, unit-tested) wraps the yaw deviation from the rendered state's zone center to `[-180,180]`, normalizes it by `HalfZoneWidth` (clamped to `[-1,1]`), lerps `MinRotation → MaxRotation` across that range, and multiplies by `RotationSensitivity`. The result is added to the element's rotation in `ComputeNestedEffectiveTransform` — which rotates *around the pin*, because a pinned element's effective pivot is the projected pin UV. Example: symmetric `Min=-30 / Max=30` gives 0° at the view center and ±30° at the zone edge. Symmetric min/max make the eyebrow stay level at the front view and tilt as the head turns toward the profile.
+
+**Authoring:** `SetNestedPinFromUV` converts a click position into `Position3D` (Back-view clicks mirror the X axis so round-trips stay consistent); `ProjectPinToUVForState`/`ProjectPinToUV` project using the state's zone-center camera angle.
+
+**Editor notes:**
+- The pin section in the editor widget edits the **selected** top-level element (stepper `</>` or click a row in the Nested Elements outliner to select; the selected row is highlighted). Children are listed read-only.
+- **Pin gizmo:** when the selected element is pinned, the preview-canvas gizmo switches to pin mode — a yellow handle appears at the pin's projected UV in the active view; drag it to move the pin (writes through the same `SetNestedPinFromUV` authoring path as clicking). Deselect/select an unpinned element to return to layer-transform editing.
+- Controls are disabled when the active state/layer has no elements. Slider normalization guards zero/inverted ranges (`PinSliderNorm`, mirrored in tests), so `MinRotation == MaxRotation` never produces a NaN slider position.
+- Design semantics: at the zone center the rotation equals the **midpoint** of `MinRotation`/`MaxRotation` — asymmetric ranges shift the rest pose (e.g. `Min=0 / Max=60` rotates the element 30° at the front view). `RotationSensitivity > 1` overshoots past `Min`/`Max` (no clamp, by design); negative sensitivity inverts the direction. The view-angle rotation is **added on top of** the parent + relative rotation composition in `ComputeNestedEffectiveTransform` (regression-mirrored in tests).
 
 ---
 
@@ -368,7 +392,20 @@ The `UUserWidget` subclass constructs its entire UI via `RebuildWidget()` — no
 - **Diagnostic log overlay** — `SMultiLineEditableTextBox` at bottom of widget; `RunDiagnostics()` reports preset status, missing states/layers
 - **Auto-refresh** — bound to `FCoreUObjectDelegates::OnObjectModified`; triggers `RefreshUI()` when ActivePreset modified externally
 - **Undo/redo** — `FPresetTransactionScope` RAII guard wraps 13 preset-mutating functions with `GEditor->BeginTransaction`/`EndTransaction` and `Modify()`
-- **Tabbed property panel** — `SWidgetSwitcher` with 4 tabs: Transform | Import | Preview & Debug | Advanced (search, view override, sync picker, outline→depth, camera follow on Transform; import buttons + config on Import; camera/zone/blend on Preview & Debug; cross-layer overlay, param reference, nested art on Advanced)
+- **3-pane workspace (Phase A)** — left icon rail (Layers | Transform | Camera | Debug | Advanced) + `SWidgetSwitcher` rail panels, center preview canvas (display-mode row + overlay stack), right selected-slot properties pane. Old T0–T3 tabs were re-homed into the rails (Quick Actions/Sync/Alignment→Transform; Camera Follow/zones/blend→Camera; import/config/outline→depth→Debug; cross-layer/params/nested→Advanced)
+- **View strip with status dots (Phase A)** — per-state tabs + colored dots (green complete / amber missing albedo / orange per-view overrides) via `GetStateDotColor`, plus a "v" context menu per state: Sync layer to all, Sync textures to all, Clear overrides, Fill Missing Views, Duplicate-from list
+- **Sync drift indicator (Phase C)** — `RefreshSyncDriftIndicator` compares the active state's canonical transform against the other 9; shows "Synced" or "Drifted: n/9"
+- **Folder import wizard (Phase C)** — `OpenImportFolderWizard` opens a modal: pick a folder, Scan (`FindFilesRecursive` for png/jpg/jpeg/tga), part cards parsed from `{Part}_{View}_{Map}` names via `MatchStateSuffix`/`StripChannelSuffix` (full names before short codes), per-view×channel coverage preview with green/miss dots, Apply assigns to the active layer then closes
+- **Display modes (Phase D)** — `SetDisplayMode` maps Textured/Depth/Wireframe/Split to the preview toggles; the mode row sits above the canvas
+- **Depth Debug knobs (Phase D)** — live sliders for the visualizer's `GridResolution`, `MeshSize`, `HeightScale`, `LocalOffset.Z` plus hex Low/High color edits and a Rebuild button that re-feeds the active slot's depth texture
+- **Edge overlay + histogram (Phase D)** — `BuildEdgeOverlay` downsamples the active albedo, runs a Sobel edge pass (`EdgeDensity` static), and renders green edges over the preview; a 16-bin luminance histogram (`BuildLumaHistogram` static) draws as bars with density/mean stats
+- **Hull Review (Phase D)** — orbit-3D auto-rotate/speed/snap controls plus a 2×5 thumbnail grid of every state's albedo for the active layer (click to jump)
+- **Viseme Frames grid (Phase E)** — `RebuildVisemeGrid` renders the active layer's viseme timeline: one row per viseme (plus named visemes) with one cell per frame, filled cells = assigned art; clicking a filled cell plays that viseme; each row shows its fill percentage and the currently playing viseme is highlighted
+- **Nested-art outliner (Phase E)** — `RebuildNestedOutliner` lists the active layer's nested elements with per-view visibility checkboxes, [Pin]/[Jiggle] badges, a Del button, and indented child rows; edits write back through `SetNestedElement`; the selected row is highlighted
+- **Pin controls (advanced)** — element `<` `>` stepper (no more hardcoded element 0), live Pinned checkbox, Pin X/Y/Z sliders with numeric readouts, plus view-angle rotation controls: "Rotate w/ view angle" checkbox and Min Rot / Max Rot / Sens sliders; all refreshed by `RefreshPinControls()`
+- **Param bindings table (Phase E)** — `RebuildParamTable` shows every binding of the active state/layer: editable param name, target cycle button (PosX→PosY→SclX→SclY→Rot→Blend), Invert checkbox, and X remove; the Add row above appends new bindings via `SetParamBindings`
+- **Problems panel (Phase F)** — `RebuildProblemsPanel` validates all 10 states × every layer for missing albedo/normal/depth and warns on blink-frame and viseme-frame count mismatches across layers; issues are deduplicated (sorted-unique), color-coded (red error / amber warning), and clicking a row jumps to that state
+- **Alignment tools (Phase B)** — canvas gizmo (`SFaceLayerGizmo`, drag body=move / corner=scale / top handle=rotate), onion-skin ghost of the adjacent state with opacity slider, and Cross-View Transform copy-from combo + Link checkbox that broadcasts edits to all states (`ApplyCanonicalTransformWithLink`)
 - **Thumbnail status matrix** — 10-state × N-layer grid of aspect-correct albedo thumbnails (pixel size + click-to-jump tooltip) replacing the old 22×20 ✓/× grid
 - **Camera follows view** — view-strip clicks and matrix jumps snap orbit yaw/pitch to the state's zone center when `bCameraFollowsView` is enabled (default)
 - **View override mode** — transform edits write `ViewOverrides` (per-rendered-view deltas) instead of canonical transforms when `bViewOverrideMode` is on
@@ -376,7 +413,7 @@ The `UUserWidget` subclass constructs its entire UI via `RebuildWidget()` — no
 - **Batch import by channel suffix** — imports auto-assign by filename suffix (`_N`/`_Normal`/`_normalmap` → Normal, `_D`/`_Depth`/`_height`/`_displacement` → Depth, else Albedo); "Import & Assign" and toolbar "Import Art..." both use it when a layer is selected
 - **Quick Actions** — Auto-Fit All, Sync All→All, Clear All Overrides, Duplicate Front→This, Fill Missing Views (copies the active slot's art to views that have no albedo yet)
 - **Outline view management** — per-state checkboxes bound to the component's `OutlineViewStates` (All/None shortcuts); depth grid resolution is user-editable (8–256)
-- **Toolbar search** — the filter box moved to the toolbar so it applies across all 4 property tabs
+- **Toolbar search** — the filter box moved to the toolbar so it applies across all 6 property panels (right pane + 5 rails)
 - **Live numeric camera readouts** — Yaw/Pitch/Dist values shown next to the sliders and updated on refresh
 - **Restore Snapshot** — renamed from the misleading "Undo" and given an explanatory tooltip; Clear State/Clear All require a confirming second click; "Log: ON/OFF" collapses the diagnostic log
 
@@ -401,6 +438,23 @@ The `UUserWidget` subclass constructs its entire UI via `RebuildWidget()` — no
 | `GenerateDepthFromOutlines(GridSize)` | Extracts silhouette edges from outline-state albedos, builds a visual-hull depth buffer, bakes it into all layers' depth channels |
 | `SetOutlineOverlayVisible(bVisible)` / `GetOutlineOverlayVisible()` | Toggles the depth-buffer overlay on the preview image |
 | `SetOutlineViewEnabled(State, bEnabled)` | Adds or removes a state from `OutlineViewStates` (per-checkbox management; `SetOutlineViewState` only adds) |
+| `SetActiveRailIndex(Index)` | Switches the left rail panel (0 Layers, 1 Transform, 2 Camera, 3 Debug, 4 Advanced) |
+| `FillMissingViewsFromActiveSlot()` | Copies the active slot's albedo (and other channels) to views that lack art; returns the number filled |
+| `SetDisplayMode(Mode)` | 0 Textured, 1 Depth mesh, 2 Wireframe, 3 Split — maps to the preview toggles |
+| `GetAdjacentState(State, Offset)` | Static wrap-around state offset (onion-skin ghost source) |
+| `GetLinkTargets(Active)` | Static list of the 9 link-broadcast targets for a state |
+| `CopyTransformFromView(Src, Dst)` | Copies a state's canonical transform to another, guarding src==dst |
+| `ToggleOnionSkin(bEnable)` / `SetOnionSkinOpacity(Opacity)` | Shows/hides the adjacent-state ghost overlay on the canvas |
+| `OpenImportFolderWizard()` | Opens the folder-scan import wizard (Phase C) |
+| `BuildEdgeOverlay()` | Rebuilds the Sobel edge overlay + 16-bin histogram for the active slot's albedo (Phase D) |
+| `BuildLumaHistogram(Luma, Grid, OutBins)` / `EdgeDensity(Luma, Grid, Threshold)` | Static pure helpers for histogram/edge metrics (unit-mirrored) |
+| `RebuildVisemeGrid()` | Rebuilds the viseme frame grid (Phase E) — rows per viseme/named viseme, filled-frame cells, click to play |
+| `RebuildNestedOutliner()` | Rebuilds the nested-element outliner (Phase E) — visibility checkboxes, badges, delete |
+| `RebuildParamTable()` | Rebuilds the param-binding table (Phase E) — rename, cycle target, invert, remove |
+| `RebuildProblemsPanel()` | Rebuilds the validation problems list (Phase F) — missing channels, frame-count mismatches, click-to-jump |
+| `FrameFillRatio(Occupied)` / `ClampGridCols(MaxFrames)` / `AppendSortedUnique(Out, Line)` / `VisemeFramesMismatch(A, B)` | Static pure helpers for the timeline/problems systems (unit-mirrored) |
+| `RefreshPinControls()` | Refreshes pin slider values, readouts, and Pinned/rotation checkbox state from the selected nested element |
+| `SetNestedPinFromUV(State, LayerTag, Index, FromViewState, UV)` | Converts a canvas click to `Position3D` (Back-view clicks mirror the X axis) |
 
 ---
 
@@ -419,7 +473,7 @@ Add the source files to your UE5 module. Ensure `Build.cs` includes the dependen
 This runs:
 1. **`_gen_embed.py` staleness check** — verifies embedded sources match disk files
 2. **Python syntax validator** — braces/macros/includes on all `.h`/`.cpp` files
-3. **C++ math tests** — 864+ standalone tests (g++ from msys64 ucrt64), including silhouette-edge distance, visual-hull depth, camera-snap zone-center mapping, and import channel-suffix detection
+3. **C++ math tests** — 1011+ standalone tests (g++ from msys64 ucrt64), including silhouette-edge distance, visual-hull depth, camera-snap zone-center mapping, import channel-suffix detection, Phase B–F mirror suites (gizmo mapping, link broadcast, suffix parser, sync drift, luminance histogram, Sobel edge density, fill ratio, grid columns, sorted-unique dedupe, frame-count mismatch), and pin view-angle rotation (mapping, clamping, wrapping, sensitivity, back-view authoring round-trip, slider normalization, 8-state projection sweep, effective-transform rotation accumulation, cross-view sync pin preservation)
 4. **UE build test** — full compilation of SAMPLES project with `Build.bat`
 
 Optional flags:
@@ -562,7 +616,7 @@ In the component's `LayerDefinitions` array, adjust per-layer:
 - **Camera Source**: Set `CameraSource` to PlayerCamera0, SpecifiedActor, or Sequencer
 - **Continuous Blending**: Enable `bUseContinuousBlending` for smooth crossfades at zone boundaries
 - **Jiggle Physics**: Add nested art elements with jiggle for dynamic secondary motion
-- **Occlusion Pins**: Use 3D pin projection on nested elements for perspective-aware positioning
+- **Occlusion Pins**: Use 3D pin projection on nested elements for perspective-aware positioning; with `bEnableViewAngleRotation` the element also rotates around the pin as the camera turns (Min/Max rotation sweep + sensitivity, see "3D Pins & View-Angle Rotation")
 
 ---
 

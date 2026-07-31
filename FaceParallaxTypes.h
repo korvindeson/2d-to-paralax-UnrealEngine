@@ -278,6 +278,25 @@ struct FFacePin3D
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Pin",
         meta = (EditCondition = "bPinned", ClampMin = "-1.0", ClampMax = "1.0"))
     FVector Position3D = FVector(0.0f, 0.0f, 0.0f);
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Pin",
+        meta = (DisplayName = "View-Angle Rotation Enabled", EditCondition = "bPinned"))
+    bool bEnableViewAngleRotation = false;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Pin",
+        meta = (DisplayName = "Min Rotation (degrees, at zone center)",
+            EditCondition = "bEnableViewAngleRotation", ClampMin = "-360.0", ClampMax = "360.0"))
+    float MinRotation = -30.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Pin",
+        meta = (DisplayName = "Max Rotation (degrees, at zone edge)",
+            EditCondition = "bEnableViewAngleRotation", ClampMin = "-360.0", ClampMax = "360.0"))
+    float MaxRotation = 30.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Pin",
+        meta = (DisplayName = "Rotation Sensitivity", EditCondition = "bEnableViewAngleRotation",
+            ClampMin = "-10.0", ClampMax = "10.0"))
+    float RotationSensitivity = 1.0f;
 };
 
 USTRUCT(BlueprintType)

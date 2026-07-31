@@ -894,12 +894,63 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Preset")
     bool HasSnapshot() const;
 
+    // ===== WORKSPACE RAIL (Phase A) =====
+    void SetActiveRailIndex(int32 Index);
+    FLinearColor GetStateDotColor(EFaceAngleState State) const;
+    void RefreshViewStripDots();
+    int32 FillMissingViewsFromActiveSlot();
+    void RefreshSlotPropStatus();
+
+    // ===== PHASE B: ALIGNMENT =====
+    void ToggleOnionSkin(bool bEnable);
+    void SetOnionSkinOpacity(float Opacity);
+    void RefreshOnionSkin();
+    static EFaceAngleState GetAdjacentState(EFaceAngleState S, int32 Offset);
+    static TArray<EFaceAngleState> GetLinkTargets(EFaceAngleState Active);
+    static FVector2D GizmoUVToPixels(const FVector2D& UV, const FVector2D& CanvasSize);
+    static FVector2D GizmoPixelsToUV(const FVector2D& Pixels, const FVector2D& CanvasSize);
+    void CopyTransformFromView(EFaceAngleState Src, EFaceAngleState Dst);
+    void ApplyCanonicalTransformWithLink(EFaceAngleState State, FName LayerTag, const FFaceArtTransform& T);
+    FFaceArtTransform GetGizmoTransform() const;
+    void SetGizmoTransform(const FFaceArtTransform& T);
+
+    // ===== PHASE C: IMPORT =====
+    void OpenImportFolderWizard();
+    void RefreshSyncDriftIndicator();
+    double LastSyncTimestamp = 0.0;
+    int32 LastSyncedViewCount = 0;
+
+    // ===== PHASE D: DISPLAY + DEBUG =====
+    void SetDisplayMode(int32 Mode);
+    void RefreshDebugSliders();
+    void BuildEdgeOverlay();
+    void RebuildHistogramBars();
+    void RefreshHullThumbnails();
+    void RefreshPinControls();
+    static void BuildLumaHistogram(const TArray<float>& Luma, int32 Grid, TArray<float>& OutBins);
+    static float EdgeDensity(const TArray<float>& Luma, int32 Grid, float Threshold);
+
+    // ===== PHASE E/F: TIMELINE + PROBLEMS =====
+    void RebuildVisemeGrid();
+    void RebuildNestedOutliner();
+    void RebuildParamTable();
+    void RebuildProblemsPanel();
+    static float FrameFillRatio(const TArray<bool>& Occupied);
+    static int32 ClampGridCols(int32 MaxFrames);
+    static void AppendSortedUnique(TArray<FString>& Out, const FString& Line);
+    static bool VisemeFramesMismatch(int32 A, int32 B);
+    static float PinSliderNorm(float Value, float Min, float Max);
+
 private:
     EFaceAngleState ActiveViewState = EFaceAngleState::Front;
     FName SelectedLayerName;
     bool bAutoFitOnAssign = true;
     TArray<FName> LayerNames;
     int32 GetLayerIndex(FName Tag) const;
+    int32 SelectedNestedElementIndex = 0;
+    bool GetSelectedPinElement(FFaceNestedArt& OutEl, int32& OutCount);
+    FVector2D GetSelectedPinUV();
+    void SetGizmoPinUV(const FVector2D& UV);
 
     // Diagnostic overlay
     TSharedPtr<class SMultiLineEditableTextBox> DiagnosticLog;
@@ -938,6 +989,10 @@ private:
     TSharedPtr<STextBlock> TextLayerName;
     TSharedPtr<SVerticalBox> LayerPanelBox;
     TSharedPtr<SVerticalBox> TimelineBox;
+    TSharedPtr<SVerticalBox> VisemeGridBox;
+    TSharedPtr<SVerticalBox> NestedOutlinerBox;
+    TSharedPtr<SVerticalBox> ParamTableBox;
+    TSharedPtr<SVerticalBox> ProblemsPanelBox;
     TSharedPtr<SScrollBox> LayerScrollBox;
     TSharedPtr<SScrollBox> TimelineScrollBox;
     TSharedPtr<SComboBox<TWeakObjectPtr<AFaceParallaxPreviewActor>>> ActorSelector;
@@ -952,6 +1007,18 @@ private:
     TSharedPtr<SSlider> SliderPinX;
     TSharedPtr<SSlider> SliderPinY;
     TSharedPtr<SSlider> SliderPinZ;
+    TSharedPtr<STextBlock> TextPinX;
+    TSharedPtr<STextBlock> TextPinY;
+    TSharedPtr<STextBlock> TextPinZ;
+    TSharedPtr<SCheckBox> CheckPinPinned;
+    TSharedPtr<SCheckBox> CheckPinRotEnabled;
+    TSharedPtr<SSlider> SliderPinMinRot;
+    TSharedPtr<SSlider> SliderPinMaxRot;
+    TSharedPtr<SSlider> SliderPinRotSens;
+    TSharedPtr<STextBlock> TextPinMinRot;
+    TSharedPtr<STextBlock> TextPinMaxRot;
+    TSharedPtr<STextBlock> TextPinRotSens;
+    TSharedPtr<STextBlock> TextPinIndex;
 
     // Config checkboxes
     TSharedPtr<SCheckBox> CheckBlinking;
@@ -1001,11 +1068,61 @@ private:
     TSharedPtr<SWidgetSwitcher> PropSwitcher;
     TArray<TSharedPtr<SVerticalBox>> PropTabContent;
 
+    // ===== WORKSPACE RAIL (Phase A) =====
+    int32 ActiveRailIndex = 0;
+    TSharedPtr<SWidgetSwitcher> RailSwitcher;
+    TArray<TSharedPtr<SVerticalBox>> RailContent;   // 0 Layers 1 Transform 2 Camera 3 Debug 4 Advanced
+    TSharedPtr<SVerticalBox> SlotPropsBox;          // right pane: selected slot properties
+    TSharedPtr<SBox> PreviewHost;                   // center canvas container
+    TSharedPtr<SImage> OnionSkinImage;              // onion-skin ghost (Phase B)
+    TSharedPtr<SBox> GizmoLayer;                    // gizmo overlay (Phase B)
+    TSharedPtr<SImage> EdgeOverlayImage;            // edge-detection overlay (Phase D)
+    class SFaceLayerGizmo;
+    TSharedPtr<SFaceLayerGizmo> GizmoWidget;        // canvas transform gizmo (Phase B)
+    int32 DisplayMode = 0;                          // 0 Textured 1 Depth 2 Wireframe 3 Split
+    TArray<TSharedPtr<SImage>> ViewTabDots;         // per-state status dots in view strip
+    TSharedPtr<STextBlock> TextSlotAlbedoStatus;    // inline import status (filename/check/warning)
+    TSharedPtr<STextBlock> TextSlotNormalStatus;
+    TSharedPtr<STextBlock> TextSlotDepthStatus;
+    bool bLinkAcrossViews = false;                  // Phase B: edit one state, broadcast to all
+    bool bOnionSkin = false;                        // Phase B
+    float OnionSkinOpacity = 0.35f;                 // Phase B
+    TArray<TSharedPtr<FString>> CopyFromOptions;    // Phase B: copy-from dropdown options
+    TSharedPtr<FString> CopyFromSelection;          // Phase B: selected source view
+    TSharedPtr<STextBlock> TextSyncDrift;           // Phase C: last-synced indicator
+
+    // ===== PHASE D: DEBUG VIEW =====
+    TSharedPtr<SVerticalBox> HistogramBox;          // 16 luminance bars
+    TArray<float> HistogramBins;                    // 16 normalized bins
+    TSharedPtr<STextBlock> TextHistogramStats;
+    TSharedPtr<SCheckBox> CheckEdgeOverlay;
+    TSharedPtr<SCheckBox> CheckHistogram;
+    TSharedPtr<SVerticalBox> HullThumbBox;          // 10 state thumbnails
+    TArray<FSlateBrush> HullThumbBrushes;           // per-state albedo brushes
+    TSharedPtr<SSlider> SliderDebugGrid;
+    TSharedPtr<SSlider> SliderDebugMeshSize;
+    TSharedPtr<SSlider> SliderDebugHeight;
+    TSharedPtr<SSlider> SliderDebugOffset;
+    TSharedPtr<STextBlock> TextDebugGrid;
+    TSharedPtr<STextBlock> TextDebugMeshSize;
+    TSharedPtr<STextBlock> TextDebugHeight;
+    TSharedPtr<STextBlock> TextDebugOffset;
+    TSharedPtr<SEditableTextBox> EditDebugLowColor;
+    TSharedPtr<SEditableTextBox> EditDebugHighColor;
+    bool bEdgeOverlayVisible = false;
+    bool bHistogramVisible = false;
+    int32 EdgeGridSize = 64;
+    float EdgeThreshold = 0.18f;
+
     // ===== OUTLINE → DEPTH =====
     bool bOutlineOverlayVisible = false;
     UPROPERTY(Transient)
     TObjectPtr<class UTexture2D> OutlineDepthTexture;
+    UPROPERTY(Transient)
+    TObjectPtr<class UTexture2D> EdgeOverlayTexture;
     FSlateBrush OutlineDepthBrush;
+    FSlateBrush OnionSkinBrush;
+    FSlateBrush EdgeOverlayBrush;
     TSharedPtr<SImage> OutlinePreviewImage;
     TSharedPtr<SCheckBox> CheckOutlineOverlay;
     TSharedPtr<STextBlock> TextOutlineStats;
@@ -1039,6 +1156,9 @@ private:
     // ===== PARAM REFERENCE =====
     TSharedPtr<STextBlock> TextParamRefResults;
     TSharedPtr<SEditableTextBox> EditParamRefName;
+
+    // ===== PARAM BINDINGS TABLE =====
+    TSharedPtr<SEditableTextBox> EditParamAddName;
 
     // ===== SNAPSHOT / UNDO =====
     UPROPERTY(Transient)
