@@ -758,7 +758,7 @@ void UFaceParallaxDataModel::DuplicateState(EFaceAngleState SourceState, EFaceAn
 
 void UFaceParallaxDataModel::EnqueueAsyncLoadForSlot(EFaceAngleState State, FName LayerTag)
 {
-    UFaceParallaxComponent* Comp = PreviewActor ? PreviewActor->FindComponentByClass<UFaceParallaxComponent>() : nullptr;
+    UFaceParallaxComponent* Comp = PreviewActor.IsValid() ? PreviewActor->FindComponentByClass<UFaceParallaxComponent>() : nullptr;
     if (Comp && ActivePreset)
     {
         Comp->AsyncLoadSlotTextures(State, LayerTag);

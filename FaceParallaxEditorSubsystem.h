@@ -7,6 +7,8 @@
 #include "Materials/MaterialInstanceConstant.h"
 #include "FaceParallaxEditorSubsystem.generated.h"
 
+struct IConsoleCommand;
+
 UCLASS()
 class UFaceParallaxEditorSubsystem : public UEditorSubsystem
 {
@@ -52,8 +54,18 @@ public:
     UFUNCTION(Exec, Category = "Face Parallax|Editor Subsystem")
     void FaceParallaxOpenEditor();
 
+    // Keeps the editor widget instance alive for the subsystem's lifetime —
+    // without this, GC can collect it while the tab still renders (dead input).
+    UPROPERTY(Transient)
+    TObjectPtr<class UFaceParallaxEditorWidget> EditorWidgetInstance;
+
 private:
     FString ProjectContentDir() const;
     bool SaveAsset(class UObject* Asset);
+    TSharedRef<class SDockTab> SpawnEditorTab(const class FSpawnTabArgs& Args);
     FDelegateHandle ToolbarExtenderHandle;
+    bool bTabSpawnerRegistered = false;
+    // Console command registered in Initialize() so typing 'FaceParallaxOpenEditor'
+    // always dispatches — UFUNCTION(Exec) bindings can go stale after Live Coding.
+    struct IConsoleCommand* ConsoleCommand = nullptr;
 };

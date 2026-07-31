@@ -65,7 +65,7 @@ bool UFaceParallaxEditorWidget::ValidatePreset() const
 
 bool UFaceParallaxEditorWidget::ValidatePreviewActor() const
 {
-    if (!PreviewActor)
+    if (!PreviewActor.IsValid())
     {
         if (!IsTemplate() && !HasAnyFlags(RF_Transient) && GEditor && !bSuppressValidation)
         {
@@ -97,7 +97,7 @@ AFaceParallaxPreviewActor* UFaceParallaxEditorWidget::GetPreviewActor() const
 void UFaceParallaxEditorWidget::PostInitProperties()
 {
     Super::PostInitProperties();
-    if (PreviewActor && !IsValid(PreviewActor))
+    if (!PreviewActor.IsValid())
         PreviewActor = nullptr;
     if (DataModel && !IsValid(DataModel))
         DataModel = nullptr;
@@ -123,22 +123,28 @@ UFaceParallaxDataModel* UFaceParallaxEditorWidget::GetDataModel() const
 
 void UFaceParallaxEditorWidget::ClearStaleTargets()
 {
+    bool bWasStale = !PreviewActor.IsValid();
     PreviewActor = nullptr;
     DataModel = nullptr;
-    UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
-    if (World)
+    // Only re-discover when the previous target was actually stale — never clobber a valid selection
+    if (bWasStale)
     {
-        for (TActorIterator<AFaceParallaxPreviewActor> It(World); It; ++It)
+        UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+        if (World)
         {
-            if (*It)
+            for (TActorIterator<AFaceParallaxPreviewActor> It(World); It; ++It)
             {
-                SetPreviewActor(*It);
-                break;
+                if (*It)
+                {
+                    SetPreviewActor(*It);
+                    break;
+                }
             }
         }
     }
+    RefreshActorSelector();
     if (TextStatus.IsValid())
-        TextStatus->SetText(FText::FromString(TEXT("Cleared stale targets, re-discovered preview actor")));
+        TextStatus->SetText(FText::FromString(TEXT("Cleared stale targets")));
 }
 
 // ====================================================================
@@ -150,6 +156,25 @@ void UFaceParallaxEditorWidget::ApplyPresetToPreview()
     if (!ValidatePreviewActor() || !ValidatePreset()) return;
     PreviewActor->ApplyPreset(ActivePreset);
     ActiveViewState = EFaceAngleState::Front;
+}
+
+int32 UFaceParallaxEditorWidget::SpawnLayerQuadsOnPreview()
+{
+    if (!ValidatePreviewActor()) return 0;
+    if (!PreviewActor->FaceParallax)
+    {
+        if (TextStatus.IsValid())
+            TextStatus->SetText(FText::FromString(TEXT("Preview actor has no FaceParallax component")));
+        return 0;
+    }
+    const int32 Count = PreviewActor->FaceParallax->SpawnLayerQuads();
+    PreviewActor->RefreshPreview();
+    if (TextStatus.IsValid())
+    {
+        TextStatus->SetText(FText::FromString(
+            FString::Printf(TEXT("Spawned %d layer quads on preview"), Count)));
+    }
+    return Count;
 }
 
 UFaceParallaxPreset* UFaceParallaxEditorWidget::CreateNewPreset(const FString& AssetName,
@@ -270,7 +295,7 @@ void UFaceParallaxEditorWidget::SetLayerPosition(EFaceAngleState State, FName La
     T.Position = FVector2D(X, Y);
     ActivePreset->SetCanonicalTransform(State, LayerTag, T);
 
-    if (PreviewActor && PreviewActor->FaceParallax)
+    if (PreviewActor.IsValid() && PreviewActor->FaceParallax)
     {
         PreviewActor->FaceParallax->ApplyCurrentStateTextures();
     }
@@ -285,7 +310,7 @@ void UFaceParallaxEditorWidget::SetLayerScale(EFaceAngleState State, FName Layer
     T.Scale = FVector2D(FMath::Max(0.01f, X), FMath::Max(0.01f, Y));
     ActivePreset->SetCanonicalTransform(State, LayerTag, T);
 
-    if (PreviewActor && PreviewActor->FaceParallax)
+    if (PreviewActor.IsValid() && PreviewActor->FaceParallax)
     {
         PreviewActor->FaceParallax->ApplyCurrentStateTextures();
     }
@@ -300,7 +325,7 @@ void UFaceParallaxEditorWidget::SetLayerRotation(EFaceAngleState State, FName La
     T.Rotation = Degrees;
     ActivePreset->SetCanonicalTransform(State, LayerTag, T);
 
-    if (PreviewActor && PreviewActor->FaceParallax)
+    if (PreviewActor.IsValid() && PreviewActor->FaceParallax)
     {
         PreviewActor->FaceParallax->ApplyCurrentStateTextures();
     }
@@ -313,7 +338,7 @@ void UFaceParallaxEditorWidget::SetLayerTransform(EFaceAngleState State, FName L
     if (!ValidatePreset()) return;
     ActivePreset->SetCanonicalTransform(State, LayerTag, Transform);
 
-    if (PreviewActor && PreviewActor->FaceParallax)
+    if (PreviewActor.IsValid() && PreviewActor->FaceParallax)
     {
         PreviewActor->FaceParallax->ApplyCurrentStateTextures();
     }
@@ -325,7 +350,7 @@ void UFaceParallaxEditorWidget::ResetLayerTransform(EFaceAngleState State, FName
     if (!ValidatePreset()) return;
     ActivePreset->SetCanonicalTransform(State, LayerTag, FFaceArtTransform());
 
-    if (PreviewActor && PreviewActor->FaceParallax)
+    if (PreviewActor.IsValid() && PreviewActor->FaceParallax)
     {
         PreviewActor->FaceParallax->ApplyCurrentStateTextures();
     }
@@ -343,7 +368,7 @@ void UFaceParallaxEditorWidget::ApplyAutoFit(EFaceAngleState State, FName LayerT
     if (!ValidatePreset()) return;
     ActivePreset->ApplyAutoFitToSlot(State, LayerTag);
 
-    if (PreviewActor && PreviewActor->FaceParallax)
+    if (PreviewActor.IsValid() && PreviewActor->FaceParallax)
     {
         PreviewActor->FaceParallax->ApplyCurrentStateTextures();
     }
@@ -361,7 +386,7 @@ void UFaceParallaxEditorWidget::ApplyAutoFitToAllSlots()
         }
     }
 
-    if (PreviewActor && PreviewActor->FaceParallax)
+    if (PreviewActor.IsValid() && PreviewActor->FaceParallax)
     {
         PreviewActor->FaceParallax->ApplyCurrentStateTextures();
     }
@@ -373,7 +398,19 @@ void UFaceParallaxEditorWidget::SyncLayerToAllViews(EFaceAngleState State, FName
     if (!ValidatePreset()) return;
     ActivePreset->SyncCanonicalToAllViews(State, LayerTag);
 
-    if (PreviewActor && PreviewActor->FaceParallax)
+    if (PreviewActor.IsValid() && PreviewActor->FaceParallax)
+    {
+        PreviewActor->FaceParallax->ApplyCurrentStateTextures();
+    }
+}
+
+void UFaceParallaxEditorWidget::SyncTexturesLayerToAllViews(EFaceAngleState State, FName LayerTag)
+{
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Sync Textures to All Views"));
+    if (!ValidatePreset()) return;
+    ActivePreset->SyncTexturesToAllViews(State, LayerTag);
+
+    if (PreviewActor.IsValid() && PreviewActor->FaceParallax)
     {
         PreviewActor->FaceParallax->ApplyCurrentStateTextures();
     }
@@ -392,7 +429,7 @@ void UFaceParallaxEditorWidget::SyncAllLayersToAllViews()
         }
     }
 
-    if (PreviewActor && PreviewActor->FaceParallax)
+    if (PreviewActor.IsValid() && PreviewActor->FaceParallax)
     {
         PreviewActor->FaceParallax->ApplyCurrentStateTextures();
     }
@@ -424,7 +461,7 @@ void UFaceParallaxEditorWidget::SetViewOverride(EFaceAngleState State, FName Lay
     if (!ValidatePreset()) return;
     ActivePreset->SetViewOverride(State, LayerTag, OverrideView, Override);
 
-    if (PreviewActor && PreviewActor->FaceParallax)
+    if (PreviewActor.IsValid() && PreviewActor->FaceParallax)
     {
         PreviewActor->FaceParallax->ApplyCurrentStateTextures();
     }
@@ -437,7 +474,7 @@ void UFaceParallaxEditorWidget::ClearViewOverride(EFaceAngleState State, FName L
     if (!ValidatePreset()) return;
     ActivePreset->ClearViewOverride(State, LayerTag, OverrideView);
 
-    if (PreviewActor && PreviewActor->FaceParallax)
+    if (PreviewActor.IsValid() && PreviewActor->FaceParallax)
     {
         PreviewActor->FaceParallax->ApplyCurrentStateTextures();
     }
@@ -449,7 +486,7 @@ void UFaceParallaxEditorWidget::ClearAllOverridesForSlot(EFaceAngleState State, 
     if (!ValidatePreset()) return;
     ActivePreset->ClearAllOverridesForSlot(State, LayerTag);
 
-    if (PreviewActor && PreviewActor->FaceParallax)
+    if (PreviewActor.IsValid() && PreviewActor->FaceParallax)
     {
         PreviewActor->FaceParallax->ApplyCurrentStateTextures();
     }
@@ -461,7 +498,7 @@ void UFaceParallaxEditorWidget::ClearAllOverrides()
     if (!ValidatePreset()) return;
     ActivePreset->ClearAllOverrides();
 
-    if (PreviewActor && PreviewActor->FaceParallax)
+    if (PreviewActor.IsValid() && PreviewActor->FaceParallax)
     {
         PreviewActor->FaceParallax->ApplyCurrentStateTextures();
     }
@@ -496,7 +533,7 @@ void UFaceParallaxEditorWidget::SetSlotTextures(EFaceAngleState State, FName Lay
     if (!ValidatePreset()) return;
     ActivePreset->SetTexturesForSlot(State, LayerTag, Textures);
 
-    if (PreviewActor && PreviewActor->FaceParallax)
+    if (PreviewActor.IsValid() && PreviewActor->FaceParallax)
     {
         PreviewActor->FaceParallax->ApplyCurrentStateTextures();
     }
@@ -505,7 +542,7 @@ void UFaceParallaxEditorWidget::SetSlotTextures(EFaceAngleState State, FName Lay
 FVector2D UFaceParallaxEditorWidget::GetSlotSourceSize(EFaceAngleState State,
     FName LayerTag) const
 {
-    if (!ValidatePreset() || !PreviewActor) return FVector2D::ZeroVector;
+    if (!ValidatePreset() || !PreviewActor.IsValid()) return FVector2D::ZeroVector;
     return PreviewActor->GetPartSourceSize(State, LayerTag);
 }
 
@@ -1370,7 +1407,7 @@ void UFaceParallaxEditorWidget::SetParamBindings(EFaceAngleState State, FName La
     if (!ValidatePreset()) return;
     ActivePreset->SetParamBindings(State, LayerTag, Bindings);
 
-    if (PreviewActor && PreviewActor->FaceParallax)
+    if (PreviewActor.IsValid() && PreviewActor->FaceParallax)
     {
         PreviewActor->FaceParallax->ApplyCurrentStateTextures();
     }
@@ -1388,7 +1425,7 @@ void UFaceParallaxEditorWidget::SetAltTextures(EFaceAngleState State, FName Laye
     if (!ValidatePreset()) return;
     ActivePreset->SetAltTextures(State, LayerTag, Textures);
 
-    if (PreviewActor && PreviewActor->FaceParallax)
+    if (PreviewActor.IsValid() && PreviewActor->FaceParallax)
     {
         PreviewActor->FaceParallax->ApplyCurrentStateTextures();
     }
@@ -1695,7 +1732,7 @@ void UFaceParallaxEditorWidget::ClearState(EFaceAngleState State)
     if (!ValidatePreset()) return;
     ActivePreset->ClearState(State);
 
-    if (PreviewActor && PreviewActor->FaceParallax)
+    if (PreviewActor.IsValid() && PreviewActor->FaceParallax)
     {
         PreviewActor->FaceParallax->ApplyCurrentStateTextures();
     }
@@ -1707,7 +1744,7 @@ void UFaceParallaxEditorWidget::ClearAll()
     if (!ValidatePreset()) return;
     ActivePreset->ClearAll();
 
-    if (PreviewActor && PreviewActor->FaceParallax)
+    if (PreviewActor.IsValid() && PreviewActor->FaceParallax)
     {
         PreviewActor->FaceParallax->ApplyCurrentStateTextures();
     }
@@ -1800,7 +1837,7 @@ void UFaceParallaxEditorWidget::BatchSetTextures(EFaceAngleState State, FName La
     if (!ValidatePreset()) return;
     ActivePreset->BatchSetTextures(State, LayerTag, Textures);
 
-    if (PreviewActor && PreviewActor->FaceParallax)
+    if (PreviewActor.IsValid() && PreviewActor->FaceParallax)
     {
         PreviewActor->FaceParallax->ApplyCurrentStateTextures();
     }
@@ -1812,7 +1849,7 @@ void UFaceParallaxEditorWidget::ClearAllTextures()
     if (!ValidatePreset()) return;
     ActivePreset->ClearAllTextures();
 
-    if (PreviewActor && PreviewActor->FaceParallax)
+    if (PreviewActor.IsValid() && PreviewActor->FaceParallax)
     {
         PreviewActor->FaceParallax->ApplyCurrentStateTextures();
     }
@@ -1824,7 +1861,7 @@ void UFaceParallaxEditorWidget::DuplicateState(EFaceAngleState SourceState, EFac
     if (!ValidatePreset()) return;
     ActivePreset->DuplicateState(SourceState, DestState);
 
-    if (PreviewActor && PreviewActor->FaceParallax)
+    if (PreviewActor.IsValid() && PreviewActor->FaceParallax)
     {
         PreviewActor->FaceParallax->ApplyCurrentStateTextures();
     }
@@ -2159,7 +2196,12 @@ static TSharedRef<SButton> MakeBtn(const FString& T, TFunction<void()>&& Fn,
     const FLinearColor& BG = FLinearColor(0.15f,0.15f,0.15f))
 {
     return SNew(SButton)
-        .OnClicked_Lambda([Fn = MoveTemp(Fn)](){ Fn(); return FReply::Handled(); })
+        .OnClicked_Lambda([T, Fn = MoveTemp(Fn)]()
+        {
+            UE_LOG(LogTemp, Warning, TEXT("[FaceParallaxWidget] CLICK '%s'"), *T);
+            Fn();
+            return FReply::Handled();
+        })
         .ButtonColorAndOpacity(BG)
         .Content()
         [SNew(STextBlock)
@@ -2190,6 +2232,7 @@ static auto MakeSectionLbl(const FString& T, int32 S) -> TSharedRef<STextBlock>
 
 TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
 {
+    UE_LOG(LogTemp, Log, TEXT("[FaceParallaxWidget] REBUILD DOCKED-TAB v3 (marker 0xV3)"));
     if (IsTemplate())
     {
         return SNew(SBox).HAlign(HAlign_Fill).VAlign(VAlign_Fill)
@@ -2197,6 +2240,42 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
     }
 
     UFaceParallaxComponent* Comp = GetParallaxComponent();
+
+    // Only auto-discover a preview actor when none is selected — never override the user's choice.
+    // (Handles BP re-instancing clearing the reference without clobbering deliberate selections.)
+    if (!PreviewActor.IsValid())
+    {
+        UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+        if (World)
+        {
+            for (TActorIterator<AFaceParallaxPreviewActor> It(World); It; ++It)
+            {
+                if (*It)
+                {
+                    SetPreviewActor(*It);
+                    break;
+                }
+            }
+        }
+    }
+    // Auto-assign ActivePreset from the selected preview actor's component
+    if (PreviewActor.IsValid() && PreviewActor->FaceParallax && PreviewActor->FaceParallax->ActivePreset)
+    {
+        ActivePreset = PreviewActor->FaceParallax->ActivePreset;
+        if (DataModel) DataModel->ActivePreset = ActivePreset;
+    }
+    // Fallback: use the default preset so the editor works even without an actor
+    if (!ActivePreset)
+    {
+        UFaceParallaxPreset* DefaultPreset = LoadObject<UFaceParallaxPreset>(nullptr,
+            TEXT("/Game/FaceParallax/Presets/DA_FaceParallax_Default.DA_FaceParallax_Default"));
+        if (DefaultPreset)
+        {
+            ActivePreset = DefaultPreset;
+            if (DataModel) DataModel->ActivePreset = DefaultPreset;
+        }
+    }
+
     TArray<FName> LNames;
     if (Comp)
     {
@@ -2206,33 +2285,14 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
             if (Tag.IsValid()) LNames.Add(Tag);
         }
     }
+    if (LNames.Num() == 0 && ActivePreset)
+    {
+        LNames = ActivePreset->GetAllLayerTags(ActiveViewState);
+    }
     if (LNames.Num() == 0)
         LNames = { FName("Eyes"), FName("Brows"), FName("Mouth"), FName("Hair") };
     if (!SelectedLayerName.IsValid() && LNames.Num() > 0) SelectedLayerName = LNames[0];
     LayerNames = LNames;
-
-    // Always re-discover preview actor — handles BP re-instancing clearing the reference
-    {
-        UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
-        if (World)
-        {
-            for (TActorIterator<AFaceParallaxPreviewActor> It(World); It; ++It)
-            {
-                if (*It != PreviewActor)
-                {
-                    PreviewActor = *It;
-                    if (DataModel) DataModel->PreviewActor = *It;
-                }
-                break;
-            }
-        }
-    }
-    // Auto-assign ActivePreset from discovered preview actor's component
-    if (PreviewActor && PreviewActor->FaceParallax && PreviewActor->FaceParallax->ActivePreset)
-    {
-        ActivePreset = PreviewActor->FaceParallax->ActivePreset;
-        if (DataModel) DataModel->ActivePreset = ActivePreset;
-    }
 
     // ========================
     // LAMBDAS (RebuildWidget-only helpers)
@@ -2360,6 +2420,35 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
                 if (TextStatus.IsValid())
                     TextStatus->SetText(FText::FromString(TEXT("No PreviewActor found in level")));
             }, FLinearColor(0.5f,0.8f,1.0f))];
+        TB->AddSlot().Padding(FMargin(2)).AutoWidth()
+            [MakeBtn(TEXT("Spawn Quads"), [this]()
+            {
+                SpawnLayerQuadsOnPreview();
+            }, FLinearColor(1.0f,0.8f,0.4f))];
+        TB->AddSlot().Padding(FMargin(2)).AutoWidth()
+            [SNew(SBox).WidthOverride(170)
+                [SAssignNew(ActorSelector, SComboBox<TWeakObjectPtr<AFaceParallaxPreviewActor>>)
+                    .OptionsSource(&ActorOptions)
+                    .OnGenerateWidget_Lambda([](TWeakObjectPtr<AFaceParallaxPreviewActor> Item)
+                    {
+                        FString Label = Item.IsValid() ? Item->GetActorLabel() : TEXT("None");
+                        return SNew(STextBlock).Text(FText::FromString(Label));
+                    })
+                    .OnSelectionChanged_Lambda([this](TWeakObjectPtr<AFaceParallaxPreviewActor> Item, ESelectInfo::Type)
+                    {
+                        if (Item.IsValid())
+                        {
+                            SetPreviewActor(Item.Get());
+                            if (TextStatus.IsValid())
+                                TextStatus->SetText(FText::FromString(
+                                    FString::Printf(TEXT("Selected %s"), *Item->GetActorLabel())));
+                        }
+                    })
+                    [SNew(STextBlock).Text_Lambda([this]()
+                    {
+                        FString Label = PreviewActor.IsValid() ? PreviewActor->GetActorLabel() : TEXT("None");
+                        return FText::FromString(Label);
+                    })]]];
         TB->AddSlot().Padding(FMargin(2)).AutoWidth()
             [MakeBtn(TEXT("+DataModel"), [this]()
             {
@@ -2575,6 +2664,13 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
                 [MakeBtn(TEXT("Reset"), [this](){ if (SelectedLayerName.IsValid()) { ResetLayerTransform(ActiveViewState, SelectedLayerName); RefreshUI(); } })];
             ActRow->AddSlot().Padding(FMargin(2)).AutoWidth()
                 [MakeBtn(TEXT("Sync->All"), [this](){ SyncLayerToAllViews(ActiveViewState, SelectedLayerName); RefreshUI(); })];
+            ActRow->AddSlot().Padding(FMargin(2)).AutoWidth()
+                [MakeBtn(TEXT("Sync Textures->All"), [this]()
+                {
+                    if (!SelectedLayerName.IsValid()) return;
+                    SyncTexturesLayerToAllViews(ActiveViewState, SelectedLayerName);
+                    RefreshUI();
+                })];
             ActRow->AddSlot().Padding(FMargin(2)).AutoWidth()
                 [SNew(SCheckBox)
                     .IsChecked(bAutoFitOnAssign ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
@@ -3092,6 +3188,7 @@ void UFaceParallaxEditorWidget::RefreshUI()
     if (bIsRefreshing) return;
     bIsRefreshing = true;
 
+    RefreshActorSelector();
     RefreshLayerList();
     RefreshTextureThumbs();
     RefreshTimeline();
@@ -3124,6 +3221,30 @@ void UFaceParallaxEditorWidget::RefreshUI()
     RunDiagnostics();
 
     bIsRefreshing = false;
+}
+
+void UFaceParallaxEditorWidget::RefreshActorSelector()
+{
+    ActorOptions.Reset();
+    ActorOptions.Add(TWeakObjectPtr<AFaceParallaxPreviewActor>());
+
+    UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+    if (World)
+    {
+        for (TActorIterator<AFaceParallaxPreviewActor> It(World); It; ++It)
+        {
+            if (*It)
+            {
+                ActorOptions.Add(*It);
+            }
+        }
+    }
+
+    if (ActorSelector.IsValid())
+    {
+        ActorSelector->RefreshOptions();
+        ActorSelector->SetSelectedItem(PreviewActor);
+    }
 }
 
 void UFaceParallaxEditorWidget::RefreshConfigCheckboxes()
@@ -4209,7 +4330,7 @@ void UFaceParallaxEditorWidget::RunDiagnostics()
 
 void UFaceParallaxEditorWidget::ValidateMaterialParameters()
 {
-    if (!DiagnosticLog.IsValid() || !PreviewActor || !PreviewActor->PreviewMesh) return;
+    if (!DiagnosticLog.IsValid() || !PreviewActor.IsValid() || !PreviewActor->PreviewMesh) return;
 
     UMaterialInterface* Mat = PreviewActor->PreviewMesh->GetMaterial(0);
     if (!Mat)

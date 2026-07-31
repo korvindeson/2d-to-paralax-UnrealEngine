@@ -118,8 +118,8 @@ public:
 
 private:
     float OrbitYaw = 0.0f;
-    float OrbitPitch = -15.0f;
-    float OrbitDistance = 180.0f;
+    float OrbitPitch = -10.0f;
+    float OrbitDistance = 220.0f;
     float PreviewFOV = 30.0f;
     bool bAutoRotate = false;
 

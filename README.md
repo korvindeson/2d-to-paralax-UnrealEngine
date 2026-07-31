@@ -252,6 +252,7 @@ Preset → {
 | `ComputeAutoFitTransform(Textures)` | Computes uniform scale to fit texture to `CanvasSize` |
 | `ApplyAutoFitToSlot(State, LayerTag)` | Auto-fits a slot's canonical transform |
 | `SyncCanonicalToAllViews(State, LayerTag)` | Copies canonical transform to all views |
+| `SyncTexturesToAllViews(State, LayerTag)` | Copies slot textures (incl. alt textures) to all views |
 | `HasState` / `HasSlot` / `GetAssignedStates` | Query methods |
 | `ClearState` / `ClearAll` | Removal methods |
 | `GetAllLayerTags(State)` | List all layer tags for a state |
@@ -432,47 +433,51 @@ UnrealEditor-Cmd.exe "D:\Projects\YourProject\YourProject.uproject" -run=pythons
 | Asset | Path | Description |
 |---|---|---|
 | `M_FaceParallax_Master` | `/Game/FaceParallax/Materials/` | Master material with all parameters wired (crossfade, parallax, expression blend, depth debug, nested art pivot) |
-| `MI_FaceParallax_{LayerTag}` | `/Game/FaceParallax/Materials/` | One material instance per layer, parented to master |
+| `MI_FaceParallax_{LayerTag}` | `/Game/FaceParallax/Materials/Instances/` | One material instance per layer, parented to master |
 | `DA_FaceParallax_Default` | `/Game/FaceParallax/Presets/` | Preset DataAsset with ViewAssignments for all 10 states × all layer tags |
-| `BP_FaceParallaxCharacter` | `/Game/FaceParallax/Blueprints/` | Character BP with FaceParallaxComponent attached, pre-configured HeadBoneName and LayerDefinitions |
+| `BP_FaceParallaxCharacter` | `/Game/Characters/` | Character BP with FaceParallaxComponent attached, pre-configured HeadBoneName, LayerDefinitions, and skeletal mesh |
+| `WBP_FaceParallaxEditor` | `/Game/FaceParallax/Blueprints/` | Editor widget BP derived from `UFaceParallaxEditorWidget` |
+| `RT_FaceParallaxPreview` | `/Game/FaceParallax/Textures/` | 1024×1024 render target for the preview actor's scene capture |
+| Preview actor | Editor world (spawned) | `AFaceParallaxPreviewActor` with skeletal mesh, preset, and face-layer quads applied |
 
-### Step 3: Set Up the Skeletal Mesh
+**What deploy.py also does:**
 
-1. Open `BP_FaceParallaxCharacter` (or your own character BP)
-2. Assign a skeletal mesh to the SkeletalMeshComponent
-3. Ensure the head bone matches `HeadBoneName` (default: "head")
+- Assigns the skeletal mesh (config `CHARACTER_MESH_PATH` at the top of `deploy.py` — point it at your own mesh to skip manual assignment; falls back to the Mannequin) and sets the mesh's relative offset to `(0,0,-90)` so the mannequin stands with its feet on the ground instead of hovering at the capsule center
+- Auto-adds the `FaceParallaxComponent` to the character BP if missing (via `SubobjectDataSubsystem`; the component's C++ defaults `HeadBoneName="head"`, `bAutoSpawnLayerQuads=true` apply automatically — assign `ActivePreset` in the BP or at runtime)
+- Repairs an existing character BP in place (re-checks mesh, offset, and component; never deletes the asset)
+- Gives the master material white albedo fallbacks so face-layer quads stay visible in the preview even before any art is imported (unassigned layers sample UE's built-in 1x1 white `DefaultTexture` and render as white patches instead of invisible black)
+- Spawns the face-layer quads on the preview actor (plane meshes attached to the head bone, tagged with each layer tag, material instance per layer applied, Front-state nested art included)
 
-### Step 4: Place Face-Layer Quads
+### Step 3: Spawn Face-Layer Quads (Automated)
 
-For each art layer (e.g., Eyes, Hair, Skin), add a plane/quad mesh to the skeleton:
+Face-layer quads are plane meshes tagged with the layer tag (e.g. `Eyes`, `Brows`, `Mouth`, `Hair`) that the component discovers and drives via dynamic material instances.
 
-1. In your character BP, add **Static Mesh Components** or **Skeletal Mesh Components** as children of the head bone
-2. Position each quad at the appropriate location (face surface for skin, top of head for hair, etc.)
-3. Scale each quad to match the art texture aspect ratio
-4. **Tag each quad** with the layer tag name matching your `FFaceLayerDef.LayerTag` (e.g., `EyesLayer`, `HairLayer`, `SkinLayer`)
+- **Preview actor** — deploy.py spawns quads automatically; the widget's **Spawn Quads** toolbar button re-runs this at any time
+- **Character/pawn at runtime** — set `bAutoSpawnLayerQuads = true` (default) on the component: at BeginPlay it spawns quads for every `LayerDefinitions` entry that has no tagged primitive already present on the actor, then applies the active preset's textures. Hand-placed quads are never duplicated (skips tags that already have a tagged primitive)
 
-### Step 5: Assign the Master Material
+Spawn settings on the component (category `Face Parallax|Layer Quads`):
 
-1. Select each face-layer quad
-2. Assign `MI_FaceParallax_{LayerTag}` as its material
-3. The material instance is pre-wired to receive all parameters from the component
+| Property | Default | Description |
+|---|---|---|
+| `bAutoSpawnLayerQuads` | true | Auto-spawn missing quads at BeginPlay |
+| `LayerMaterialPathRoot` | `/Game/FaceParallax/Materials/Instances/MI_FaceParallax_` | Material instance path root; `LayerTag` is appended. Falls back to the master material with a warning if the instance is missing |
+| `LayerQuadWorldWidth` | 100.0 | World-space quad width; height derives from the preset `CanvasSize` aspect |
+| `LayerQuadLocalOffset` | (10,0,0) | Quad offset relative to the head bone (slightly forward of the face plane) |
 
-### Step 6: Open the Editor Widget
+Nested art elements from the Front state spawn as child quads (tag `{LayerTag}_{ElementName}`, stacked forward to avoid z-fighting).
 
-1. Create a Blueprint class derived from `UFaceParallaxEditorWidget`:
-   - Right-click in Content Browser → Blueprint Class
-   - Pick `UFaceParallaxEditorWidget` as parent class
-   - Name it (e.g., `WBP_FaceParallaxEditor`)
-2. Spawn an `AFaceParallaxPreviewActor` and wire it to the widget:
-   - In your editor utility widget or level BP, spawn the preview actor
-   - Assign it to the widget's `PreviewActor` property
-   - Create a `UTextureRenderTarget2D` and assign it via `SetRenderTarget()`
-   - Assign a `UFaceParallaxPreset` to `ActivePreset`
-3. Add the widget to your viewport (or open as Editor Utility Widget)
+### Step 4: Import and Assign Art Textures
 
-### Step 7: Import and Assign Art Textures
+With the widget open (type `FaceParallaxOpenEditor` in the console, or click the **Face Editor** toolbar button — it opens as a dockable tab in the main editor window):
 
-With the widget open:
+> **Note:** the preview camera frames the mannequin's head (where the face layers live), and unassigned layers render as white patches until you assign art textures — the character itself stays a default mannequin until you import art and assign it via the widget.
+
+**Troubleshooting the editor widget:**
+
+- **Widget target properties (`PreviewActor`, `ActivePreset`, `DataModel`) are `Transient`** — they are runtime bindings and are never serialized into the widget asset. This prevents `Illegal TEXT reference ... Import failed` warnings and the PreviewActor "resets to none" issue.
+- **There is exactly one preview actor** — `deploy.py` destroys stale preview actors before spawning the current one.
+- **The widget must open as a docked tab** inside the main editor window. If you get a separate floating window, the old C++ module is still loaded (Live Coding patches do not survive editor restarts — run `deploy.py` again in the new session). Verify the build with the log markers: `[FaceParallax] EditorSubsystem initialized — DOCKED-TAB BUILD v3` and `[FaceParallax] OpenEditorWidget — invoking nomad tab 'FaceParallaxEditor'`. Every button click logs `[FaceParallaxWidget] CLICK '...'`, and every widget rebuild logs `[FaceParallaxWidget] REBUILD DOCKED-TAB v3`.
+- **`FaceParallaxOpenEditor` is a registered console command** (not just a `UFUNCTION(Exec)`) — the subsystem registers it with `IConsoleManager` at initialization, so it dispatches even if Live Coding has left the exec binding stale. If typing it still does nothing, restart the editor and run `deploy.py` again — the command is only registered by the freshly built module.
 
 1. **Select a View State** — click one of the 10 state buttons (Front, 3/4R, ProR, etc.)
 2. **Select a Layer** — click a layer name in the Layers panel
@@ -484,9 +489,9 @@ With the widget open:
 
 Alternatively, use the **Import Art...** button to batch-import texture files from disk (opens a file dialog for selecting PNG/TGA/EXR files).
 
-### Step 8: Configure Each View State
+### Step 5: Configure Each View State
 
-Repeat Step 7 for all 10 view states. The widget's **Status** panel shows which states/layers are still missing textures. The **Diagnostic Log** at the bottom inlines validation results.
+Repeat Step 4 for all 10 view states. The widget's **Status** panel shows which states/layers are still missing textures. The **Diagnostic Log** at the bottom inlines validation results.
 
 **Pro tips:**
 - Use **Auto-Fit** to auto-scale textures to the canvas size
@@ -494,14 +499,14 @@ Repeat Step 7 for all 10 view states. The widget's **Status** panel shows which 
 - Use **Duplicate State** to copy an entire state's assignments
 - Use **Snapshot/Undo** for safe experimentation — all edits are transaction-backed
 
-### Step 9: Configure Per-Layer Settings
+### Step 6: Configure Per-Layer Settings
 
 In the component's `LayerDefinitions` array, adjust per-layer:
 - `DepthScale` — parallax movement amount
 - `DepthMapIntensity` — depth effect strength
 - `bInvertParallax` — for background layers
 
-### Step 10: Save and Use the Preset
+### Step 7: Save and Use the Preset
 
 1. Click **Save Preset** in the widget to persist the preset data asset
 2. Assign the preset to your runtime character's `FaceParallaxComponent.ActivePreset`
@@ -522,6 +527,10 @@ In the component's `LayerDefinitions` array, adjust per-layer:
 | Property | Default | Category |
 |---|---|---|
 | `HeadBoneName` | "head" | Skeletal Mesh |
+| `bAutoSpawnLayerQuads` | true | Layer Quads |
+| `LayerMaterialPathRoot` | "/Game/FaceParallax/Materials/Instances/MI_FaceParallax_" | Layer Quads |
+| `LayerQuadWorldWidth` | 100.0 | Layer Quads |
+| `LayerQuadLocalOffset` | (10,0,0) | Layer Quads |
 | `TopViewPitchThreshold` | 60.0 | View Angles |
 | `BottomViewPitchThreshold` | -60.0 | View Angles |
 | `HalfZoneWidth` | 22.5 | View Angles |

@@ -187,6 +187,43 @@ void UFaceParallaxPreset::SyncCanonicalToAllViews(EFaceAngleState State, FName L
     }
 }
 
+void UFaceParallaxPreset::SyncTexturesToAllViews(EFaceAngleState State, FName LayerTag)
+{
+    if (LayerTag.IsNone()) return;
+
+    const FFaceViewStateLayerSet* SourceSet = ViewAssignments.Find(State);
+    if (!SourceSet)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("SyncTexturesToAllViews: source state %d not found"), (int32)State);
+        return;
+    }
+    const FFaceArtSlot* SourceSlot = SourceSet->Layers.Find(LayerTag);
+    if (!SourceSlot)
+    {
+        UE_LOG(LogTemp, Warning, TEXT("SyncTexturesToAllViews: layer '%s' not found for state %d"), *LayerTag.ToString(), (int32)State);
+        return;
+    }
+
+    FFaceTextureSet SourceTextures = SourceSlot->Textures;
+    FFaceTextureSet SourceAltTextures = SourceSlot->AltTextures;
+
+    for (auto& StatePair : ViewAssignments)
+    {
+        if (StatePair.Key == State) continue;
+
+        FFaceArtSlot* Slot = StatePair.Value.Layers.Find(LayerTag);
+        if (!Slot) continue;
+
+        Slot->Textures = SourceTextures;
+        Slot->Textures.CaptureSourceSize();
+        Slot->Textures.SyncSoftRefs();
+        Slot->AltTextures = SourceAltTextures;
+        Slot->AltTextures.SyncSoftRefs();
+    }
+
+    MarkPackageDirty();
+}
+
 bool UFaceParallaxPreset::HasState(EFaceAngleState State) const
 {
     return ViewAssignments.Contains(State);

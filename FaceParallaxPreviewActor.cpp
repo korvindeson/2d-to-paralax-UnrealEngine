@@ -118,8 +118,8 @@ void AFaceParallaxPreviewActor::SetPreviewFOV(float FOV)
 void AFaceParallaxPreviewActor::ResetCamera()
 {
     OrbitYaw = 0.0f;
-    OrbitPitch = -15.0f;
-    OrbitDistance = 180.0f;
+    OrbitPitch = -10.0f;
+    OrbitDistance = 220.0f;
     PreviewFOV = 30.0f;
     MarkOrbitDirty();
 }
@@ -131,8 +131,20 @@ void AFaceParallaxPreviewActor::UpdateCaptureTransform()
     FRotator OrbitRotation(OrbitPitch, OrbitYaw, 0.0f);
     FVector OrbitDir = OrbitRotation.Vector();
 
-    FVector CaptureLocation = FVector::ZeroVector - OrbitDir * OrbitDistance;
-    FRotator CaptureRotation = UKismetMathLibrary::FindLookAtRotation(CaptureLocation, FVector::ZeroVector);
+    // Frame the head, not the actor origin — the mannequin root bone sits at the
+    // feet, so orbiting the origin puts the legs in the middle of the preview.
+    FVector Target = GetActorLocation() + FVector(0.0f, 0.0f, 160.0f);
+    if (PreviewMesh)
+    {
+        FVector HeadLoc = PreviewMesh->GetSocketLocation(TEXT("head"));
+        if (!HeadLoc.IsZero())
+        {
+            Target = HeadLoc;
+        }
+    }
+
+    FVector CaptureLocation = Target - OrbitDir * OrbitDistance;
+    FRotator CaptureRotation = UKismetMathLibrary::FindLookAtRotation(CaptureLocation, Target);
 
     SceneCapture->SetWorldLocation(CaptureLocation);
     SceneCapture->SetWorldRotation(CaptureRotation);

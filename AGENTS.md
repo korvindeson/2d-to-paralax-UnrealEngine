@@ -48,6 +48,7 @@
 | **Slate `RebuildWidget()` UI** — compiles but never rendered/clicked in editor | Button/slider UFUNCTION bindings, preview image, layout are untested at runtime |
 | **`deploy.py` asset creation** — Python logic never run by tests | Material/instance/BP/preset creation, module registration, toolbar registration may regress |
 | **Runtime `TickComponent`** — requires UE session | Crossfades, parallax offsets, material param pushes, jiggle physics, idle animation untested |
+| **`SpawnLayerQuads`/`RemoveSpawnedQuads`/auto-spawn** — compiles, headless deploy invokes the spawn path once, but quad placement/attach/material resolution verified only via log asserts | Editor-visible quad positioning, nested quad stacking, BeginPlay auto-spawn untested at runtime |
 | **Crossfade animation timings** — no timing assertions | Fade curve precision, sync, or clipping could regress |
 | **`FaceParallaxEditorSubsystem` asset creation** — C++ compiled but never called in test | Master material, MI, preset, BP creation, toolbar registration path untested at runtime |
 | **`UFaceParallaxDataModel`** — compiles but never instantiated in test | Preset mutation, delegate broadcast, async load enqueue untested |

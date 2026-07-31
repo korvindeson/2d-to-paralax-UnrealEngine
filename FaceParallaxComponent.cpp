@@ -7,10 +7,13 @@
 #include "Kismet/GameplayStatics.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Materials/MaterialInstanceDynamic.h"
+#include "Materials/MaterialInterface.h"
 #include "Materials/MaterialParameterCollection.h"
 #include "Materials/MaterialParameterCollectionInstance.h"
 #include "Components/PrimitiveComponent.h"
 #include "Components/SceneCaptureComponent2D.h"
+#include "Components/StaticMeshComponent.h"
+#include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "Camera/CameraActor.h"
 #include "Engine/AssetManager.h"
@@ -84,6 +87,11 @@ void UFaceParallaxComponent::BeginPlay()
 
     InitializeMaterials();
     LayerParallaxOffsets.SetNum(LayerDefinitions.Num());
+
+    if (bAutoSpawnLayerQuads && !bFoundTaggedPrimitives && OwnerMesh)
+    {
+        SpawnLayerQuads();
+    }
 }
 
 void UFaceParallaxComponent::InitializeMaterials()
@@ -165,6 +173,227 @@ void UFaceParallaxComponent::InitializeMaterials()
     if (TotalTagged == 0 && bUseMaterialDrivenDepth)
     {
         LogWarning("No primitive components found with any LayerTag. Depth map material parameters will not be driven.");
+    }
+    bFoundTaggedPrimitives = (TotalTagged > 0);
+}
+
+UStaticMeshComponent* UFaceParallaxComponent::SpawnQuadForTag(FName Tag, FVector2D QuadSize, float RotationDegrees)
+{
+    AActor* Owner = GetOwner();
+    if (!Owner) return nullptr;
+
+    UStaticMesh* PlaneMesh = LoadObject<UStaticMesh>(nullptr, TEXT("/Engine/BasicShapes/Plane.Plane"));
+    if (!PlaneMesh)
+    {
+        LogWarning(FString::Printf(TEXT("SpawnQuadForTag: Could not load /Engine/BasicShapes/Plane. Quad '%s' will be invisible."), *Tag.ToString()));
+    }
+
+    UStaticMeshComponent* Quad = NewObject<UStaticMeshComponent>(
+        Owner,
+        MakeUniqueObjectName(Owner, UStaticMeshComponent::StaticClass(),
+            *FString::Printf(TEXT("FaceQuad_%s"), *Tag.ToString())));
+
+    if (PlaneMesh) Quad->SetStaticMesh(PlaneMesh);
+    Quad->ComponentTags.AddUnique(Tag);
+    Quad->SetMobility(EComponentMobility::Movable);
+    Quad->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+    Quad->SetCastShadow(false);
+    Quad->bCastStaticShadow = false;
+    Quad->SetVisibility(true);
+    Quad->SetHiddenInGame(false);
+    Quad->RegisterComponent();
+
+    bool bAttachedToBone = false;
+    if (OwnerMesh)
+    {
+        bAttachedToBone = Quad->AttachToComponent(OwnerMesh, FAttachmentTransformRules::SnapToTargetNotIncludingScale, HeadBoneName);
+        if (!bAttachedToBone)
+        {
+            LogWarning(FString::Printf(TEXT("SpawnQuadForTag: Bone '%s' not found on skeletal mesh — attaching to mesh root."), *HeadBoneName.ToString()));
+            Quad->AttachToComponent(OwnerMesh, FAttachmentTransformRules::SnapToTargetNotIncludingScale);
+        }
+        Quad->SetRelativeLocation(LayerQuadLocalOffset);
+    }
+    else if (USceneComponent* Root = Owner->GetRootComponent())
+    {
+        Quad->AttachToComponent(Root, FAttachmentTransformRules::SnapToTargetNotIncludingScale);
+        Quad->SetRelativeLocation(LayerQuadLocalOffset);
+    }
+    else
+    {
+        Quad->SetWorldLocation(Owner->GetActorLocation());
+    }
+
+    // /Engine/BasicShapes/Plane is a 100x100 unit quad with UVs spanning 0..1 (the canvas).
+    Quad->SetRelativeScale3D(FVector(QuadSize.X / 100.0f, QuadSize.Y / 100.0f, 1.0f));
+    Quad->SetRelativeRotation(FRotator(-90.0f, 0.0f, 0.0f)); // Plane faces +Z — rotate to face forward (+X)
+    if (!FMath::IsNearlyZero(RotationDegrees))
+    {
+        Quad->AddLocalRotation(FRotator(0.0f, 0.0f, RotationDegrees));
+    }
+
+    SpawnedLayerQuads.Add(Quad);
+    return Quad;
+}
+
+int32 UFaceParallaxComponent::SpawnLayerQuads()
+{
+    AActor* Owner = GetOwner();
+    if (!Owner)
+    {
+        LogWarning("SpawnLayerQuads: No owner actor.");
+        return 0;
+    }
+
+    OwnerMesh = Owner->FindComponentByClass<USkeletalMeshComponent>();
+
+    // The quad represents the preset canvas in UV space — match the canvas aspect.
+    FVector2D Canvas = ActivePreset ? ActivePreset->CanvasSize : FVector2D(512.0f, 512.0f);
+    if (Canvas.X <= 0.0f || Canvas.Y <= 0.0f) Canvas = FVector2D(512.0f, 512.0f);
+    const float Aspect = Canvas.Y / Canvas.X;
+
+    int32 Spawned = 0;
+
+    TArray<UPrimitiveComponent*> OwnerPrims;
+    Owner->GetComponents<UPrimitiveComponent>(OwnerPrims);
+
+    for (const FFaceLayerDef& LayerDef : LayerDefinitions)
+    {
+        FName Tag = LayerDef.LayerTag;
+        if (Tag.IsNone()) continue;
+
+        // A preset is the source of truth for which layers have art — skip
+        // layers it has no slot for (e.g. the constructor-default FaceLayer).
+        if (ActivePreset)
+        {
+            bool bHasSlot = false;
+            for (int32 S = 0; S <= (int32)EFaceAngleState::Bottom; ++S)
+            {
+                if (ActivePreset->GetAllLayerTags((EFaceAngleState)S).Contains(Tag))
+                {
+                    bHasSlot = true;
+                    break;
+                }
+            }
+            if (!bHasSlot) continue;
+        }
+
+        bool bHasTagged = false;
+        for (UPrimitiveComponent* Prim : OwnerPrims)
+        {
+            if (Prim && Prim->ComponentHasTag(Tag)) { bHasTagged = true; break; }
+        }
+        if (bHasTagged) continue;
+
+        const FVector2D QuadSize = FVector2D(LayerQuadWorldWidth, LayerQuadWorldWidth * Aspect);
+        UStaticMeshComponent* Quad = SpawnQuadForTag(Tag, QuadSize, 0.0f);
+        if (!Quad) continue;
+
+        // Layer material instance — falls back to the master material if missing.
+        UMaterialInterface* Mat = nullptr;
+        FString MiPath = LayerMaterialPathRoot + Tag.ToString();
+        if (!MiPath.Contains(TEXT(".")))
+        {
+            FString ObjectName = MiPath;
+            const int32 LastSlash = MiPath.Find(TEXT("/"), ESearchCase::IgnoreCase, ESearchDir::FromEnd);
+            if (LastSlash != INDEX_NONE) ObjectName = MiPath.RightChop(LastSlash + 1);
+            MiPath += TEXT(".") + ObjectName;
+        }
+        Mat = LoadObject<UMaterialInterface>(nullptr, *MiPath);
+        if (!Mat)
+        {
+            Mat = LoadObject<UMaterialInterface>(nullptr,
+                TEXT("/Game/FaceParallax/Materials/M_FaceParallax_Master.M_FaceParallax_Master"));
+            if (Mat)
+            {
+                LogWarning(FString::Printf(TEXT("SpawnLayerQuads: Material instance for layer '%s' not found at '%s' — using master material."),
+                    *Tag.ToString(), *MiPath));
+            }
+        }
+        if (Mat) Quad->SetMaterial(0, Mat);
+        ++Spawned;
+
+        // Front-state nested elements for this layer (tagged LayerTag_ElementName, recursive).
+        if (ActivePreset)
+        {
+            const FFaceArtSlot& Slot = ActivePreset->GetSlot(EFaceAngleState::Front, Tag);
+            int32 DepthIndex = 0;
+            for (const FFaceNestedArt& Element : Slot.NestedElements)
+            {
+                Spawned += SpawnNestedQuadRecursive(Tag, Element, QuadSize, DepthIndex);
+                ++DepthIndex;
+            }
+        }
+    }
+
+    if (Spawned > 0)
+    {
+        InitializeMaterials();
+        if (ActivePreset)
+        {
+            ApplyCurrentStateTextures();
+        }
+    }
+
+    return Spawned;
+}
+
+int32 UFaceParallaxComponent::SpawnNestedQuadRecursive(FName LayerTag, const FFaceNestedArt& Element,
+    FVector2D ParentQuadSize, int32& DepthIndex)
+{
+    int32 Spawned = 0;
+
+    AActor* Owner = GetOwner();
+    if (!Owner || Element.ElementName.IsNone()) return 0;
+
+    FName ElementTag = FName(*(LayerTag.ToString() + TEXT("_") + Element.ElementName.ToString()));
+
+    bool bHasTagged = false;
+    TArray<UPrimitiveComponent*> OwnerPrims;
+    Owner->GetComponents<UPrimitiveComponent>(OwnerPrims);
+    for (UPrimitiveComponent* Prim : OwnerPrims)
+    {
+        if (Prim && Prim->ComponentHasTag(ElementTag)) { bHasTagged = true; break; }
+    }
+
+    if (!bHasTagged)
+    {
+        UStaticMeshComponent* Quad = SpawnQuadForTag(ElementTag, ParentQuadSize, Element.RelativeTransform.Rotation);
+        if (Quad)
+        {
+            // Stack nested quads slightly forward of the layer quad to avoid z-fighting.
+            FVector Offset = LayerQuadLocalOffset;
+            Offset.X += 2.0f + DepthIndex * 2.0f;
+            Quad->SetRelativeLocation(Offset);
+            ++Spawned;
+        }
+    }
+
+    int32 ChildIndex = 0;
+    for (const FFaceNestedArt& Child : Element.Children)
+    {
+        Spawned += SpawnNestedQuadRecursive(LayerTag, Child, ParentQuadSize, ChildIndex);
+        ++ChildIndex;
+    }
+
+    return Spawned;
+}
+
+void UFaceParallaxComponent::RemoveSpawnedQuads()
+{
+    for (UStaticMeshComponent* Quad : SpawnedLayerQuads)
+    {
+        if (Quad)
+        {
+            Quad->DestroyComponent();
+        }
+    }
+    SpawnedLayerQuads.Empty();
+    FaceMaterialsByLayer.Empty();
+    NestedMaterialsByElement.Empty();
+    if (GetOwner())
+    {
+        InitializeMaterials();
     }
 }
 
@@ -969,8 +1198,39 @@ void UFaceParallaxComponent::ApplyPreset(UFaceParallaxPreset* Preset)
     LastAppliedNestedTextures.Empty();
     if (ActivePreset)
     {
+        SyncLayerDefinitionsFromPreset();
         DetectFaceProfileFromPreset();
         ApplyCurrentStateTextures();
+    }
+}
+
+void UFaceParallaxComponent::SyncLayerDefinitionsFromPreset()
+{
+    if (!ActivePreset) return;
+
+    // Merge preset layer tags into LayerDefinitions so spawned quads (and material
+    // discovery) cover every layer the preset actually has art for.
+    TArray<FName> Tags = ActivePreset->GetAllLayerTags(EFaceAngleState::Front);
+    bool bChanged = false;
+    for (const FName& Tag : Tags)
+    {
+        if (Tag.IsNone()) continue;
+        FFaceLayerDef* Existing = LayerDefinitions.FindByPredicate(
+            [&Tag](const FFaceLayerDef& Def) { return Def.LayerTag == Tag; });
+        if (!Existing)
+        {
+            FFaceLayerDef NewDef;
+            NewDef.LayerTag = Tag;
+            NewDef.DepthScale = 1.0f;
+            NewDef.DepthMapIntensity = 1.0f;
+            NewDef.bInvertParallax = false;
+            LayerDefinitions.Add(NewDef);
+            bChanged = true;
+        }
+    }
+    if (bChanged)
+    {
+        LayerParallaxOffsets.SetNum(LayerDefinitions.Num());
     }
 }
 

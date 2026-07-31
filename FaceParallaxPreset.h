@@ -72,6 +72,9 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Face Preset|Transform")
     void SyncCanonicalToAllViews(EFaceAngleState State, FName LayerTag);
 
+    UFUNCTION(BlueprintCallable, Category = "Face Preset|Transform")
+    void SyncTexturesToAllViews(EFaceAngleState State, FName LayerTag);
+
     // --- PARAMETER BINDINGS ---
     UFUNCTION(BlueprintCallable, Category = "Face Preset|Parameter")
     TArray<FFaceParamBinding> GetParamBindings(EFaceAngleState State, FName LayerTag) const;

@@ -10,6 +10,7 @@
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/SSearchBox.h"
+#include "Widgets/Input/SComboBox.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SScrollBox.h"
@@ -35,7 +36,11 @@ public:
     virtual void BeginDestroy() override;
     virtual void PostInitProperties() override;
     // ===== TARGETS =====
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Editor|Targets",
+    // Transient: these are runtime bindings, never serialized into the widget
+    // asset. Previously (non-transient) the asset CDO baked stale references
+    // to level actors, producing "Illegal TEXT reference ... Import failed"
+    // warnings and a PreviewActor that reset to None on reload.
+    UPROPERTY(Transient, BlueprintReadWrite, Category = "Face Editor|Targets",
         meta = (DisplayName = "Preview Actor"))
     TWeakObjectPtr<AFaceParallaxPreviewActor> PreviewActor;
 
@@ -54,17 +59,21 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Targets")
     void ClearStaleTargets();
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Editor|Targets",
+    UPROPERTY(Transient, BlueprintReadWrite, Category = "Face Editor|Targets",
         meta = (DisplayName = "Active Preset"))
     TObjectPtr<UFaceParallaxPreset> ActivePreset;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Editor|Targets",
+    UPROPERTY(Transient, BlueprintReadWrite, Category = "Face Editor|Targets",
         meta = (DisplayName = "Data Model"))
     TObjectPtr<UFaceParallaxDataModel> DataModel;
 
     // ===== PRESET =====
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Preset")
     void ApplyPresetToPreview();
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Targets",
+        meta = (ToolTip="Spawn layer quads (plane meshes tagged with layer tags) on the preview actor's face parallax component."))
+    int32 SpawnLayerQuadsOnPreview();
 
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Preset")
     UFaceParallaxPreset* CreateNewPreset(const FString& AssetName, const FString& PackagePath);
@@ -151,6 +160,7 @@ public:
 
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Transform")
     void SyncLayerToAllViews(EFaceAngleState State, FName LayerTag);
+    void SyncTexturesLayerToAllViews(EFaceAngleState State, FName LayerTag);
 
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Transform")
     void SyncAllLayersToAllViews();
@@ -890,6 +900,7 @@ private:
     TSharedPtr<SVerticalBox> TimelineBox;
     TSharedPtr<SScrollBox> LayerScrollBox;
     TSharedPtr<SScrollBox> TimelineScrollBox;
+    TSharedPtr<SComboBox<TWeakObjectPtr<AFaceParallaxPreviewActor>>> ActorSelector;
     TSharedPtr<STextBlock> TextFrameCounts;
     TSharedPtr<SEditableTextBox> EditPosX;
     TSharedPtr<SEditableTextBox> EditPosY;
@@ -954,7 +965,7 @@ private:
     TSharedPtr<SEditableTextBox> EditParamRefName;
 
     // ===== SNAPSHOT / UNDO =====
-    UPROPERTY()
+    UPROPERTY(Transient)
     TObjectPtr<UFaceParallaxPreset> SnapshotPresetBackup;
 
     // ===== TAG VALIDATOR =====
@@ -970,6 +981,10 @@ private:
     void RebuildTagValidator();
     void RebuildMaterialCrossRef();
     void ApplySearchFilter(const FString& Filter);
+
+    // ===== ACTOR SELECTION =====
+    TArray<TWeakObjectPtr<AFaceParallaxPreviewActor>> ActorOptions;
+    void RefreshActorSelector();
 
     TSharedPtr<SScrollBox> PropScroll;
 };

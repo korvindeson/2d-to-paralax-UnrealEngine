@@ -7,6 +7,8 @@
 
 class UMaterialInstanceDynamic;
 class UFaceParallaxPreset;
+class UStaticMeshComponent;
+class UStaticMesh;
 
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnFaceStateChangedSignature, EFaceAngleState, NewState, EFaceAngleState, OldState);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnParamValueChangedSignature, FName, ParamName, float, OldValue, float, NewValue);
@@ -76,6 +78,30 @@ public:
     // --- SKELETAL MESH SETTINGS ---
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Skeletal Mesh")
     FName HeadBoneName = "head";
+
+    // --- LAYER QUAD AUTO-SETUP ---
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Layer Quads",
+        meta = (ToolTip="Spawn plane quads automatically at BeginPlay when no primitives with matching LayerTags are found on the owner."))
+    bool bAutoSpawnLayerQuads = true;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Layer Quads",
+        meta = (ToolTip="Asset path root used to resolve the material instance per layer (appends the LayerTag)."))
+    FString LayerMaterialPathRoot = TEXT("/Game/FaceParallax/Materials/Instances/MI_FaceParallax_");
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Layer Quads",
+        meta = (ClampMin = "1.0", ToolTip="World-space width of a spawned layer quad. Height derives from the preset CanvasSize aspect."))
+    float LayerQuadWorldWidth = 100.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Layer Quads",
+        meta = (ToolTip="Local offset applied to spawned quads relative to the head bone."))
+    FVector LayerQuadLocalOffset = FVector(10.0f, 0.0f, 0.0f);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Layer Quads",
+        meta = (ToolTip="Spawn plane quads for every layer (plus Front-state nested elements) attached to the head bone, tagged with their LayerTag. Skips layers that already have a tagged primitive."))
+    int32 SpawnLayerQuads();
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Layer Quads")
+    void RemoveSpawnedQuads();
 
     // --- VIEW ANGLE SETTINGS ---
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|View Angles")
@@ -929,6 +955,15 @@ private:
     class APlayerCameraManager* CameraManager;
 
     TMap<FName, TArray<UMaterialInstanceDynamic*>> FaceMaterialsByLayer;
+
+    UPROPERTY(Transient)
+    TArray<TObjectPtr<UStaticMeshComponent>> SpawnedLayerQuads;
+
+    bool bFoundTaggedPrimitives = false;
+
+    UStaticMeshComponent* SpawnQuadForTag(FName Tag, FVector2D QuadSize, float RotationDegrees);
+    int32 SpawnNestedQuadRecursive(FName LayerTag, const FFaceNestedArt& Element, FVector2D ParentQuadSize, int32& DepthIndex);
+    void SyncLayerDefinitionsFromPreset();
 
     int32 HysteresisFramesRemaining = 0;
     EFaceAngleState HysteresisPendingState;

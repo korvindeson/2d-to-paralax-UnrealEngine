@@ -46,22 +46,50 @@
 #include "Materials/MaterialExpressionAppendVector.h"
 #include "Widgets/SWindow.h"
 #include "Framework/Application/SlateApplication.h"
+#include "Framework/Docking/TabManager.h"
+#include "Widgets/Docking/SDockTab.h"
+#include "Widgets/Text/STextBlock.h"
 #include "Blueprint/UserWidget.h"
 #include "Materials/MaterialExpressionConstant4Vector.h"
+#include "HAL/IConsoleManager.h"
 
 #define LOCTEXT_NAMESPACE "FaceParallaxEditorSubsystem"
 
 static const FName FaceParallaxToolbarName = "FaceParallax.Toolbar";
+static const FName FaceParallaxEditorTabName = "FaceParallaxEditor";
 
 void UFaceParallaxEditorSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
     Super::Initialize(Collection);
     RegisterToolbar();
-    UE_LOG(LogTemp, Log, TEXT("[FaceParallax] EditorSubsystem initialized."));
+
+    // Register a real console command (in addition to the UFUNCTION(Exec)) so
+    // typing 'FaceParallaxOpenEditor' always dispatches. UFUNCTION(Exec) bindings
+    // can silently go stale after Live Coding patches the module layout, which
+    // produces "command accepted, nothing happens".
+    if (!ConsoleCommand)
+    {
+        ConsoleCommand = IConsoleManager::Get().RegisterConsoleCommand(
+            TEXT("FaceParallaxOpenEditor"),
+            TEXT("Open the Face Parallax editor as a docked tab in the main editor window"),
+            FConsoleCommandDelegate::CreateLambda([this]() { OpenEditorWidget(); }),
+            ECVF_Default);
+    }
+    UE_LOG(LogTemp, Log, TEXT("[FaceParallax] EditorSubsystem initialized — DOCKED-TAB BUILD v3 (marker 0xV3)"));
 }
 
 void UFaceParallaxEditorSubsystem::Deinitialize()
 {
+    if (bTabSpawnerRegistered)
+    {
+        FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(FaceParallaxEditorTabName);
+        bTabSpawnerRegistered = false;
+    }
+    if (ConsoleCommand)
+    {
+        IConsoleManager::Get().UnregisterConsoleObject(ConsoleCommand, false);
+        ConsoleCommand = nullptr;
+    }
     UnregisterToolbar();
     Super::Deinitialize();
 }
@@ -108,77 +136,104 @@ void UFaceParallaxEditorSubsystem::UnregisterToolbar()
 
 void UFaceParallaxEditorSubsystem::OpenEditorWidget()
 {
-    // Load the widget blueprint class
-    FString WidgetPath = TEXT("/Game/FaceParallax/Blueprints/WBP_FaceParallaxEditor.WBP_FaceParallaxEditor_C");
-    UClass* WidgetClass = LoadClass<UUserWidget>(nullptr, *WidgetPath);
-    if (!WidgetClass)
+    // Headless/commandlet contexts have no Slate application — TryInvokeTab
+    // would assert. In the interactive editor this is always initialized.
+    if (!FSlateApplication::IsInitialized())
     {
-        // Fallback: try without _C suffix via StaticLoadObject
-        FString AltPath = TEXT("/Game/FaceParallax/Blueprints/WBP_FaceParallaxEditor.WBP_FaceParallaxEditor");
-        UObject* WidgetAsset = StaticLoadObject(UObject::StaticClass(), nullptr, *AltPath);
-        if (WidgetAsset && WidgetAsset->IsA<UBlueprint>())
-            WidgetClass = Cast<UBlueprint>(WidgetAsset)->GeneratedClass;
+        UE_LOG(LogTemp, Warning, TEXT("[FaceParallax] OpenEditorWidget — no Slate application (headless); skipping tab invoke"));
+        return;
+    }
+    // Host the editor as a dockable tab inside the main editor window — standalone
+    // SWindows don't reliably receive input in the editor, dock tabs always do.
+    UE_LOG(LogTemp, Log, TEXT("[FaceParallax] OpenEditorWidget — invoking nomad tab 'FaceParallaxEditor'"));
+    if (!bTabSpawnerRegistered)
+    {
+        FGlobalTabmanager::Get()->RegisterNomadTabSpawner(
+            FaceParallaxEditorTabName,
+            FOnSpawnTab::CreateUObject(this, &UFaceParallaxEditorSubsystem::SpawnEditorTab))
+            .SetDisplayName(FText::FromString(TEXT("Face Parallax Editor")))
+            .SetTooltipText(FText::FromString(TEXT("Face Parallax Editor")));
+        bTabSpawnerRegistered = true;
+    }
+    FGlobalTabmanager::Get()->TryInvokeTab(FaceParallaxEditorTabName);
+}
+
+TSharedRef<SDockTab> UFaceParallaxEditorSubsystem::SpawnEditorTab(const FSpawnTabArgs& Args)
+{
+    if (!EditorWidgetInstance)
+    {
+        // Load the widget blueprint class
+        FString WidgetPath = TEXT("/Game/FaceParallax/Blueprints/WBP_FaceParallaxEditor.WBP_FaceParallaxEditor_C");
+        UClass* WidgetClass = LoadClass<UUserWidget>(nullptr, *WidgetPath);
         if (!WidgetClass)
         {
-            UE_LOG(LogTemp, Error, TEXT("[FaceParallax] Could not load editor widget class"));
-            return;
+            // Fallback: try without _C suffix via StaticLoadObject
+            FString AltPath = TEXT("/Game/FaceParallax/Blueprints/WBP_FaceParallaxEditor.WBP_FaceParallaxEditor");
+            UObject* WidgetAsset = StaticLoadObject(UObject::StaticClass(), nullptr, *AltPath);
+            if (WidgetAsset && WidgetAsset->IsA<UBlueprint>())
+                WidgetClass = Cast<UBlueprint>(WidgetAsset)->GeneratedClass;
         }
-    }
 
-    UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
-    if (!World) World = GWorld;
-    if (!World) return;
+        UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+        if (!World) World = GWorld;
 
-    UUserWidget* Widget = CreateWidget<UUserWidget>(World, WidgetClass);
-    if (!Widget) return;
-    Widget->Initialize();
-
-    UFaceParallaxEditorWidget* EditorWidget = Cast<UFaceParallaxEditorWidget>(Widget);
-    if (EditorWidget)
-    {
-        EditorWidget->bSuppressValidation = true;
-
-        if (!EditorWidget->DataModel)
+        if (WidgetClass && World)
         {
-            UFaceParallaxDataModel* DM = NewObject<UFaceParallaxDataModel>();
-            DM->InitializeDataModel();
-            EditorWidget->DataModel = DM;
-        }
-        if (!EditorWidget->PreviewActor)
-        {
-            for (TActorIterator<AFaceParallaxPreviewActor> It(World); It; ++It)
+            EditorWidgetInstance = CreateWidget<UFaceParallaxEditorWidget>(World, WidgetClass);
+            if (EditorWidgetInstance)
             {
-                EditorWidget->SetPreviewActor(*It);
-                break;
+                EditorWidgetInstance->Initialize();
+                EditorWidgetInstance->bSuppressValidation = true;
+                UE_LOG(LogTemp, Log, TEXT("[FaceParallax] SpawnEditorTab — widget instance created (%s)"),
+                    *WidgetClass->GetName());
+
+                if (!EditorWidgetInstance->DataModel)
+                {
+                    UFaceParallaxDataModel* DM = NewObject<UFaceParallaxDataModel>();
+                    DM->InitializeDataModel();
+                    EditorWidgetInstance->DataModel = DM;
+                }
+                if (!EditorWidgetInstance->PreviewActor.IsValid())
+                {
+                    for (TActorIterator<AFaceParallaxPreviewActor> It(World); It; ++It)
+                    {
+                        EditorWidgetInstance->SetPreviewActor(*It);
+                        UE_LOG(LogTemp, Log, TEXT("[FaceParallax] SpawnEditorTab — discovered preview actor '%s'"),
+                            *(*It)->GetActorLabel());
+                        break;
+                    }
+                    if (!EditorWidgetInstance->PreviewActor.IsValid())
+                    {
+                        UE_LOG(LogTemp, Warning, TEXT("[FaceParallax] SpawnEditorTab — NO preview actor in level; widget will show None"));
+                    }
+                }
+                // Pre-populate ActivePreset from the preview actor's component
+                if (EditorWidgetInstance->PreviewActor.IsValid() && EditorWidgetInstance->PreviewActor->FaceParallax)
+                {
+                    if (!EditorWidgetInstance->ActivePreset)
+                        EditorWidgetInstance->ActivePreset = EditorWidgetInstance->PreviewActor->FaceParallax->ActivePreset;
+                }
+                if (EditorWidgetInstance->DataModel)
+                {
+                    EditorWidgetInstance->DataModel->ActivePreset = EditorWidgetInstance->ActivePreset;
+                    EditorWidgetInstance->DataModel->PreviewActor = EditorWidgetInstance->PreviewActor;
+                }
+
+                EditorWidgetInstance->bSuppressValidation = false;
+                EditorWidgetInstance->RefreshUI();
             }
         }
-        // Pre-populate ActivePreset from the preview actor's component
-        if (EditorWidget->PreviewActor && EditorWidget->PreviewActor->FaceParallax)
-        {
-            if (!EditorWidget->ActivePreset)
-                EditorWidget->ActivePreset = EditorWidget->PreviewActor->FaceParallax->ActivePreset;
-        }
-        if (EditorWidget->DataModel)
-        {
-            EditorWidget->DataModel->ActivePreset = EditorWidget->ActivePreset;
-            EditorWidget->DataModel->PreviewActor = EditorWidget->PreviewActor;
-        }
-
-        EditorWidget->bSuppressValidation = false;
-        EditorWidget->RefreshUI();
     }
 
-    TSharedRef<SWindow> Window = SNew(SWindow)
-        .Title(FText::FromString(TEXT("Face Parallax Editor")))
-        .ClientSize(FVector2D(1200, 800))
-        .SizingRule(ESizingRule::UserSized)
-        .Content()
-        [SNew(SBox)
-            .HAlign(HAlign_Fill)
-            .VAlign(VAlign_Fill)
-            [Widget->TakeWidget()]];
+    TSharedRef<SWidget> Content = EditorWidgetInstance
+        ? EditorWidgetInstance->TakeWidget()
+        : SNew(STextBlock).Text(FText::FromString(
+            TEXT("Could not load WBP_FaceParallaxEditor — run deploy.py")));
 
-    FSlateApplication::Get().AddWindow(Window);
+    return SNew(SDockTab)
+        .TabRole(ETabRole::NomadTab)
+        .Label(FText::FromString(TEXT("Face Parallax Editor")))
+        [Content];
 }
 
 void UFaceParallaxEditorSubsystem::FaceParallaxOpenEditor()
