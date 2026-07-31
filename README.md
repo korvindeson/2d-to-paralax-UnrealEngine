@@ -326,6 +326,28 @@ The `UDepthDebugVisualizerComponent` creates a procedural 3D mesh from the curre
 
 ---
 
+## Outline → Depth (Silhouette Extraction)
+
+The edges of the rotation views drive depth-map generation. `UFaceParallaxComponent` scans the assigned albedo texture of each `OutlineViewStates` entry (alpha-aware, falling back to luma/color thresholds) and produces per-scanline silhouette point pairs `(xMin, y), (xMax, y)` normalized to `[-1, 1]`, cached in `OutlinePointCache`.
+
+**Visual hull:** `VisualHullDepthStatic` combines the view silhouettes — Front defines the 2D shape, Right/LeftProfile constrain depth per height, Top/Bottom constrain depth per width — so every rotation-view edge contributes depth info. `SilhouetteDistanceToEdgeStatic` returns signed distance to the nearest edge (interpolated between scanlines), positive inside, negative outside.
+
+**Component API:**
+| Method | Description |
+|---|---|
+| `ExtractSilhouettePoints(State, MaxPoints)` | Scans the state's albedo and returns (xMin, xMax) pairs per scanline |
+| `SilhouetteDistanceToEdge(State, LocalPoint)` | Signed distance to the nearest silhouette edge for a state |
+| `GenerateDepthBufferFromOutlines(GridSize, OutDepth, OutCellSize)` | Builds a visual-hull depth buffer over the grid |
+| `SilhouetteDistanceToEdgeStatic(Points, Point)` | Pure static signed-distance math (unit-tested) |
+| `VisualHullDepthStatic(Front, Right, Left, Top, Bottom, Point)` | Pure static visual-hull depth (unit-tested) |
+| `ClearOutlinePointCache()` | Drops the cached scan results |
+| `SetOutlineViewState(State)` / `SetOutlineViewEnabled(State, bEnabled)` | Adds a state to / sets membership in `OutlineViewStates` |
+| `ClearOutlineViewStates()` / `IsOutlineViewState(State)` / `GetOutlineViewStates()` | Manage and query the outline-view set |
+
+`DetectFaceProfileFromPreset` also uses the true silhouette bounds (not just canvas bounding boxes) to refine `FFaceProfile3D` dimensions.
+
+---
+
 ## Preview Actor
 
 The `AFaceParallaxPreviewActor` provides orbit-controlled preview with dirty-flag optimization:
@@ -346,8 +368,19 @@ The `UUserWidget` subclass constructs its entire UI via `RebuildWidget()` — no
 - **Diagnostic log overlay** — `SMultiLineEditableTextBox` at bottom of widget; `RunDiagnostics()` reports preset status, missing states/layers
 - **Auto-refresh** — bound to `FCoreUObjectDelegates::OnObjectModified`; triggers `RefreshUI()` when ActivePreset modified externally
 - **Undo/redo** — `FPresetTransactionScope` RAII guard wraps 13 preset-mutating functions with `GEditor->BeginTransaction`/`EndTransaction` and `Modify()`
+- **Tabbed property panel** — `SWidgetSwitcher` with 4 tabs: Transform | Import | Preview & Debug | Advanced (search, view override, sync picker, outline→depth, camera follow on Transform; import buttons + config on Import; camera/zone/blend on Preview & Debug; cross-layer overlay, param reference, nested art on Advanced)
+- **Thumbnail status matrix** — 10-state × N-layer grid of aspect-correct albedo thumbnails (pixel size + click-to-jump tooltip) replacing the old 22×20 ✓/× grid
+- **Camera follows view** — view-strip clicks and matrix jumps snap orbit yaw/pitch to the state's zone center when `bCameraFollowsView` is enabled (default)
+- **View override mode** — transform edits write `ViewOverrides` (per-rendered-view deltas) instead of canonical transforms when `bViewOverrideMode` is on
+- **Silhouette → depth** — "Generate Depth from Outlines" extracts silhouette edges from rotation-view albedo textures, builds a visual-hull depth buffer, and bakes it into every layer's depth channel
+- **Batch import by channel suffix** — imports auto-assign by filename suffix (`_N`/`_Normal`/`_normalmap` → Normal, `_D`/`_Depth`/`_height`/`_displacement` → Depth, else Albedo); "Import & Assign" and toolbar "Import Art..." both use it when a layer is selected
+- **Quick Actions** — Auto-Fit All, Sync All→All, Clear All Overrides, Duplicate Front→This, Fill Missing Views (copies the active slot's art to views that have no albedo yet)
+- **Outline view management** — per-state checkboxes bound to the component's `OutlineViewStates` (All/None shortcuts); depth grid resolution is user-editable (8–256)
+- **Toolbar search** — the filter box moved to the toolbar so it applies across all 4 property tabs
+- **Live numeric camera readouts** — Yaw/Pitch/Dist values shown next to the sliders and updated on refresh
+- **Restore Snapshot** — renamed from the misleading "Undo" and given an explanatory tooltip; Clear State/Clear All require a confirming second click; "Log: ON/OFF" collapses the diagnostic log
 
-**19 function categories:** Preset, ViewState, Transform, ViewOverride, Textures, Camera, DebugOverlays, Status, DynamicArt, TextureAndTransformParams, Blink, Expression, Viseme, Parameter, ParamBinding, Swoosh, UI, NestedArt, Targets.
+**Function categories:** Preset, ViewState, Transform, ViewOverride (+ mode toggle), Textures, Import, Camera (+ follow/snap), DebugOverlays, Outline→Depth, Status, DynamicArt, TextureAndTransformParams, Blink, Expression, Viseme, Parameter, ParamBinding, Swoosh, UI, NestedArt, Targets.
 
 **Widget API:**
 | Method | Description |
@@ -357,6 +390,17 @@ The `UUserWidget` subclass constructs its entire UI via `RebuildWidget()` — no
 | `ColorByDepth(bEnabled)` | Toggles depth heat-map visualization on the preview mesh; guarded against redundant rebuilds |
 | `ApplySearchFilter(Filter)` | Filters property sections by title substring match; also shows all sections when filter matches any layer name |
 | `RunDiagnostics()` | Prints preset status, missing states/layers, and error counts to the diagnostic log overlay |
+| `SetStatus(Msg, Color)` | Sets the status-line text and color; replaces log-only warnings |
+| `SetViewOverrideMode(bEnabled)` / `GetViewOverrideMode()` | Toggles editing `ViewOverrides` (per-rendered-view deltas) instead of canonical transforms; `bViewOverrideMode` property |
+| `SyncLayerToSelectedViews(State, LayerTag, DestViews, bIncludeTextures)` | Copies a slot's canonical transform (and optionally textures) to a picked set of destination views |
+| `SetCameraFollowsView(bEnabled)` / `GetCameraFollowsView()` | Enables/disables orbit camera snapping to zone centers on view switch; `bCameraFollowsView` property |
+| `SnapCameraToActiveView()` | Snaps orbit yaw/pitch to the active state's zone center via `GetZoneCenterYaw/Pitch` |
+| `ImportTexturesFromFiles(Files)` | Imports image files into `/Game/FaceParallax/Imported` via `FAssetToolsModule` and returns the created `UTexture2D`s |
+| `AssignTextureToSlot(Tex, State, LayerTag, Channel)` | Assigns a texture to Albedo/Normal/Depth of a slot, auto-fits if enabled, refreshes UI |
+| `OpenImportArtDialog()` | File dialog + import + status feedback (toolbar "Import Art..." and Import tab) |
+| `GenerateDepthFromOutlines(GridSize)` | Extracts silhouette edges from outline-state albedos, builds a visual-hull depth buffer, bakes it into all layers' depth channels |
+| `SetOutlineOverlayVisible(bVisible)` / `GetOutlineOverlayVisible()` | Toggles the depth-buffer overlay on the preview image |
+| `SetOutlineViewEnabled(State, bEnabled)` | Adds or removes a state from `OutlineViewStates` (per-checkbox management; `SetOutlineViewState` only adds) |
 
 ---
 
@@ -375,7 +419,7 @@ Add the source files to your UE5 module. Ensure `Build.cs` includes the dependen
 This runs:
 1. **`_gen_embed.py` staleness check** — verifies embedded sources match disk files
 2. **Python syntax validator** — braces/macros/includes on all `.h`/`.cpp` files
-3. **C++ math tests** — 774+ standalone tests (g++ from msys64 ucrt64)
+3. **C++ math tests** — 864+ standalone tests (g++ from msys64 ucrt64), including silhouette-edge distance, visual-hull depth, camera-snap zone-center mapping, and import channel-suffix detection
 4. **UE build test** — full compilation of SAMPLES project with `Build.bat`
 
 Optional flags:
@@ -474,7 +518,7 @@ With the widget open (type `FaceParallaxOpenEditor` in the console, or click the
 
 **Troubleshooting the editor widget:**
 
-- **Widget target properties (`PreviewActor`, `ActivePreset`, `DataModel`) are `Transient`** — they are runtime bindings and are never serialized into the widget asset. This prevents `Illegal TEXT reference ... Import failed` warnings and the PreviewActor "resets to none" issue.
+- **Widget target properties (`PreviewActor`, `ActivePreset`) are `Transient`** — they are runtime bindings and are never serialized into the widget asset. This prevents `Illegal TEXT reference ... Import failed` warnings and the PreviewActor "resets to none" issue.
 - **There is exactly one preview actor** — `deploy.py` destroys stale preview actors before spawning the current one.
 - **The widget must open as a docked tab** inside the main editor window. If you get a separate floating window, the old C++ module is still loaded (Live Coding patches do not survive editor restarts — run `deploy.py` again in the new session). Verify the build with the log markers: `[FaceParallax] EditorSubsystem initialized — DOCKED-TAB BUILD v3` and `[FaceParallax] OpenEditorWidget — invoking nomad tab 'FaceParallaxEditor'`. Every button click logs `[FaceParallaxWidget] CLICK '...'`, and every widget rebuild logs `[FaceParallaxWidget] REBUILD DOCKED-TAB v3`.
 - **`FaceParallaxOpenEditor` is a registered console command** (not just a `UFUNCTION(Exec)`) — the subsystem registers it with `IConsoleManager` at initialization, so it dispatches even if Live Coding has left the exec binding stale. If typing it still does nothing, restart the editor and run `deploy.py` again — the command is only registered by the freshly built module.

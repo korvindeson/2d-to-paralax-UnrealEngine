@@ -333,6 +333,9 @@ public:
     void SetOutlineViewState(EFaceAngleState State);
 
     UFUNCTION(BlueprintCallable, Category = "Face Parallax|Outline")
+    void SetOutlineViewEnabled(EFaceAngleState State, bool bEnabled);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Outline")
     void ClearOutlineViewStates();
 
     UFUNCTION(BlueprintCallable, Category = "Face Parallax|Outline")
@@ -340,6 +343,35 @@ public:
 
     UFUNCTION(BlueprintCallable, Category = "Face Parallax|Outline")
     TArray<EFaceAngleState> GetOutlineViewStates() const;
+
+    // --- OUTLINE → DEPTH MAP ---
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Outline")
+    void ClearOutlinePointCache();
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Outline")
+    TArray<FVector2D> ExtractSilhouettePoints(EFaceAngleState State, int32 MaxPoints = 64) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Outline")
+    float SilhouetteDistanceToEdge(EFaceAngleState State, FVector2D LocalPoint) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Outline")
+    bool GenerateDepthBufferFromOutlines(int32 GridSize, TArray<float>& OutDepth, float& OutCellSize) const;
+
+    // Pure math (shared with the standalone test harness):
+    // Points are consecutive (xMin, xMax) pairs per scanline, sorted by Y ascending,
+    // normalized to [-1,1]. Returns signed distance in normalized units:
+    // positive inside the silhouette, negative outside.
+    static float SilhouetteDistanceToEdgeStatic(const TArray<FVector2D>& OutlinePoints, FVector2D LocalPoint);
+
+    // Visual-hull depth: the edge of every rotation view contributes depth info.
+    // Front defines the 2D shape; Right/LeftProfile constrain depth per height;
+    // Top/Bottom constrain depth per width.
+    static float VisualHullDepthStatic(
+        const TArray<FVector2D>& Front, const TArray<FVector2D>& Right,
+        const TArray<FVector2D>& Left, const TArray<FVector2D>& Top,
+        const TArray<FVector2D>& Bottom, FVector2D LocalPoint);
+
+    mutable TMap<EFaceAngleState, TArray<FVector2D>> OutlinePointCache;
 
     // --- PARAMETER SYSTEM ---
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Parameters")

@@ -14,8 +14,6 @@ SOURCES = [
     "DepthDebugVisualizerComponent.h",
     "FaceParallaxComponent.cpp",
     "FaceParallaxComponent.h",
-    "FaceParallaxDataModel.cpp",
-    "FaceParallaxDataModel.h",
     "FaceParallaxEditorSubsystem.cpp",
     "FaceParallaxEditorSubsystem.h",
     "FaceParallaxEditorWidget.cpp",

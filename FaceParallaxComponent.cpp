@@ -2350,6 +2350,7 @@ FVector2D UFaceParallaxComponent::ProjectPinToUV(FVector Pin3D, EFaceAngleState 
 void UFaceParallaxComponent::DetectFaceProfileFromPreset()
 {
     if (!ActivePreset) return;
+    OutlinePointCache.Reset();
 
     // Helper: scan all layers for a state, return max width/height
     auto GetMaxTexDimensions = [this](EFaceAngleState State, int32& OutMaxW, int32& OutMaxH) {
@@ -2468,6 +2469,37 @@ void UFaceParallaxComponent::DetectFaceProfileFromPreset()
             FaceProfile.FaceHalfDepth = MaxWidth * 0.5f;
     }
 
+    // Silhouette refinement: the edges of the rotation views carry real shape
+    // info — the visible face silhouette is narrower than the full canvas.
+    {
+        TArray<FVector2D> Sil = ExtractSilhouettePoints(EFaceAngleState::Front);
+        if (Sil.Num() >= 2)
+        {
+            float MinX = 1.0f, MaxX = -1.0f, MinY = 1.0f, MaxY = -1.0f;
+            for (const FVector2D& Pt : Sil)
+            {
+                MinX = FMath::Min(MinX, Pt.X); MaxX = FMath::Max(MaxX, Pt.X);
+                MinY = FMath::Min(MinY, Pt.Y); MaxY = FMath::Max(MaxY, Pt.Y);
+            }
+            if (MaxX > MinX && MaxY > MinY)
+            {
+                FaceProfile.FaceHalfWidth = FMath::Max(0.5f, (MaxX - MinX) * FaceProfile.FaceHalfWidth);
+                FaceProfile.FaceHalfHeight = FMath::Max(0.5f, (MaxY - MinY) * FaceProfile.FaceHalfHeight);
+            }
+        }
+        TArray<FVector2D> SilR = ExtractSilhouettePoints(EFaceAngleState::RightProfile);
+        if (SilR.Num() >= 2)
+        {
+            float MinX = 1.0f, MaxX = -1.0f;
+            for (const FVector2D& Pt : SilR)
+            {
+                MinX = FMath::Min(MinX, Pt.X); MaxX = FMath::Max(MaxX, Pt.X);
+            }
+            if (MaxX > MinX)
+                FaceProfile.FaceHalfDepth = FMath::Max(0.5f, (MaxX - MinX) * FaceProfile.FaceHalfDepth);
+        }
+    }
+
     // Propagate profile to depth debug visualizer if present
     if (AActor* Owner = GetOwner())
     {
@@ -2477,6 +2509,211 @@ void UFaceParallaxComponent::DetectFaceProfileFromPreset()
             Vis->SetProfileDimensions(FaceProfile.FaceHalfWidth, FaceProfile.FaceHalfHeight, FaceProfile.FaceHalfDepth);
         }
     }
+}
+
+// --- OUTLINE → DEPTH MAP ---
+
+void UFaceParallaxComponent::ClearOutlinePointCache()
+{
+    OutlinePointCache.Reset();
+}
+
+TArray<FVector2D> UFaceParallaxComponent::ExtractSilhouettePoints(EFaceAngleState State, int32 MaxPoints) const
+{
+    TArray<FVector2D>* Cached = OutlinePointCache.Find(State);
+    if (Cached && Cached->Num() > 0)
+    {
+        return *Cached;
+    }
+
+    TArray<FVector2D> Result;
+    if (!ActivePreset || !ActivePreset->HasState(State))
+    {
+        return Result;
+    }
+    MaxPoints = FMath::Clamp(MaxPoints, 4, 256);
+
+    // First assigned layer with a source-readable albedo wins
+    UTexture2D* Tex = nullptr;
+    TArray<FName> Tags = ActivePreset->GetAllLayerTags(State);
+    for (FName Tag : Tags)
+    {
+        UTexture2D* T = ActivePreset->GetSlot(State, Tag).Textures.Albedo;
+        if (T && T->GetPlatformData() && T->GetPlatformData()->Mips.Num() > 0)
+        {
+            Tex = T;
+            break;
+        }
+    }
+    if (!Tex)
+    {
+        return Result;
+    }
+
+    FTextureSource& Src = Tex->Source;
+    if (Src.GetNumMips() == 0)
+    {
+        return Result;
+    }
+    const int32 W = Src.GetSizeX();
+    const int32 H = Src.GetSizeY();
+    if (W < 4 || H < 4)
+    {
+        return Result;
+    }
+
+    const uint8* Pixels = Src.LockMip(0);
+    if (!Pixels)
+    {
+        return Result;
+    }
+
+    const int32 BytesPerPixel = Src.GetBytesPerPixel();
+    const ETextureSourceFormat Fmt = Src.GetFormat();
+    const bool bHasAlpha = (Fmt == TSF_BGRA8) && BytesPerPixel >= 4;
+    const int32 AlphaOffset = (Fmt == TSF_BGRA8) ? 3 : 0;
+    const bool bGrayscale = (Fmt == TSF_G8) && BytesPerPixel == 1;
+
+    auto SampleOpaque = [&](int32 X, int32 Y) -> bool
+    {
+        const uint8* P = Pixels + (size_t)Y * (size_t)W * BytesPerPixel + X * BytesPerPixel;
+        if (bHasAlpha) return P[AlphaOffset] > 40;
+        if (bGrayscale) return P[0] < 250;
+        return P[0] < 250 && P[1] < 250 && P[2] < 250;
+    };
+
+    // Scan every N-th row; emit (xMin, xMax) pairs per row, normalized to [-1,1]
+    const int32 Rows = FMath::Max(2, MaxPoints / 2);
+    const int32 Step = FMath::Max(1, H / Rows);
+    for (int32 Y = Step / 2; Y < H; Y += Step)
+    {
+        int32 MinX = -1, MaxX = -1;
+        for (int32 X = 0; X < W; ++X)
+        {
+            if (SampleOpaque(X, Y)) { MinX = X; break; }
+        }
+        for (int32 X = W - 1; X >= 0; --X)
+        {
+            if (SampleOpaque(X, Y)) { MaxX = X; break; }
+        }
+        if (MinX >= 0 && MaxX >= MinX)
+        {
+            const float YN = 1.0f - ((float)Y + 0.5f) * 2.0f / (float)H;
+            Result.Add(FVector2D(((float)MinX + 0.5f) * 2.0f / (float)W - 1.0f, YN));
+            Result.Add(FVector2D(((float)MaxX + 0.5f) * 2.0f / (float)W - 1.0f, YN));
+        }
+    }
+    Src.UnlockMip(0);
+
+    if (Result.Num() > 0)
+    {
+        OutlinePointCache.Add(State, Result);
+    }
+    return Result;
+}
+
+float UFaceParallaxComponent::SilhouetteDistanceToEdge(EFaceAngleState State, FVector2D LocalPoint) const
+{
+    TArray<FVector2D> Pts = ExtractSilhouettePoints(State);
+    if (Pts.Num() < 2)
+    {
+        return 1.0f;
+    }
+    return SilhouetteDistanceToEdgeStatic(Pts, LocalPoint);
+}
+
+float UFaceParallaxComponent::SilhouetteDistanceToEdgeStatic(const TArray<FVector2D>& Pts, FVector2D P)
+{
+    if (Pts.Num() < 2)
+    {
+        return 1.0f;
+    }
+    const int32 RowCount = Pts.Num() / 2;
+    int32 RowBelow = RowCount - 1; // fallback: bottom row when the query is below everything
+    for (int32 r = 0; r < RowCount; ++r)
+    {
+        // Rows are Y-ascending (top first): the FIRST row at-or-below the
+        // query height is the nearest one below it.
+        if (Pts[r * 2].Y <= P.Y)
+        {
+            RowBelow = r;
+            break;
+        }
+    }
+    int32 RowAbove = RowBelow;
+    for (int32 r = 0; r < RowCount; ++r)
+    {
+        // Nearest row strictly above the query height.
+        if (Pts[r * 2].Y > P.Y)
+        {
+            RowAbove = r;
+            break;
+        }
+    }
+    const float Y0 = Pts[RowBelow * 2].Y;
+    const float Y1 = Pts[RowAbove * 2].Y;
+    const float T = (Y1 - Y0) > KINDA_SMALL_NUMBER ? FMath::Clamp((P.Y - Y0) / (Y1 - Y0), 0.0f, 1.0f) : 0.0f;
+    const float XL = FMath::Lerp(Pts[RowBelow * 2].X, Pts[RowAbove * 2].X, T);
+    const float XR = FMath::Lerp(Pts[RowBelow * 2 + 1].X, Pts[RowAbove * 2 + 1].X, T);
+    if (P.X < XL)
+    {
+        return P.X - XL;
+    }
+    if (P.X > XR)
+    {
+        return XR - P.X;
+    }
+    return FMath::Min(P.X - XL, XR - P.X);
+}
+
+float UFaceParallaxComponent::VisualHullDepthStatic(
+    const TArray<FVector2D>& Front, const TArray<FVector2D>& Right,
+    const TArray<FVector2D>& Left, const TArray<FVector2D>& Top,
+    const TArray<FVector2D>& Bottom, FVector2D P)
+{
+    auto Interior = [](const TArray<FVector2D>& Pts, FVector2D Q) -> float
+    {
+        if (Pts.Num() < 2)
+        {
+            return 1.0f;
+        }
+        return FMath::Max(0.0f, SilhouetteDistanceToEdgeStatic(Pts, Q));
+    };
+
+    // Front defines the 2D shape; the rotation views constrain depth:
+    // profile edges act on the horizontal axis, top/bottom on the vertical.
+    float D = Interior(Front, P);
+    D = FMath::Min(D, Interior(Right, FVector2D(0.0f, P.Y)));
+    D = FMath::Min(D, Interior(Left, FVector2D(0.0f, P.Y)));
+    D = FMath::Min(D, Interior(Top, FVector2D(P.X, 0.0f)));
+    D = FMath::Min(D, Interior(Bottom, FVector2D(P.X, 0.0f)));
+    return FMath::Clamp(D, 0.0f, 1.0f);
+}
+
+bool UFaceParallaxComponent::GenerateDepthBufferFromOutlines(int32 GridSize, TArray<float>& OutDepth, float& OutCellSize) const
+{
+    OutDepth.Reset();
+    GridSize = FMath::Clamp(GridSize, 8, 256);
+    OutCellSize = 2.0f / (float)GridSize;
+
+    TArray<FVector2D> Front = ExtractSilhouettePoints(EFaceAngleState::Front);
+    TArray<FVector2D> Right = ExtractSilhouettePoints(EFaceAngleState::RightProfile);
+    TArray<FVector2D> Left = ExtractSilhouettePoints(EFaceAngleState::LeftProfile);
+    TArray<FVector2D> Top = ExtractSilhouettePoints(EFaceAngleState::Top);
+    TArray<FVector2D> Bottom = ExtractSilhouettePoints(EFaceAngleState::Bottom);
+
+    const bool bAny = Front.Num() >= 2;
+    OutDepth.Reserve(GridSize * GridSize);
+    for (int32 gy = 0; gy < GridSize; ++gy)
+    {
+        const float Y = -1.0f + OutCellSize * ((float)gy + 0.5f);
+        for (int32 gx = 0; gx < GridSize; ++gx)
+        {
+            const float X = -1.0f + OutCellSize * ((float)gx + 0.5f);
+            OutDepth.Add(VisualHullDepthStatic(Front, Right, Left, Top, Bottom, FVector2D(X, Y)));
+        }
+    }
+    return bAny;
 }
 
 void UFaceParallaxComponent::SetNestedPin3D(EFaceAngleState State, FName LayerTag, int32 Index, const FFacePin3D& Pin)
@@ -2508,6 +2745,18 @@ FVector2D UFaceParallaxComponent::GetNestedEffectivePivot(EFaceAngleState State,
 void UFaceParallaxComponent::SetOutlineViewState(EFaceAngleState State)
 {
     OutlineViewStates.AddUnique(State);
+}
+
+void UFaceParallaxComponent::SetOutlineViewEnabled(EFaceAngleState State, bool bEnabled)
+{
+    if (bEnabled)
+    {
+        OutlineViewStates.AddUnique(State);
+    }
+    else
+    {
+        OutlineViewStates.Remove(State);
+    }
 }
 
 void UFaceParallaxComponent::ClearOutlineViewStates()

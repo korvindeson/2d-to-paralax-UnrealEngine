@@ -24,7 +24,6 @@
 class AFaceParallaxPreviewActor;
 class UFaceParallaxPreset;
 class UFaceParallaxComponent;
-class UFaceParallaxDataModel;
 
 UCLASS(BlueprintType, Blueprintable)
 class UFaceParallaxEditorWidget : public UUserWidget
@@ -51,10 +50,7 @@ public:
     AFaceParallaxPreviewActor* GetPreviewActor() const;
 
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Targets")
-    void SetDataModel(UFaceParallaxDataModel* NewDataModel);
-
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|Targets")
-    UFaceParallaxDataModel* GetDataModel() const;
+    void SetStatus(const FString& Msg, const FLinearColor& Color);
 
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Targets")
     void ClearStaleTargets();
@@ -62,10 +58,6 @@ public:
     UPROPERTY(Transient, BlueprintReadWrite, Category = "Face Editor|Targets",
         meta = (DisplayName = "Active Preset"))
     TObjectPtr<UFaceParallaxPreset> ActivePreset;
-
-    UPROPERTY(Transient, BlueprintReadWrite, Category = "Face Editor|Targets",
-        meta = (DisplayName = "Data Model"))
-    TObjectPtr<UFaceParallaxDataModel> DataModel;
 
     // ===== PRESET =====
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Preset")
@@ -165,6 +157,10 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Transform")
     void SyncAllLayersToAllViews();
 
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Transform")
+    void SyncLayerToSelectedViews(EFaceAngleState State, FName LayerTag,
+        const TArray<EFaceAngleState>& DestViews, bool bIncludeTextures);
+
     // ===== VIEWOVERRIDE =====
     UFUNCTION(BlueprintCallable, Category = "Face Editor|ViewOverride")
     bool HasViewOverride(EFaceAngleState State, FName LayerTag, EFaceAngleState OverrideView) const;
@@ -187,6 +183,16 @@ public:
 
     UFUNCTION(BlueprintCallable, Category = "Face Editor|ViewOverride")
     TArray<EFaceAngleState> GetOverrideViewsForSlot(EFaceAngleState State, FName LayerTag) const;
+
+    UPROPERTY(Transient, BlueprintReadWrite, Category = "Face Editor|ViewOverride",
+        meta = (DisplayName = "View Override Mode"))
+    bool bViewOverrideMode = false;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|ViewOverride")
+    void SetViewOverrideMode(bool bEnabled);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|ViewOverride")
+    bool GetViewOverrideMode() const;
 
     // ===== TEXTURES =====
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Textures")
@@ -246,6 +252,30 @@ public:
 
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Camera")
     void ResetCamera();
+
+    UPROPERTY(Transient, BlueprintReadWrite, Category = "Face Editor|Camera",
+        meta = (DisplayName = "Camera Follows View"))
+    bool bCameraFollowsView = true;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Camera")
+    void SetCameraFollowsView(bool bEnabled);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Camera")
+    bool GetCameraFollowsView() const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Camera")
+    void SnapCameraToActiveView();
+
+    // ===== IMPORT =====
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Import")
+    TArray<class UTexture2D*> ImportTexturesFromFiles(const TArray<FString>& Files);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Import")
+    bool AssignTextureToSlot(class UTexture2D* Tex, EFaceAngleState State, FName LayerTag,
+        const FString& Channel);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Import")
+    void OpenImportArtDialog();
 
     // ===== DEBUG OVERLAYS =====
     UFUNCTION(BlueprintCallable, Category = "Face Editor|DebugOverlays")
@@ -805,6 +835,16 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Face Editor|NestedArt")
     void DetectFaceProfile();
 
+    // ===== OUTLINE → DEPTH =====
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Outline")
+    bool GenerateDepthFromOutlines(int32 GridSize);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Outline")
+    void SetOutlineOverlayVisible(bool bVisible);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Outline")
+    bool GetOutlineOverlayVisible() const;
+
     UFUNCTION(BlueprintCallable, Category = "Face Editor|UI")
     void SetRenderTarget(class UTextureRenderTarget2D* RT);
 
@@ -941,6 +981,42 @@ private:
     // ===== STATUS MATRIX =====
     TSharedPtr<SGridPanel> StatusMatrixGrid;
     TSharedPtr<SScrollBox> StatusMatrixScroll;
+    TArray<TSharedPtr<FSlateBrush>> StatusMatrixBrushes;
+
+    // ===== VIEW OVERRIDE / SYNC UI =====
+    TSharedPtr<SCheckBox> CheckViewOverrideMode;
+    TArray<TSharedPtr<SCheckBox>> SyncViewCheckBoxes;
+    TSharedPtr<SHorizontalBox> SyncPickerRow;
+    TSharedPtr<SCheckBox> CheckSyncTextures;
+    bool bClearStateArmed = false;
+    bool bClearAllArmed = false;
+
+    // ===== CAMERA FOLLOW =====
+    TSharedPtr<SCheckBox> CheckCameraFollow;
+    TSharedPtr<STextBlock> TextCameraYaw;
+    TSharedPtr<STextBlock> TextCameraPitch;
+    TSharedPtr<STextBlock> TextCameraDist;
+
+    // ===== PROPERTY TABS =====
+    TSharedPtr<SWidgetSwitcher> PropSwitcher;
+    TArray<TSharedPtr<SVerticalBox>> PropTabContent;
+
+    // ===== OUTLINE → DEPTH =====
+    bool bOutlineOverlayVisible = false;
+    UPROPERTY(Transient)
+    TObjectPtr<class UTexture2D> OutlineDepthTexture;
+    FSlateBrush OutlineDepthBrush;
+    TSharedPtr<SImage> OutlinePreviewImage;
+    TSharedPtr<SCheckBox> CheckOutlineOverlay;
+    TSharedPtr<STextBlock> TextOutlineStats;
+    TSharedPtr<SEditableTextBox> EditOutlineGridSize;
+    TArray<TSharedPtr<SCheckBox>> OutlineViewChecks;
+    void BuildOutlineDepthTexture(const TArray<float>& Depth, int32 GridSize);
+    void RefreshOutlineViewChecks();
+
+    // ===== DIAGNOSTIC LOG =====
+    bool bShowDiagnosticLog = true;
+    TSharedPtr<SBox> DiagnosticLogBox;
 
     // ===== CROSS-LAYER OVERLAY =====
     TSharedPtr<SVerticalBox> CrossLayerBox;

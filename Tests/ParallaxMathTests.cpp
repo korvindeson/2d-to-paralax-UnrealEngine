@@ -6,8 +6,10 @@
 #include <cstdio>
 #include <cassert>
 #include <cstdint>
+#include <cstring>
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <string>
 
 // --- Minimal math types matching our UE types ---
@@ -5099,15 +5101,9 @@ struct FPreviewActorMock {
     double PartSourceSize = 256.0;
 };
 
-// A "data model" that holds a preview actor reference and must stay in sync
-struct FDataModelMock {
-    FPreviewActorMock* PreviewActor = nullptr;
-};
-
 // The "editor widget" that delegates to preview actor with null fallback values
 struct FEditorWidgetMock {
     FPreviewActorMock* PreviewActor = nullptr;
-    FDataModelMock* DataModel = nullptr;
 
     // Returns default if null (mirrors ValidatePreviewActor pattern)
     bool IsPreviewValid() const {
@@ -5160,11 +5156,9 @@ struct FEditorWidgetMock {
         PreviewActor->AutoRotateSpeed = V;
     }
 
-    // Setter that syncs to DataModel (mirrors SetPreviewActor)
+    // Setter that mirrors SetPreviewActor
     void SetPreviewActor(FPreviewActorMock* NewActor) {
         PreviewActor = NewActor;
-        if (DataModel)
-            DataModel->PreviewActor = NewActor;
     }
 
     FPreviewActorMock* GetPreviewActor() const {
@@ -5246,34 +5240,256 @@ void TestSetPreviewActorContract() {
     TEST("Swap back to ActorA", Widget.GetPreviewActor() == &Actor);
 }
 
-void TestDataModelSyncContract() {
-    printf("\n=== DataModelSyncContract ===\n");
+// ========================
+// OUTLINE SILHOUETTE → DEPTH (mirrors UFaceParallaxComponent statics)
+// ========================
 
-    FDataModelMock DataModel;
+// Points are consecutive (xMin, xMax) pairs per scanline, sorted by Y ascending,
+// normalized to [-1,1]. Returns signed distance in normalized units:
+// positive inside the silhouette, negative outside.
+static double SilhouetteDistanceToEdge(const FVector2D* Pts, int NumPts, FVector2D P) {
+    if (NumPts < 2) return 1.0;
+    const int RowCount = NumPts / 2;
+    int RowBelow = RowCount - 1; // fallback: bottom row when the query is below everything
+    for (int r = 0; r < RowCount; ++r) {
+        // Rows are Y-ascending (top first): the FIRST row at-or-below the
+        // query height is the nearest one below it.
+        if (Pts[r * 2].Y <= P.Y) { RowBelow = r; break; }
+    }
+    int RowAbove = RowBelow;
+    for (int r = 0; r < RowCount; ++r) {
+        // Nearest row strictly above the query height.
+        if (Pts[r * 2].Y > P.Y) { RowAbove = r; break; }
+    }
+    const double Y0 = Pts[RowBelow * 2].Y;
+    const double Y1 = Pts[RowAbove * 2].Y;
+    const double T = (Y1 - Y0) > 1e-6 ? fmin(fmax((P.Y - Y0) / (Y1 - Y0), 0.0), 1.0) : 0.0;
+    const double XL = Pts[RowBelow * 2].X + T * (Pts[RowAbove * 2].X - Pts[RowBelow * 2].X);
+    const double XR = Pts[RowBelow * 2 + 1].X + T * (Pts[RowAbove * 2 + 1].X - Pts[RowBelow * 2 + 1].X);
+    if (P.X < XL) return P.X - XL;
+    if (P.X > XR) return XR - P.X;
+    return fmin(P.X - XL, XR - P.X);
+}
+
+static double VisualHullDepth(const FVector2D* Front, int NF, const FVector2D* Right, int NR,
+    const FVector2D* Left, int NL, const FVector2D* Top, int NT, const FVector2D* Bottom, int NB,
+    FVector2D P) {
+    auto Interior = [&](const FVector2D* Pts, int N, FVector2D Q) -> double {
+        if (N < 2) return 1.0;
+        return fmax(0.0, SilhouetteDistanceToEdge(Pts, N, Q));
+    };
+    double D = Interior(Front, NF, P);
+    D = fmin(D, Interior(Right, NR, FVector2D(0.0, P.Y)));
+    D = fmin(D, Interior(Left, NL, FVector2D(0.0, P.Y)));
+    D = fmin(D, Interior(Top, NT, FVector2D(P.X, 0.0)));
+    D = fmin(D, Interior(Bottom, NB, FVector2D(P.X, 0.0)));
+    return D < 0.0 ? 0.0 : (D > 1.0 ? 1.0 : D);
+}
+
+void TestSilhouetteDistanceToEdge() {
+    printf("\n=== SilhouetteDistanceToEdge ===\n");
+
+    // Square silhouette [-0.5, 0.5] x [-0.5, 0.5], 3 scanlines
+    FVector2D Square[] = {
+        FVector2D(-0.5, -0.5), FVector2D(0.5, -0.5),
+        FVector2D(-0.5, 0.0), FVector2D(0.5, 0.0),
+        FVector2D(-0.5, 0.5), FVector2D(0.5, 0.5)
+    };
+    const int NS = sizeof(Square) / sizeof(Square[0]);
+
+    TEST("Center distance", fabs(SilhouetteDistanceToEdge(Square, NS, FVector2D(0, 0)) - 0.5) < 1e-9);
+    TEST("On right edge", fabs(SilhouetteDistanceToEdge(Square, NS, FVector2D(0.5, 0))) < 1e-9);
+    TEST("Inside near right", fabs(SilhouetteDistanceToEdge(Square, NS, FVector2D(0.4, 0)) - 0.1) < 1e-9);
+    TEST("Outside right negative", fabs(SilhouetteDistanceToEdge(Square, NS, FVector2D(0.6, 0)) + 0.1) < 1e-9);
+    TEST("Outside left negative", fabs(SilhouetteDistanceToEdge(Square, NS, FVector2D(-0.6, 0)) + 0.1) < 1e-9);
+    TEST("Corner inside", fabs(SilhouetteDistanceToEdge(Square, NS, FVector2D(-0.45, -0.45)) - 0.05) < 1e-9);
+    TEST("Above top clamps to nearest row", fabs(SilhouetteDistanceToEdge(Square, NS, FVector2D(0, 0.7)) - 0.5) < 1e-9);
+
+    // Empty input returns 1.0 (no silhouette = everything interior)
+    TEST("Empty returns 1.0", SilhouetteDistanceToEdge(nullptr, 0, FVector2D(0, 0)) == 1.0);
+    // Single scanline row: edges are that row's, clamped vertically (no interpolation)
+    TEST("Single pair uses its row edges",
+        fabs(SilhouetteDistanceToEdge(Square, 2, FVector2D(0, 0)) - 0.5) < 1e-9);
+
+    // Tapered profile (narrower at bottom), 3 rows: edges interpolate between rows
+    FVector2D Taper[] = {
+        FVector2D(-0.5, 0.5), FVector2D(0.5, 0.5),
+        FVector2D(-0.4, 0.0), FVector2D(0.4, 0.0),
+        FVector2D(-0.3, -0.5), FVector2D(0.3, -0.5)
+    };
+    const int NT2 = sizeof(Taper) / sizeof(Taper[0]);
+    // At y=0 the right edge is exactly 0.4
+    TEST("Interpolated edge at y=0", fabs(SilhouetteDistanceToEdge(Taper, NT2, FVector2D(0.4, 0))) < 1e-9);
+    TEST("Interpolated interior", fabs(SilhouetteDistanceToEdge(Taper, NT2, FVector2D(0.2, 0)) - 0.2) < 1e-9);
+    TEST("Interpolated outside negative", fabs(SilhouetteDistanceToEdge(Taper, NT2, FVector2D(0.5, 0)) + 0.1) < 1e-9);
+}
+
+void TestVisualHullDepth() {
+    printf("\n=== VisualHullDepth ===\n");
+
+    // Front: square [-0.5, 0.5]^2 (defines the 2D shape)
+    FVector2D Front[] = {
+        FVector2D(-0.5, -0.5), FVector2D(0.5, -0.5),
+        FVector2D(-0.5, 0.0), FVector2D(0.5, 0.0),
+        FVector2D(-0.5, 0.5), FVector2D(0.5, 0.5)
+    };
+    const int NF = sizeof(Front) / sizeof(Front[0]);
+
+    // Right profile: strip [-0.25, 0.25] (constrains depth per height)
+    FVector2D Right[] = {
+        FVector2D(-0.25, -0.5), FVector2D(0.25, -0.5),
+        FVector2D(-0.25, 0.0), FVector2D(0.25, 0.0),
+        FVector2D(-0.25, 0.5), FVector2D(0.25, 0.5)
+    };
+    const int NR = sizeof(Right) / sizeof(Right[0]);
+
+    FVector2D Left[] = {
+        FVector2D(-0.25, -0.5), FVector2D(0.25, -0.5),
+        FVector2D(-0.25, 0.0), FVector2D(0.25, 0.0),
+        FVector2D(-0.25, 0.5), FVector2D(0.25, 0.5)
+    };
+    const int NL = sizeof(Left) / sizeof(Left[0]);
+
+    FVector2D Top[] = {
+        FVector2D(-0.5, -0.5), FVector2D(0.5, -0.5),
+        FVector2D(-0.5, 0.0), FVector2D(0.5, 0.0),
+        FVector2D(-0.5, 0.5), FVector2D(0.5, 0.5)
+    };
+    const int NT = sizeof(Top) / sizeof(Top[0]);
+
+    FVector2D Bottom[] = {
+        FVector2D(-0.5, -0.5), FVector2D(0.5, -0.5),
+        FVector2D(-0.5, 0.0), FVector2D(0.5, 0.0),
+        FVector2D(-0.5, 0.5), FVector2D(0.5, 0.5)
+    };
+    const int NB = sizeof(Bottom) / sizeof(Bottom[0]);
+
+    // Center: constrained by the narrow profile (0.25 < 0.5)
+    TEST("Center constrained by profile",
+        fabs(VisualHullDepth(Front, NF, Right, NR, Left, NL, Top, NT, Bottom, NB, FVector2D(0, 0)) - 0.25) < 1e-9);
+
+    // Front edge point: front silhouette wins (distance 0)
+    TEST("Front edge zero",
+        fabs(VisualHullDepth(Front, NF, Right, NR, Left, NL, Top, NT, Bottom, NB, FVector2D(0.5, 0))) < 1e-9);
+
+    // Point inside front but outside right profile: front distance still active
+    TEST("Inside front, outside profile",
+        fabs(VisualHullDepth(Front, NF, Right, NR, Left, NL, Top, NT, Bottom, NB, FVector2D(0.4, 0)) - 0.1) < 1e-9);
+
+    // Point outside everything: clamped to 0
+    TEST("Outside hull zero",
+        VisualHullDepth(Front, NF, Right, NR, Left, NL, Top, NT, Bottom, NB, FVector2D(0.9, 0.9)) == 0.0);
+
+    // Top view constrains width axis: front full square + narrow top strip
+    FVector2D NarrowTop[] = {
+        FVector2D(-0.2, -0.5), FVector2D(0.2, -0.5),
+        FVector2D(-0.2, 0.0), FVector2D(0.2, 0.0),
+        FVector2D(-0.2, 0.5), FVector2D(0.2, 0.5)
+    };
+    const int NNT = sizeof(NarrowTop) / sizeof(NarrowTop[0]);
+    TEST("Top constrains depth",
+        fabs(VisualHullDepth(Front, NF, Right, NR, Left, NL, NarrowTop, NNT, Bottom, NB, FVector2D(0, 0)) - 0.2) < 1e-9);
+}
+
+// ========================
+// CAMERA SNAP TO VIEW (mirrors widget SetActiveViewState + component zone centers)
+// ========================
+
+static double ZoneCenterYaw(int State) {
+    // Defaults: HalfZoneWidth = 22.5, multipliers {1, 3, 5, 7}
+    static const double BM[4] = {22.5, 67.5, 112.5, 157.5};
+    switch (State) {
+        case 0: return 0.0;                // Front
+        case 1: return (BM[0] + BM[1]) * 0.5;   // ThreeQuarterRight
+        case 2: return (BM[1] + BM[2]) * 0.5;   // RightProfile
+        case 3: return (BM[2] + BM[3]) * 0.5;   // BackRight
+        case 4: return 180.0;              // Back
+        case 5: return -(BM[2] + BM[3]) * 0.5;  // BackLeft
+        case 6: return -(BM[1] + BM[2]) * 0.5;  // LeftProfile
+        case 7: return -(BM[0] + BM[1]) * 0.5;  // ThreeQuarterLeft
+        default: return 0.0;
+    }
+}
+
+static double ZoneCenterPitch(int State) {
+    if (State == 8) return 90.0;   // Top
+    if (State == 9) return -90.0;  // Bottom
+    return 0.0;
+}
+
+void TestCameraSnapMapping() {
+    printf("\n=== CameraSnapMapping ===\n");
+
+    // Yaw centers (default multipliers)
+    TEST("Front yaw 0", fabs(ZoneCenterYaw(0)) < 1e-9);
+    TEST("3QR yaw 45", fabs(ZoneCenterYaw(1) - 45.0) < 1e-9);
+    TEST("RightProfile yaw 90", fabs(ZoneCenterYaw(2) - 90.0) < 1e-9);
+    TEST("BackRight yaw 135", fabs(ZoneCenterYaw(3) - 135.0) < 1e-9);
+    TEST("Back yaw 180", fabs(ZoneCenterYaw(4) - 180.0) < 1e-9);
+    TEST("BackLeft yaw -135", fabs(ZoneCenterYaw(5) + 135.0) < 1e-9);
+    TEST("LeftProfile yaw -90", fabs(ZoneCenterYaw(6) + 90.0) < 1e-9);
+    TEST("3QL yaw -45", fabs(ZoneCenterYaw(7) + 45.0) < 1e-9);
+    TEST("Top yaw 0", fabs(ZoneCenterYaw(8)) < 1e-9);
+    TEST("Bottom yaw 0", fabs(ZoneCenterYaw(9)) < 1e-9);
+
+    // Pitch centers
+    TEST("Front pitch 0", fabs(ZoneCenterPitch(0)) < 1e-9);
+    TEST("Top pitch 90", fabs(ZoneCenterPitch(8) - 90.0) < 1e-9);
+    TEST("Bottom pitch -90", fabs(ZoneCenterPitch(9) + 90.0) < 1e-9);
+
+    // Widget snap behavior: SetActiveViewState with camera-follow snaps yaw+pitch,
+    // and never touches distance.
     FEditorWidgetMock Widget;
     FPreviewActorMock Actor;
-
-    Widget.DataModel = &DataModel;
-
-    // DataModel starts with null
-    TEST("DataModel initially null", DataModel.PreviewActor == nullptr);
-
-    // SetPreviewActor syncs to DataModel
+    Actor.OrbitDistance = 150.0;
     Widget.SetPreviewActor(&Actor);
-    TEST("DataModel synced after set", DataModel.PreviewActor == &Actor);
 
-    // Setting to null clears DataModel too
-    Widget.SetPreviewActor(nullptr);
-    TEST("DataModel cleared after null set", DataModel.PreviewActor == nullptr);
+    auto SnapToView = [&](int State) {
+        Widget.SetOrbitYaw(ZoneCenterYaw(State));
+        Widget.SetOrbitPitch(ZoneCenterPitch(State));
+    };
 
-    // Re-set and verify
-    Widget.SetPreviewActor(&Actor);
-    TEST("DataModel re-synced", DataModel.PreviewActor == &Actor);
+    SnapToView(2);  // RightProfile
+    TEST("Snap yaw to 90", fabs(Widget.GetOrbitYaw() - 90.0) < 1e-9);
+    TEST("Snap pitch to 0", fabs(Widget.GetOrbitPitch()) < 1e-9);
+    TEST("Snap preserves distance", Widget.GetOrbitDistance() == 150.0);
 
-    // Swap clears old, sets new
-    FPreviewActorMock ActorB;
-    Widget.SetPreviewActor(&ActorB);
-    TEST("DataModel swapped to ActorB", DataModel.PreviewActor == &ActorB);
+    SnapToView(8);  // Top
+    TEST("Snap Top pitch 90", fabs(Widget.GetOrbitPitch() - 90.0) < 1e-9);
+
+    SnapToView(4);  // Back
+    TEST("Snap Back yaw 180", fabs(Widget.GetOrbitYaw() - 180.0) < 1e-9);
+}
+
+// ========================
+// IMPORT CHANNEL DETECTION (mirrors widget ChannelFromTextureName)
+// ========================
+
+static const char* ChannelFromName(const std::string& Name) {
+    std::string L = Name;
+    for (auto& c : L) c = (char)tolower(c);
+    if (L.find("_normal") != std::string::npos || L.find("_norm") != std::string::npos ||
+        L.find("_n") != std::string::npos || L.find("_normalmap") != std::string::npos)
+        return "Normal";
+    if (L.find("_depth") != std::string::npos || L.find("_d") != std::string::npos ||
+        L.find("_height") != std::string::npos || L.find("_displacement") != std::string::npos)
+        return "Depth";
+    return "Albedo";
+}
+
+void TestImportChannelDetection() {
+    printf("\n=== ImportChannelDetection ===\n");
+
+    TEST("Eyes_Normal -> Normal", strcmp(ChannelFromName("Eyes_Normal"), "Normal") == 0);
+    TEST("Eyes_norm -> Normal", strcmp(ChannelFromName("Eyes_norm"), "Normal") == 0);
+    TEST("Eyes_N -> Normal", strcmp(ChannelFromName("Eyes_N"), "Normal") == 0);
+    TEST("Eyes_Depth -> Depth", strcmp(ChannelFromName("Eyes_Depth"), "Depth") == 0);
+    TEST("Eyes_d -> Depth", strcmp(ChannelFromName("Eyes_d"), "Depth") == 0);
+    TEST("Eyes_height -> Depth", strcmp(ChannelFromName("Eyes_height"), "Depth") == 0);
+    TEST("Eyes_Albedo -> Albedo", strcmp(ChannelFromName("Eyes_Albedo"), "Albedo") == 0);
+    TEST("Eyes -> Albedo", strcmp(ChannelFromName("Eyes"), "Albedo") == 0);
+    TEST("Displacement suffix beats plain name", strcmp(ChannelFromName("Eyes_displacement"), "Depth") == 0);
+    TEST("Normalmap suffix -> Normal", strcmp(ChannelFromName("Eyes_normalmap"), "Normal") == 0);
 }
 
 int main() {
@@ -5336,7 +5552,11 @@ int main() {
 
     TestNullPreviewActorSafety();
     TestSetPreviewActorContract();
-    TestDataModelSyncContract();
+
+    TestSilhouetteDistanceToEdge();
+    TestVisualHullDepth();
+    TestCameraSnapMapping();
+    TestImportChannelDetection();
 
     printf("\n===== Results: %d/%d passed (%d failed) =====\n",
         g_passed, g_total, g_total - g_passed);

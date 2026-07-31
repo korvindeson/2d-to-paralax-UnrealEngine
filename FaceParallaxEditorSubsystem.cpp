@@ -1,7 +1,6 @@
 #include "FaceParallaxEditorSubsystem.h"
 #include "FaceParallaxEditorWidget.h"
 #include "FaceParallaxPreviewActor.h"
-#include "FaceParallaxDataModel.h"
 #include "FaceParallaxComponent.h"
 #include "FaceParallaxTypes.h"
 
@@ -187,12 +186,6 @@ TSharedRef<SDockTab> UFaceParallaxEditorSubsystem::SpawnEditorTab(const FSpawnTa
                 UE_LOG(LogTemp, Log, TEXT("[FaceParallax] SpawnEditorTab — widget instance created (%s)"),
                     *WidgetClass->GetName());
 
-                if (!EditorWidgetInstance->DataModel)
-                {
-                    UFaceParallaxDataModel* DM = NewObject<UFaceParallaxDataModel>();
-                    DM->InitializeDataModel();
-                    EditorWidgetInstance->DataModel = DM;
-                }
                 if (!EditorWidgetInstance->PreviewActor.IsValid())
                 {
                     for (TActorIterator<AFaceParallaxPreviewActor> It(World); It; ++It)
@@ -212,11 +205,6 @@ TSharedRef<SDockTab> UFaceParallaxEditorSubsystem::SpawnEditorTab(const FSpawnTa
                 {
                     if (!EditorWidgetInstance->ActivePreset)
                         EditorWidgetInstance->ActivePreset = EditorWidgetInstance->PreviewActor->FaceParallax->ActivePreset;
-                }
-                if (EditorWidgetInstance->DataModel)
-                {
-                    EditorWidgetInstance->DataModel->ActivePreset = EditorWidgetInstance->ActivePreset;
-                    EditorWidgetInstance->DataModel->PreviewActor = EditorWidgetInstance->PreviewActor;
                 }
 
                 EditorWidgetInstance->bSuppressValidation = false;
