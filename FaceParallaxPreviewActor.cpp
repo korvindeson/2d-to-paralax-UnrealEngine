@@ -160,17 +160,18 @@ void AFaceParallaxPreviewActor::ShowWireframe(bool bVisible)
 {
     if (DepthDebug)
     {
-        DepthDebug->bShowWireframe = bVisible;
+        DepthDebug->SetWireframeEnabled(bVisible);
     }
 }
 
 void AFaceParallaxPreviewActor::ColorByDepth(bool bEnabled)
 {
-    if (DepthDebug)
-    {
-        DepthDebug->bUseVertexColors = bEnabled;
-        DepthDebug->RebuildMeshFromDepthMap(nullptr);
-    }
+    if (!DepthDebug) return;
+    if (bEnabled == bLastColorByDepth) return;
+    bLastColorByDepth = bEnabled;
+    DepthDebug->bUseVertexColors = bEnabled;
+    UTexture2D* DepthTex = FaceParallax ? FaceParallax->GetCurrentDepthTexture() : nullptr;
+    DepthDebug->RebuildMeshFromDepthMap(DepthTex);
 }
 
 void AFaceParallaxPreviewActor::ShowTextures(bool bVisible)

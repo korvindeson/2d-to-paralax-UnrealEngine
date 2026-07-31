@@ -16,7 +16,7 @@
 | `FaceParallaxEditorWidget.h/.cpp` | Editor widget — 221 UFUNCTIONs across 17 categories. Slate `RebuildWidget()` with inline lambdas (no string-dispatch). |
 | `FaceParallaxDataModel.h/.cpp` | Shared data model — extracts preset mutation state from the widget for use by other systems. 90+ UFUNCTIONs. |
 | `FaceParallaxEditorSubsystem.h/.cpp` | Editor subsystem — toolbar registration, asset creation (material, MI, preset, BP), deploy pipeline. `UEditorSubsystem` subclass. |
-| `Tests/ParallaxMathTests.cpp` | Standalone C++17 tests (no UE dep) — state machine, transforms, blink/expression/viseme, swoosh, parameters, nested art + jiggle, 3D pin projection, batch ops, zone multipliers, FName exp/viseme resolution, GetBoundaryOrDefault (621 tests) |
+| `Tests/ParallaxMathTests.cpp` | Standalone C++17 tests (no UE dep) — state machine, transforms, blink/expression/viseme, swoosh, parameters, nested art + jiggle, 3D pin projection, batch ops, zone multipliers, FName exp/viseme resolution, GetBoundaryOrDefault (774 tests) |
 | `Tests/SyntaxValidator.py` | Python syntax validator — brace/macro balance, include guards |
 | `Tests/run_tests.ps1` | Master test runner — syntax validator + C++ math tests + optional UE build test |
 | `Tests/ue_build_test.ps1` | UE build test — compiles SAMPLES project with Build.bat, verifies DLL |

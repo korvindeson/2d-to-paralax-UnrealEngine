@@ -6,6 +6,11 @@
 #include "DepthDebugVisualizerComponent.h"
 #include "Engine/Texture2D.h"
 #include "Engine/TextureRenderTarget2D.h"
+#include "Materials/MaterialInterface.h"
+#include "Materials/Material.h"
+#include "MaterialShared.h"
+#include "Engine/EngineTypes.h"
+#include "EngineUtils.h"
 
 #if WITH_EDITOR
 #include "UObject/SavePackage.h"
@@ -26,19 +31,20 @@ namespace
     struct FPresetTransactionScope
     {
         UFaceParallaxPreset* Preset;
+        bool bActive = false;
         FPresetTransactionScope(UFaceParallaxPreset* InPreset, const FString& Desc)
             : Preset(InPreset)
         {
-            if (GEditor)
+            if (GEditor && Preset)
             {
+                bActive = true;
                 GEditor->BeginTransaction(FText::FromString(Desc));
-                if (Preset)
-                    Preset->Modify();
+                Preset->Modify();
             }
         }
         ~FPresetTransactionScope()
         {
-            if (GEditor)
+            if (bActive)
                 GEditor->EndTransaction();
         }
     };
@@ -48,7 +54,7 @@ bool UFaceParallaxEditorWidget::ValidatePreset() const
 {
     if (!ActivePreset)
     {
-        if (!HasAnyFlags(RF_ClassDefaultObject))
+        if (!IsTemplate() && !HasAnyFlags(RF_Transient) && GEditor && !bSuppressValidation)
         {
             UE_LOG(LogTemp, Warning, TEXT("[FaceParallaxEditorWidget] No ActivePreset assigned."));
         }
@@ -61,7 +67,7 @@ bool UFaceParallaxEditorWidget::ValidatePreviewActor() const
 {
     if (!PreviewActor)
     {
-        if (!HasAnyFlags(RF_ClassDefaultObject))
+        if (!IsTemplate() && !HasAnyFlags(RF_Transient) && GEditor && !bSuppressValidation)
         {
             UE_LOG(LogTemp, Warning, TEXT("[FaceParallaxEditorWidget] No PreviewActor assigned."));
         }
@@ -73,6 +79,66 @@ bool UFaceParallaxEditorWidget::ValidatePreviewActor() const
 UFaceParallaxComponent* UFaceParallaxEditorWidget::GetParallaxComponent() const
 {
     return ValidatePreviewActor() ? PreviewActor->FaceParallax : nullptr;
+}
+
+void UFaceParallaxEditorWidget::SetPreviewActor(AFaceParallaxPreviewActor* NewPreviewActor)
+{
+    PreviewActor = NewPreviewActor;
+    if (DataModel)
+        DataModel->PreviewActor = NewPreviewActor;
+    RefreshUI();
+}
+
+AFaceParallaxPreviewActor* UFaceParallaxEditorWidget::GetPreviewActor() const
+{
+    return PreviewActor.Get();
+}
+
+void UFaceParallaxEditorWidget::PostInitProperties()
+{
+    Super::PostInitProperties();
+    if (PreviewActor && !IsValid(PreviewActor))
+        PreviewActor = nullptr;
+    if (DataModel && !IsValid(DataModel))
+        DataModel = nullptr;
+    if (ActivePreset && !IsValid(ActivePreset))
+        ActivePreset = nullptr;
+}
+
+void UFaceParallaxEditorWidget::SetDataModel(UFaceParallaxDataModel* NewDataModel)
+{
+    DataModel = NewDataModel;
+    if (DataModel)
+    {
+        DataModel->PreviewActor = PreviewActor;
+        DataModel->ActivePreset = ActivePreset;
+    }
+    RefreshUI();
+}
+
+UFaceParallaxDataModel* UFaceParallaxEditorWidget::GetDataModel() const
+{
+    return DataModel;
+}
+
+void UFaceParallaxEditorWidget::ClearStaleTargets()
+{
+    PreviewActor = nullptr;
+    DataModel = nullptr;
+    UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+    if (World)
+    {
+        for (TActorIterator<AFaceParallaxPreviewActor> It(World); It; ++It)
+        {
+            if (*It)
+            {
+                SetPreviewActor(*It);
+                break;
+            }
+        }
+    }
+    if (TextStatus.IsValid())
+        TextStatus->SetText(FText::FromString(TEXT("Cleared stale targets, re-discovered preview actor")));
 }
 
 // ====================================================================
@@ -199,6 +265,7 @@ void UFaceParallaxEditorWidget::SetLayerPosition(EFaceAngleState State, FName La
     float X, float Y)
 {
     if (!ValidatePreset()) return;
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set Layer Position"));
     FFaceArtTransform T = ActivePreset->GetSlot(State, LayerTag).CanonicalTransform;
     T.Position = FVector2D(X, Y);
     ActivePreset->SetCanonicalTransform(State, LayerTag, T);
@@ -213,6 +280,7 @@ void UFaceParallaxEditorWidget::SetLayerScale(EFaceAngleState State, FName Layer
     float X, float Y)
 {
     if (!ValidatePreset()) return;
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set Layer Scale"));
     FFaceArtTransform T = ActivePreset->GetSlot(State, LayerTag).CanonicalTransform;
     T.Scale = FVector2D(FMath::Max(0.01f, X), FMath::Max(0.01f, Y));
     ActivePreset->SetCanonicalTransform(State, LayerTag, T);
@@ -227,6 +295,7 @@ void UFaceParallaxEditorWidget::SetLayerRotation(EFaceAngleState State, FName La
     float Degrees)
 {
     if (!ValidatePreset()) return;
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set Layer Rotation"));
     FFaceArtTransform T = ActivePreset->GetSlot(State, LayerTag).CanonicalTransform;
     T.Rotation = Degrees;
     ActivePreset->SetCanonicalTransform(State, LayerTag, T);
@@ -586,8 +655,7 @@ int32 UFaceParallaxEditorWidget::GetTotalAssignedSlots() const
 
 int32 UFaceParallaxEditorWidget::GetActiveLayerCount() const
 {
-    UFaceParallaxComponent* Comp = GetParallaxComponent();
-    return Comp ? Comp->LayerDefinitions.Num() : 0;
+    return GetLayerCount();
 }
 
 FString UFaceParallaxEditorWidget::GetStatusString() const
@@ -610,6 +678,10 @@ FString UFaceParallaxEditorWidget::GetStatusString() const
             case EExpression::Neutral: ExprStr = TEXT("Neutral"); break;
             case EExpression::Smile:   ExprStr = TEXT("Smile");   break;
             case EExpression::Frown:   ExprStr = TEXT("Frown");   break;
+            default:
+                ExprStr = TEXT("Unknown");
+                UE_LOG(LogTemp, Warning, TEXT("GetStatusString: Unknown expression %d"), (int32)Comp->CurrentExpression);
+                break;
         }
     }
 
@@ -629,6 +701,10 @@ FString UFaceParallaxEditorWidget::GetStatusString() const
             case EViseme::WOO: VisemeStr = TEXT("WOO"); break;
             case EViseme::Oh:  VisemeStr = TEXT("Oh");  break;
             case EViseme::R:   VisemeStr = TEXT("R");   break;
+            default:
+                VisemeStr = TEXT("Unknown");
+                UE_LOG(LogTemp, Warning, TEXT("GetStatusString: Unknown viseme %d"), (int32)Comp->GetCurrentViseme());
+                break;
         }
     }
 
@@ -789,6 +865,7 @@ int32 UFaceParallaxEditorWidget::GetBlinkFrameCount(EFaceAngleState State, FName
 void UFaceParallaxEditorWidget::SetBlinkFrameTextures(EFaceAngleState State, FName LayerTag,
     int32 FrameIndex, const FFaceTextureSet& Textures)
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set Blink Frame Textures"));
     if (!ValidatePreset()) return;
     FFaceArtSlot ArtSlot = ActivePreset->GetSlot(State, LayerTag);
     if (FrameIndex >= 0 && FrameIndex <= ArtSlot.BlinkFrames.Num())
@@ -819,6 +896,7 @@ FFaceTextureSet UFaceParallaxEditorWidget::GetBlinkFrameTextures(EFaceAngleState
 
 void UFaceParallaxEditorWidget::ClearBlinkFrames(EFaceAngleState State, FName LayerTag)
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Clear Blink Frames"));
     if (!ValidatePreset()) return;
     FFaceArtSlot ArtSlot = ActivePreset->GetSlot(State, LayerTag);
     ArtSlot.BlinkFrames.Empty();
@@ -862,6 +940,7 @@ bool UFaceParallaxEditorWidget::IsExpressionTransitioning() const
 void UFaceParallaxEditorWidget::ClearExpressionTextures(EFaceAngleState State, FName LayerTag,
     EExpression Expression)
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Clear Expression Textures"));
     if (!ValidatePreset()) return;
     FFaceArtSlot ArtSlot = ActivePreset->GetSlot(State, LayerTag);
     ArtSlot.ExpressionTextures.Remove(Expression);
@@ -871,6 +950,7 @@ void UFaceParallaxEditorWidget::ClearExpressionTextures(EFaceAngleState State, F
 void UFaceParallaxEditorWidget::SetExpressionTextures(EFaceAngleState State, FName LayerTag,
     EExpression Expression, const FFaceTextureSet& Textures)
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set Expression Textures"));
     if (!ValidatePreset()) return;
     FFaceArtSlot ArtSlot = ActivePreset->GetSlot(State, LayerTag);
     ArtSlot.ExpressionTextures.Add(Expression, Textures);
@@ -925,6 +1005,7 @@ bool UFaceParallaxEditorWidget::IsNamedExpressionValid() const
 void UFaceParallaxEditorWidget::SetNamedExpressionTextures(EFaceAngleState State, FName LayerTag,
     FName ExpressionName, const FFaceTextureSet& Textures)
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set Named Expression Textures"));
     if (!ValidatePreset()) return;
     FFaceArtSlot ArtSlot = ActivePreset->GetSlot(State, LayerTag);
     ArtSlot.NamedExpressionTextures.Add(ExpressionName, Textures);
@@ -961,6 +1042,7 @@ TArray<FName> UFaceParallaxEditorWidget::GetAssignedNamedExpressions(EFaceAngleS
 void UFaceParallaxEditorWidget::ClearNamedExpressionTextures(EFaceAngleState State, FName LayerTag,
     FName ExpressionName)
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Clear Named Expression Textures"));
     if (!ValidatePreset()) return;
     FFaceArtSlot ArtSlot = ActivePreset->GetSlot(State, LayerTag);
     ArtSlot.NamedExpressionTextures.Remove(ExpressionName);
@@ -1058,6 +1140,7 @@ int32 UFaceParallaxEditorWidget::GetVisemeFrameCount(EFaceAngleState State, FNam
 void UFaceParallaxEditorWidget::SetVisemeFrameTextures(EFaceAngleState State, FName LayerTag,
     EExpression Expression, EViseme Viseme, int32 FrameIndex, const FFaceTextureSet& Textures)
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set Viseme Frame Textures"));
     if (!ValidatePreset()) return;
     FFaceArtSlot ArtSlot = ActivePreset->GetSlot(State, LayerTag);
     TArray<FFaceTextureSet>& Frames = ArtSlot.VisemeFrameSets.FindOrAdd(Expression).Visemes.FindOrAdd(Viseme).Frames;
@@ -1104,6 +1187,7 @@ TArray<EViseme> UFaceParallaxEditorWidget::GetAssignedVisemes(EFaceAngleState St
 void UFaceParallaxEditorWidget::ClearVisemeFrames(EFaceAngleState State, FName LayerTag,
     EExpression Expression, EViseme Viseme)
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Clear Viseme Frames"));
     if (!ValidatePreset()) return;
     FFaceArtSlot ArtSlot = ActivePreset->GetSlot(State, LayerTag);
     FFaceExpressionVisemeMap* ExprVisemes =
@@ -1118,6 +1202,7 @@ void UFaceParallaxEditorWidget::ClearVisemeFrames(EFaceAngleState State, FName L
 void UFaceParallaxEditorWidget::ClearAllVisemes(EFaceAngleState State, FName LayerTag,
     EExpression Expression)
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Clear All Visemes"));
     if (!ValidatePreset()) return;
     FFaceArtSlot ArtSlot = ActivePreset->GetSlot(State, LayerTag);
     ArtSlot.VisemeFrameSets.Remove(Expression);
@@ -1154,6 +1239,7 @@ int32 UFaceParallaxEditorWidget::GetNamedVisemeFrameCount(EFaceAngleState State,
 void UFaceParallaxEditorWidget::SetNamedVisemeFrameTextures(EFaceAngleState State, FName LayerTag,
     FName VisemeName, int32 FrameIndex, const FFaceTextureSet& Textures)
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set Named Viseme Frame Textures"));
     if (!ValidatePreset()) return;
     FFaceArtSlot ArtSlot = ActivePreset->GetSlot(State, LayerTag);
     FFaceVisemeFrameArray& Frames = ArtSlot.NamedVisemeFrames.FindOrAdd(VisemeName);
@@ -1194,6 +1280,7 @@ TArray<FName> UFaceParallaxEditorWidget::GetAssignedNamedVisemes(EFaceAngleState
 void UFaceParallaxEditorWidget::ClearNamedVisemeFrames(EFaceAngleState State, FName LayerTag,
     FName VisemeName)
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Clear Named Viseme Frames"));
     if (!ValidatePreset()) return;
     FFaceArtSlot ArtSlot = ActivePreset->GetSlot(State, LayerTag);
     ArtSlot.NamedVisemeFrames.Remove(VisemeName);
@@ -1202,6 +1289,7 @@ void UFaceParallaxEditorWidget::ClearNamedVisemeFrames(EFaceAngleState State, FN
 
 void UFaceParallaxEditorWidget::ClearAllNamedVisemes(EFaceAngleState State, FName LayerTag)
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Clear All Named Visemes"));
     if (!ValidatePreset()) return;
     FFaceArtSlot ArtSlot = ActivePreset->GetSlot(State, LayerTag);
     ArtSlot.NamedVisemeFrames.Empty();
@@ -1278,6 +1366,7 @@ TArray<FFaceParamBinding> UFaceParallaxEditorWidget::GetParamBindings(EFaceAngle
 
 void UFaceParallaxEditorWidget::SetParamBindings(EFaceAngleState State, FName LayerTag, const TArray<FFaceParamBinding>& Bindings)
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set Param Bindings"));
     if (!ValidatePreset()) return;
     ActivePreset->SetParamBindings(State, LayerTag, Bindings);
 
@@ -1295,6 +1384,7 @@ FFaceTextureSet UFaceParallaxEditorWidget::GetAltTextures(EFaceAngleState State,
 
 void UFaceParallaxEditorWidget::SetAltTextures(EFaceAngleState State, FName LayerTag, const FFaceTextureSet& Textures)
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set Alt Textures"));
     if (!ValidatePreset()) return;
     ActivePreset->SetAltTextures(State, LayerTag, Textures);
 
@@ -1377,6 +1467,7 @@ int32 UFaceParallaxEditorWidget::GetSwooshFrameCount(EFaceAngleState State, FNam
 void UFaceParallaxEditorWidget::SetSwooshFrameTextures(EFaceAngleState State, FName LayerTag,
     int32 FrameIndex, const FFaceTextureSet& Textures)
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set Swoosh Frame Textures"));
     if (!ValidatePreset()) return;
     FFaceSwooshArt Art = ActivePreset->GetSwooshArt(State, LayerTag);
     if (FrameIndex >= 0)
@@ -1404,6 +1495,7 @@ FFaceTextureSet UFaceParallaxEditorWidget::GetSwooshFrameTextures(EFaceAngleStat
 
 void UFaceParallaxEditorWidget::ClearSwooshFrames(EFaceAngleState State, FName LayerTag)
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Clear Swoosh Frames"));
     if (!ValidatePreset()) return;
     ActivePreset->ClearSwooshArt(State, LayerTag);
 }
@@ -1438,6 +1530,7 @@ FFaceNestedArt UFaceParallaxEditorWidget::GetNestedElement(EFaceAngleState State
 
 void UFaceParallaxEditorWidget::SetNestedElement(EFaceAngleState State, FName LayerTag, int32 Index, const FFaceNestedArt& Element)
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set Nested Element"));
     if (!ValidatePreset()) return;
     ActivePreset->SetNestedElement(State, LayerTag, Index, Element);
     UFaceParallaxComponent* Comp = GetParallaxComponent();
@@ -1446,6 +1539,7 @@ void UFaceParallaxEditorWidget::SetNestedElement(EFaceAngleState State, FName La
 
 void UFaceParallaxEditorWidget::AddNestedElement(EFaceAngleState State, FName LayerTag, const FFaceNestedArt& Element)
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Add Nested Element"));
     if (!ValidatePreset()) return;
     ActivePreset->AddNestedElement(State, LayerTag, Element);
     UFaceParallaxComponent* Comp = GetParallaxComponent();
@@ -1454,6 +1548,7 @@ void UFaceParallaxEditorWidget::AddNestedElement(EFaceAngleState State, FName La
 
 void UFaceParallaxEditorWidget::RemoveNestedElement(EFaceAngleState State, FName LayerTag, int32 Index)
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Remove Nested Element"));
     if (!ValidatePreset()) return;
     ActivePreset->RemoveNestedElement(State, LayerTag, Index);
     UFaceParallaxComponent* Comp = GetParallaxComponent();
@@ -1462,9 +1557,11 @@ void UFaceParallaxEditorWidget::RemoveNestedElement(EFaceAngleState State, FName
 
 void UFaceParallaxEditorWidget::SetNestedTextures(EFaceAngleState State, FName LayerTag, int32 Index, const FFaceTextureSet& Textures)
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set Nested Textures"));
     if (!ValidatePreset()) return;
-    ActivePreset->SetNestedElement(State, LayerTag, Index, ActivePreset->GetNestedElement(State, LayerTag, Index));
-    // Must use the component function to set specific sub-field
+    FFaceNestedArt Elem = ActivePreset->GetNestedElement(State, LayerTag, Index);
+    Elem.Textures = Textures;
+    ActivePreset->SetNestedElement(State, LayerTag, Index, Elem);
     UFaceParallaxComponent* Comp = GetParallaxComponent();
     if (Comp) Comp->SetNestedTextures(State, LayerTag, Index, Textures);
 }
@@ -1478,6 +1575,7 @@ FFaceTextureSet UFaceParallaxEditorWidget::GetNestedTextures(EFaceAngleState Sta
 
 void UFaceParallaxEditorWidget::SetNestedTransform(EFaceAngleState State, FName LayerTag, int32 Index, const FFaceArtTransform& Transform)
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set Nested Transform"));
     UFaceParallaxComponent* Comp = GetParallaxComponent();
     if (Comp) Comp->SetNestedTransform(State, LayerTag, Index, Transform);
 }
@@ -1491,6 +1589,7 @@ FFaceArtTransform UFaceParallaxEditorWidget::GetNestedTransform(EFaceAngleState 
 
 void UFaceParallaxEditorWidget::SetNestedPivot(EFaceAngleState State, FName LayerTag, int32 Index, FVector2D Pivot)
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set Nested Pivot"));
     UFaceParallaxComponent* Comp = GetParallaxComponent();
     if (Comp) Comp->SetNestedPivot(State, LayerTag, Index, Pivot);
 }
@@ -1504,6 +1603,7 @@ FVector2D UFaceParallaxEditorWidget::GetNestedPivot(EFaceAngleState State, FName
 
 void UFaceParallaxEditorWidget::SetNestedJiggleEnabled(EFaceAngleState State, FName LayerTag, int32 Index, bool bEnabled)
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set Nested Jiggle Enabled"));
     if (!ValidatePreset()) return;
     FFaceNestedArt Elem = ActivePreset->GetNestedElement(State, LayerTag, Index);
     Elem.bJiggleEnabled = bEnabled;
@@ -1512,6 +1612,7 @@ void UFaceParallaxEditorWidget::SetNestedJiggleEnabled(EFaceAngleState State, FN
 
 void UFaceParallaxEditorWidget::SetNestedJiggleSettings(EFaceAngleState State, FName LayerTag, int32 Index, const FFaceJiggleSettings& Settings)
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set Nested Jiggle Settings"));
     if (!ValidatePreset()) return;
     FFaceNestedArt Elem = ActivePreset->GetNestedElement(State, LayerTag, Index);
     Elem.JiggleSettings = Settings;
@@ -1527,6 +1628,7 @@ FFaceJiggleSettings UFaceParallaxEditorWidget::GetNestedJiggleSettings(EFaceAngl
 
 void UFaceParallaxEditorWidget::SetNestedVisibility(EFaceAngleState State, FName LayerTag, FName ElementName, EFaceAngleState ViewState, bool bVisible)
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set Nested Visibility"));
     UFaceParallaxComponent* Comp = GetParallaxComponent();
     if (Comp) Comp->SetNestedVisibility(State, LayerTag, ElementName, ViewState, bVisible);
 }
@@ -1549,6 +1651,7 @@ bool UFaceParallaxEditorWidget::GetNestedVisibility(EFaceAngleState State, FName
 
 void UFaceParallaxEditorWidget::SetNestedIdleFrames(EFaceAngleState State, FName LayerTag, int32 Index, const TArray<FFaceTextureSet>& Frames)
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set Nested Idle Frames"));
     if (!ValidatePreset()) return;
     FFaceNestedArt Elem = ActivePreset->GetNestedElement(State, LayerTag, Index);
     Elem.IdleFrames = Frames;
@@ -1564,6 +1667,7 @@ TArray<FFaceTextureSet> UFaceParallaxEditorWidget::GetNestedIdleFrames(EFaceAngl
 
 void UFaceParallaxEditorWidget::ClearNestedIdleFrames(EFaceAngleState State, FName LayerTag, int32 Index)
 {
+    FPresetTransactionScope Transaction(ActivePreset, TEXT("Clear Nested Idle Frames"));
     if (!ValidatePreset()) return;
     FFaceNestedArt Elem = ActivePreset->GetNestedElement(State, LayerTag, Index);
     Elem.IdleFrames.Empty();
@@ -2086,6 +2190,12 @@ static auto MakeSectionLbl(const FString& T, int32 S) -> TSharedRef<STextBlock>
 
 TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
 {
+    if (IsTemplate())
+    {
+        return SNew(SBox).HAlign(HAlign_Fill).VAlign(VAlign_Fill)
+            [SNew(STextBlock).Text(FText::FromString(TEXT("Face Parallax Editor")))];
+    }
+
     UFaceParallaxComponent* Comp = GetParallaxComponent();
     TArray<FName> LNames;
     if (Comp)
@@ -2101,6 +2211,29 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
     if (!SelectedLayerName.IsValid() && LNames.Num() > 0) SelectedLayerName = LNames[0];
     LayerNames = LNames;
 
+    // Always re-discover preview actor — handles BP re-instancing clearing the reference
+    {
+        UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+        if (World)
+        {
+            for (TActorIterator<AFaceParallaxPreviewActor> It(World); It; ++It)
+            {
+                if (*It != PreviewActor)
+                {
+                    PreviewActor = *It;
+                    if (DataModel) DataModel->PreviewActor = *It;
+                }
+                break;
+            }
+        }
+    }
+    // Auto-assign ActivePreset from discovered preview actor's component
+    if (PreviewActor && PreviewActor->FaceParallax && PreviewActor->FaceParallax->ActivePreset)
+    {
+        ActivePreset = PreviewActor->FaceParallax->ActivePreset;
+        if (DataModel) DataModel->ActivePreset = ActivePreset;
+    }
+
     // ========================
     // LAMBDAS (RebuildWidget-only helpers)
     // ========================
@@ -2111,9 +2244,9 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
             .OnValueChanged_Lambda(MoveTemp(Fn));
     };
 
-    auto MakeSectionBox = [](const FString& Title, TSharedRef<SWidget> Content) -> TSharedRef<SWidget>
+    auto MakeSectionBox = [this](const FString& Title, TSharedRef<SWidget> Content) -> TSharedRef<SWidget>
     {
-        return SNew(SVerticalBox)
+        TSharedRef<SVerticalBox> Section = SNew(SVerticalBox)
             + SVerticalBox::Slot().AutoHeight().Padding(FMargin(4,6,4,2))
                 [SNew(STextBlock)
                     .Text(FText::FromString(Title))
@@ -2125,22 +2258,8 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
                     .BorderBackgroundColor(FLinearColor(0.08f,0.08f,0.08f))
                     .Padding(FMargin(6))
                     [Content]];
-    };
-
-    auto MakeVisibleBtn = [this](FName Tag) -> TSharedRef<SWidget>
-    {
-        return SNew(SCheckBox)
-            .IsChecked(ECheckBoxState::Checked)
-            .OnCheckStateChanged_Lambda([this, Tag](ECheckBoxState S)
-            {
-                int32 Idx = GetLayerIndex(Tag);
-                if (Idx >= 0)
-                {
-                    FFaceArtSlot ArtSlot = ActivePreset->GetSlot(ActiveViewState, Tag);
-                    // Toggle visibility not directly on slot — use nested art flags or skip
-                    RefreshUI();
-                }
-            });
+        SectionSectionTitles.Add(Section, Title);
+        return Section;
     };
 
     // ========================
@@ -2208,13 +2327,54 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
                     "Nested Art pins: add nested elements, enable Pinned,\n"
                     "set Pin X/Y/Z to define 3D attachment points."
                 ));
-                if (HelpWindow.IsValid())
-                    HelpWindow->SetVisibility(EVisibility::Collapsed);
-                else
-                    UE_LOG(LogTemp, Log, TEXT("[FaceParallaxEditorWidget] %s"), *Msg.ToString());
+                UE_LOG(LogTemp, Log, TEXT("[FaceParallaxEditorWidget] %s"), *Msg.ToString());
                 if (TextStatus.IsValid())
                     TextStatus->SetText(Msg);
             }, FLinearColor(0.7f,0.7f,0.7f))];
+        TB->AddSlot().Padding(FMargin(2)).AutoWidth()
+            [MakeBtn(TEXT("Spawn Preview"), [this]()
+            {
+                UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+                if (!World) return;
+                AFaceParallaxPreviewActor* NewActor = World->SpawnActor<AFaceParallaxPreviewActor>(
+                    AFaceParallaxPreviewActor::StaticClass());
+                if (NewActor)
+                {
+                    SetPreviewActor(NewActor);
+                    if (TextStatus.IsValid())
+                        TextStatus->SetText(FText::FromString(TEXT("Spawned new PreviewActor")));
+                }
+            }, FLinearColor(0.5f,1.0f,0.5f))];
+        TB->AddSlot().Padding(FMargin(2)).AutoWidth()
+            [MakeBtn(TEXT("Find Preview"), [this]()
+            {
+                UWorld* World = GEditor ? GEditor->GetEditorWorldContext().World() : nullptr;
+                if (!World) return;
+                for (TActorIterator<AFaceParallaxPreviewActor> It(World); It; ++It)
+                {
+                    SetPreviewActor(*It);
+                    if (TextStatus.IsValid())
+                        TextStatus->SetText(FText::FromString(TEXT("Found PreviewActor in level")));
+                    return;
+                }
+                if (TextStatus.IsValid())
+                    TextStatus->SetText(FText::FromString(TEXT("No PreviewActor found in level")));
+            }, FLinearColor(0.5f,0.8f,1.0f))];
+        TB->AddSlot().Padding(FMargin(2)).AutoWidth()
+            [MakeBtn(TEXT("+DataModel"), [this]()
+            {
+                UFaceParallaxDataModel* DM = NewObject<UFaceParallaxDataModel>();
+                DM->InitializeDataModel();
+                SetDataModel(DM);
+                if (TextStatus.IsValid())
+                    TextStatus->SetText(FText::FromString(TEXT("Created new DataModel")));
+            }, FLinearColor(0.8f,0.6f,1.0f))];
+        TB->AddSlot().Padding(FMargin(2)).AutoWidth()
+            [MakeBtn(TEXT("Clear Stale"), [this]()
+            {
+                ClearStaleTargets();
+                RefreshUI();
+            }, FLinearColor(1.0f,0.5f,0.5f))];
         Root->AddSlot().AutoHeight()
             [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("NoBorder"))
                 .BorderBackgroundColor(FLinearColor(0.12f,0.12f,0.12f))
@@ -2470,10 +2630,10 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
                     [SNew(SBox).WidthOverride(70)[Edit]];
                 XForm->AddSlot().AutoHeight()[R];
             };
-            AddNumRow(TEXT("Pos X"), EditPosX, [this](float V){ if (SelectedLayerName.IsValid()) SetLayerPosition(ActiveViewState, SelectedLayerName, V, 0.0f); });
-            AddNumRow(TEXT("Pos Y"), EditPosY, [this](float V){ if (SelectedLayerName.IsValid()) SetLayerPosition(ActiveViewState, SelectedLayerName, 0.0f, V); });
-            AddNumRow(TEXT("Scale X"), EditScaleX, [this](float V){ if (SelectedLayerName.IsValid()) SetLayerScale(ActiveViewState, SelectedLayerName, V, 1.0f); });
-            AddNumRow(TEXT("Scale Y"), EditScaleY, [this](float V){ if (SelectedLayerName.IsValid()) SetLayerScale(ActiveViewState, SelectedLayerName, 1.0f, V); });
+            AddNumRow(TEXT("Pos X"), EditPosX, [this](float V){ if (SelectedLayerName.IsValid() && ActivePreset) { FFaceArtTransform T = ActivePreset->GetSlot(ActiveViewState, SelectedLayerName).CanonicalTransform; SetLayerPosition(ActiveViewState, SelectedLayerName, V, T.Position.Y); } });
+            AddNumRow(TEXT("Pos Y"), EditPosY, [this](float V){ if (SelectedLayerName.IsValid() && ActivePreset) { FFaceArtTransform T = ActivePreset->GetSlot(ActiveViewState, SelectedLayerName).CanonicalTransform; SetLayerPosition(ActiveViewState, SelectedLayerName, T.Position.X, V); } });
+            AddNumRow(TEXT("Scale X"), EditScaleX, [this](float V){ if (SelectedLayerName.IsValid() && ActivePreset) { FFaceArtTransform T = ActivePreset->GetSlot(ActiveViewState, SelectedLayerName).CanonicalTransform; SetLayerScale(ActiveViewState, SelectedLayerName, V, T.Scale.Y); } });
+            AddNumRow(TEXT("Scale Y"), EditScaleY, [this](float V){ if (SelectedLayerName.IsValid() && ActivePreset) { FFaceArtTransform T = ActivePreset->GetSlot(ActiveViewState, SelectedLayerName).CanonicalTransform; SetLayerScale(ActiveViewState, SelectedLayerName, T.Scale.X, V); } });
             AddNumRow(TEXT("Rot"), EditRot, [this](float V){ if (SelectedLayerName.IsValid()) SetLayerRotation(ActiveViewState, SelectedLayerName, V); });
             PropScroll->AddSlot()
                 [MakeSectionBox(TEXT("Transform"), XForm)];
@@ -2510,6 +2670,42 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
             ARow->AddSlot().Padding(FMargin(2,2)).AutoWidth()
                 [MakeLbl(TEXT("Spd"), 9)];
             Cam->AddSlot().AutoHeight()[ARow];
+
+            // Zone boundary multipliers
+            TSharedRef<SHorizontalBox> ZoneRow = SNew(SHorizontalBox);
+            ZoneRow->AddSlot().Padding(FMargin(0,2)).AutoWidth()
+                [MakeLbl(TEXT("Zones (F/3Q/P/B):"), 9, FLinearColor(0.6f,0.8f,1.0f))];
+            auto AddZoneEdit = [&](int32 Zi)
+            {
+                UFaceParallaxComponent* Comp = GetParallaxComponent();
+                float Def = Comp ? UFaceParallaxComponent::GetBoundaryOrDefault(Comp->ZoneBoundaryMultipliers, Zi) : 1.0f;
+                TSharedRef<SEditableTextBox> Edit = SNew(SEditableTextBox)
+                    .Text(FText::FromString(FString::Printf(TEXT("%.0f"), Def)))
+                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+                    .OnTextCommitted_Lambda([this, Zi](const FText& T, ETextCommit::Type)
+                    {
+                        float V = FMath::Clamp(FCString::Atof(*T.ToString()), 0.5f, 20.0f);
+                        UFaceParallaxComponent* Comp = GetParallaxComponent();
+                        if (Comp)
+                        {
+                                if (!Comp->ZoneBoundaryMultipliers.IsValidIndex(Zi))
+                                {
+                                    Comp->ZoneBoundaryMultipliers.SetNum(4);
+                                    static const float DefaultZoneMults[4] = {1.0f, 3.0f, 5.0f, 7.0f};
+                                    for (int32 i = 0; i < 4; ++i)
+                                        if (Comp->ZoneBoundaryMultipliers[i] == 0.0f)
+                                            Comp->ZoneBoundaryMultipliers[i] = DefaultZoneMults[i];
+                                }
+                            Comp->ZoneBoundaryMultipliers[Zi] = V;
+                            RebuildZoneDiagram();
+                        }
+                    });
+                ZoneRow->AddSlot().Padding(FMargin(2,2)).AutoWidth()
+                    [SNew(SBox).WidthOverride(36)[Edit]];
+            };
+            AddZoneEdit(0); AddZoneEdit(1); AddZoneEdit(2); AddZoneEdit(3);
+            Cam->AddSlot().AutoHeight()[ZoneRow];
+
             PropScroll->AddSlot()
                 [MakeSectionBox(TEXT("Camera"), Cam)];
         }
@@ -2867,11 +3063,12 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
         AssetModifiedHandle = FCoreUObjectDelegates::OnObjectModified.AddUObject(this, &UFaceParallaxEditorWidget::OnAssetModified);
     }
 
-    // Run initial diagnostics
-    RunDiagnostics();
-
-    // Initial UI population
-    RefreshUI();
+    // Initial diagnostics and UI population deferred until targets are set
+    if (!bSuppressValidation)
+    {
+        RunDiagnostics();
+        RefreshUI();
+    }
 
     return Root;
 }
@@ -2892,6 +3089,9 @@ void UFaceParallaxEditorWidget::SetSelectedLayer(const FString& LayerName)
 
 void UFaceParallaxEditorWidget::RefreshUI()
 {
+    if (bIsRefreshing) return;
+    bIsRefreshing = true;
+
     RefreshLayerList();
     RefreshTextureThumbs();
     RefreshTimeline();
@@ -2921,6 +3121,9 @@ void UFaceParallaxEditorWidget::RefreshUI()
     // Clear transient feedback after refresh
     if (TextStatus.IsValid() && TextStatus->GetText().ToString().Len() > 60)
         TextStatus->SetText(FText::FromString(TEXT("Ready")));
+    RunDiagnostics();
+
+    bIsRefreshing = false;
 }
 
 void UFaceParallaxEditorWidget::RefreshConfigCheckboxes()
@@ -2949,32 +3152,25 @@ void UFaceParallaxEditorWidget::RefreshLayerList()
     if (!LayerPanelBox.IsValid()) return;
     LayerPanelBox->ClearChildren();
 
-    if (SelectedLayerName.IsValid() && LayerNames.Num() == 0)
-    {
-        for (auto& N : LayerNames)
-        {
-            if (N == SelectedLayerName) { SelectedLayerName = N; break; }
-        }
-    }
     if (!SelectedLayerName.IsValid() && LayerNames.Num() > 0)
         SelectedLayerName = LayerNames[0];
 
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
     for (const FName& Tag : LayerNames)
     {
         bool bSelected = (Tag == SelectedLayerName);
         FString TagStr = Tag.ToString();
+        bool bLayerHidden = Comp && !Comp->GetLayerVisibility(Tag);
 
         TSharedRef<SHorizontalBox> Row = SNew(SHorizontalBox);
-        bool bLayerHidden = HiddenLayers.Contains(Tag);
         // Eye toggle
         Row->AddSlot().AutoWidth().Padding(FMargin(2,0,0,0)).VAlign(VAlign_Center)
             [SNew(SCheckBox)
                 .IsChecked(bLayerHidden ? ECheckBoxState::Unchecked : ECheckBoxState::Checked)
-                .OnCheckStateChanged_Lambda([this, Tag](ECheckBoxState S)
+                .OnCheckStateChanged_Lambda([this, Tag, Comp](ECheckBoxState S)
                 {
                     bool bNowHidden = (S == ECheckBoxState::Unchecked);
-                    if (bNowHidden) HiddenLayers.Add(Tag);
-                    else HiddenLayers.Remove(Tag);
+                    if (Comp) Comp->SetLayerVisibility(Tag, !bNowHidden);
                     RefreshUI();
                 })];
         // Layer name button
@@ -3011,13 +3207,35 @@ void UFaceParallaxEditorWidget::RefreshTextureThumbs()
         D = Tex.Depth;
     }
 
-    auto ApplyTex = [](TSharedPtr<SImage>& Thumb, UTexture2D* Tex, FSlateBrush& Brush)
+    // Check if async loads are in-flight — show a visual cue
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    bool bLoading = false;
+    if (Comp)
+    {
+        // We can't directly access ActiveTextureLoads from the widget (it's private).
+        // Instead, check if textures that should be loaded aren't yet resolved.
+        FFaceTextureSet Tex = GetSlotTextures(ActiveViewState, SelectedLayerName);
+        if (SelectedLayerName.IsValid())
+        {
+            bool bHasAnySoftRef = false;
+            bHasAnySoftRef |= !Tex.SoftAlbedo.IsNull() && Tex.Albedo == nullptr;
+            bHasAnySoftRef |= !Tex.SoftNormal.IsNull() && Tex.Normal == nullptr;
+            bHasAnySoftRef |= !Tex.SoftDepth.IsNull() && Tex.Depth == nullptr;
+            bLoading = bHasAnySoftRef;
+        }
+    }
+
+    auto ApplyTex = [bLoading](TSharedPtr<SImage>& Thumb, UTexture2D* Tex, FSlateBrush& Brush)
     {
         if (Tex)
         {
             Brush.SetResourceObject(Tex);
             Brush.ImageSize = FVector2D(72, 72);
             if (Thumb.IsValid()) { Thumb->SetImage(&Brush); Thumb->SetColorAndOpacity(FLinearColor(1,1,1)); }
+        }
+        else if (bLoading)
+        {
+            if (Thumb.IsValid()) Thumb->SetColorAndOpacity(FLinearColor(0.2f,0.3f,0.6f)); // blue-ish loading hint
         }
         else
         {
@@ -3073,7 +3291,24 @@ void UFaceParallaxEditorWidget::RefreshTimeline()
             int32 Idx = i;
             FrameBox->SetOnMouseButtonDown(FPointerEventHandler::CreateLambda([this, Idx](const FGeometry&, const FPointerEvent&) -> FReply
             {
-                UE_LOG(LogTemp, Log, TEXT("[FaceParallaxEditorWidget] Click blink frame %d — wire to SetBlinkFrameTextures"), Idx);
+                if (SelectedLayerName.IsValid())
+                {
+                    UTexture2D* Tex = GetSelectedContentBrowserTexture();
+                    FFaceTextureSet Cur = GetBlinkFrameTextures(ActiveViewState, SelectedLayerName, Idx);
+                    if (Tex)
+                    {
+                        FString TexName = Tex->GetName();
+                        // Heuristic: assign to channel matching texture name suffix
+                        if (TexName.Contains(TEXT("_N"), ESearchCase::IgnoreCase) || TexName.Contains(TEXT("Normal"), ESearchCase::IgnoreCase))
+                            Cur.Normal = Tex;
+                        else if (TexName.Contains(TEXT("_D"), ESearchCase::IgnoreCase) || TexName.Contains(TEXT("Depth"), ESearchCase::IgnoreCase))
+                            Cur.Depth = Tex;
+                        else
+                            Cur.Albedo = Tex;
+                        SetBlinkFrameTextures(ActiveViewState, SelectedLayerName, Idx, Cur);
+                    }
+                    RefreshUI();
+                }
                 return FReply::Handled();
             }));
             FrameRow->AddSlot().Padding(FMargin(1))[FrameBox];
@@ -3084,7 +3319,8 @@ void UFaceParallaxEditorWidget::RefreshTimeline()
             {
                 if (!SelectedLayerName.IsValid()) return;
                 int32 Cnt = GetBlinkFrameCount(ActiveViewState, SelectedLayerName);
-                SetBlinkFrameTextures(ActiveViewState, SelectedLayerName, Cnt, FFaceTextureSet());
+                FFaceTextureSet DefaultSet = GetSlotTextures(ActiveViewState, SelectedLayerName);
+                SetBlinkFrameTextures(ActiveViewState, SelectedLayerName, Cnt, DefaultSet);
                 RefreshUI();
             }, FLinearColor(0.6f,1.0f,0.6f), FLinearColor(0.1f,0.1f,0.1f))];
         BlkCol->AddSlot().AutoHeight().Padding(FMargin(0,2))[FrameRow];
@@ -3097,12 +3333,12 @@ void UFaceParallaxEditorWidget::RefreshTimeline()
         ExpCol->AddSlot().AutoHeight()
             [MakeLbl(TEXT("Expression"), 9, FLinearColor(0.6f,0.8f,1.0f))];
         TSharedRef<SHorizontalBox> ExpRow = SNew(SHorizontalBox);
-        // Show a few expression slots
-        EExpression KnownExprs[] = {
-            EExpression::Neutral, EExpression::Smile, EExpression::Frown,
-        };
-        for (auto Expr : KnownExprs)
+        // Iterate all expression types from the enum
+        UEnum* ExprEnum = StaticEnum<EExpression>();
+        int32 ExprCount = ExprEnum ? ExprEnum->NumEnums() - 1 : 0;
+        for (int32 ExprIdx = 0; ExprIdx < ExprCount; ++ExprIdx)
         {
+            EExpression Expr = (EExpression)ExprEnum->GetValueByIndex(ExprIdx);
             FString ExprStr = StaticEnum<EExpression>()->GetNameStringByValue((int64)Expr);
             bool bHas = false;
             if (SelectedLayerName.IsValid())
@@ -3379,7 +3615,6 @@ void UFaceParallaxEditorWidget::RebuildZoneDiagram()
         }
 
         // Yaw cursor marker
-        int32 ThisStartPx = SegIdx > 0 ? 0 : 0;
         if (Yaw >= Seg.Start && Yaw <= Seg.End && SegIdx > 0)
         {
             float YawFrac = (Yaw - Seg.Start) / (Seg.End - Seg.Start);
@@ -3727,16 +3962,32 @@ void UFaceParallaxEditorWidget::RebuildMaterialCrossRef()
 void UFaceParallaxEditorWidget::ApplySearchFilter(const FString& Filter)
 {
     SearchFilter = Filter;
-    // Apply visibility on the main prop scroll sections
     if (!PropScroll.IsValid()) return;
+
+    // Build a set of layer names that match the filter, so sections
+    // that contain them stay visible even if the section title doesn't match.
+    TSet<FString> MatchingLayers;
+    for (const FName& L : LayerNames)
+    {
+        FString LStr = L.ToString();
+        if (LStr.Contains(Filter, ESearchCase::IgnoreCase))
+            MatchingLayers.Add(LStr);
+    }
+
     for (int32 Idx = 0; Idx < PropScroll->GetChildren()->Num(); ++Idx)
     {
-        TSharedRef<SWidget> Child = PropScroll->GetChildren()->GetChildAt(Idx);
-        // Show all when filter is empty; otherwise, a more
-        // sophisticated per-section filter could be applied here.
-        Child->SetVisibility(Filter.IsEmpty() ? EVisibility::Visible : EVisibility::Visible);
+        TSharedRef<SWidget> Section = PropScroll->GetChildren()->GetChildAt(Idx);
+        bool bVisible = true;
+        if (!Filter.IsEmpty())
+        {
+            FString SectionText = SectionSectionTitles.FindRef(Section);
+            if (SectionText.IsEmpty())
+                bVisible = MatchingLayers.Num() > 0;
+            else
+                bVisible = SectionText.Contains(Filter, ESearchCase::IgnoreCase) || MatchingLayers.Num() > 0;
+        }
+        Section->SetVisibility(bVisible ? EVisibility::Visible : EVisibility::Collapsed);
     }
-    UE_LOG(LogTemp, Verbose, TEXT("[FaceParallaxEditorWidget] Search filter: %s"), *Filter);
 }
 
 // ====================================================================
@@ -3853,11 +4104,10 @@ void UFaceParallaxEditorWidget::RestoreSnapshot()
             FFaceArtSlot ArtSlot = SnapshotPresetBackup->GetSlot(S, Tag);
             ActivePreset->SetSlot(S, Tag, ArtSlot);
         }
-        // Copy NestedPin3D and FaceProfile references
+        // Copy NestedPin3D references
         if (SnapshotPresetBackup->HasState(S))
         {
             TArray<FName> STags = SnapshotPresetBackup->GetAllLayerTags(S);
-            TArray<FName> ATags = ActivePreset->GetAllLayerTags(S);
             for (FName Tag : STags)
             {
                 int32 N = SnapshotPresetBackup->GetNestedElementCount(S, Tag);
@@ -3990,6 +4240,14 @@ void UFaceParallaxEditorWidget::ValidateMaterialParameters()
         TEXT("AltAlbedoTexture"), TEXT("AltNormalTexture"), TEXT("AltDepthTexture"),
         TEXT("SwooshTexture")
     };
+
+    // Skip normal map validation for Unlit shading model
+    UMaterial* BaseMat = Mat->GetMaterial();
+    if (BaseMat && BaseMat->GetShadingModels().HasShadingModel(MSM_Unlit))
+    {
+        ExpectedTextureParams.Remove(TEXT("NormalTexture"));
+        ExpectedTextureParams.Remove(TEXT("NormalTexturePrev"));
+    }
 
     // Check scalar parameters
     int32 FoundScalar = 0, MissingScalar = 0;

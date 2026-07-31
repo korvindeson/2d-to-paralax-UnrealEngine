@@ -24,7 +24,7 @@ public:
 
     // --- Preview actor ---
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Data|Preview")
-    TObjectPtr<AFaceParallaxPreviewActor> PreviewActor;
+    TWeakObjectPtr<AFaceParallaxPreviewActor> PreviewActor;
 
     // --- UI Selection State ---
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Data|Selection")

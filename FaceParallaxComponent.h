@@ -810,6 +810,13 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Face Parallax|Skeletal Mesh")
     FName GetHeadBoneName() const { return HeadBoneName; }
 
+    // --- LAYER VISIBILITY ---
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Layer Visibility")
+    void SetLayerVisibility(FName LayerTag, bool bVisible);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Layer Visibility")
+    bool GetLayerVisibility(FName LayerTag) const;
+
     // --- EVENTS ---
     UPROPERTY(BlueprintAssignable, Category = "Face Parallax|Events")
     FOnFaceStateChangedSignature OnFaceStateChanged;
@@ -863,7 +870,7 @@ public:
     TObjectPtr<class UMaterialParameterCollection> ParallaxMPC;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Optimization")
-    bool bUseAsyncTextureLoading = false;
+    bool bUseAsyncTextureLoading = true;
 
     UFUNCTION(BlueprintCallable, Category = "Face Parallax|Optimization")
     void SetUseMPC(bool bEnabled) { bUseMPC = bEnabled; }
@@ -960,7 +967,19 @@ private:
     float FrameDpitch = 0.0f;
     float SwooshSmearAngle = 0.0f;
     int32 SwooshProceduralTick = 0;
+    UPROPERTY()
     TArray<FFaceTextureSet> SwooshFrames;
+
+    // --- Frame delta save: MUST call BEFORE overwriting PreviousFrameYaw/Pitch ---
+    // Used by jiggle impulse, swoosh smear angle, and angular velocity.
+    // The overwrite of PreviousFrameYaw/Pitch happens inside this call.
+    void SaveFrameDelta(float InYaw, float InPitch)
+    {
+        FrameDyaw = InYaw - PreviousFrameYaw;
+        FrameDpitch = InPitch - PreviousFramePitch;
+        PreviousFrameYaw = InYaw;
+        PreviousFramePitch = InPitch;
+    }
 
     // --- Nested art + jiggle state ---
     struct FNestedJiggleState
@@ -1021,20 +1040,32 @@ public:
 
     // --- Sequencer camera cache ---
     void RefreshSequencerCamera();
+    UPROPERTY()
     mutable TObjectPtr<AActor> SequencerCameraCache;
     mutable bool bSequencerCacheValid = false;
 
     // --- Async texture loading ---
+    UPROPERTY()
     TMap<FSoftObjectPath, TObjectPtr<UTexture2D>> AsyncTextureCache;
-    TMap<FSoftObjectPath, TSharedPtr<struct FStreamableHandle>> ActiveTextureLoads;
+    TArray<FSoftObjectPath> AsyncTextureCacheOrder;
+    TMap<FSoftObjectPath, TPair<TSharedPtr<struct FStreamableHandle>, int32>> ActiveTextureLoads;
+    int32 LoadGeneration = 0;
+    int32 MaxAsyncTextureCacheSize = 256;
     void OnAsyncTexturesLoaded();
+    void EnforceAsyncCacheSize();
     UTexture2D* ResolveTexture(const TSoftObjectPtr<UTexture2D>& SoftPtr);
 
-    // --- Last-applied texture cache (S4) ---
+    // --- Layer visibility overrides (editor eye-toggle) ---
+    UPROPERTY()
+    TMap<FName, bool> LayerVisibilityOverrides;
+
+    // --- Last-applied texture cache ---
+    UPROPERTY()
     TMap<FName, FFaceAppliedTextures> LastAppliedTextures;
+    UPROPERTY()
     TMap<FName, FFaceAppliedTextures> LastAppliedNestedTextures;
 
-    // --- Precomputed nested art FName keys (M5) ---
+    // --- Precomputed nested art FName keys ---
     TMap<FName, TMap<FName, FName>> NestedArtStateKeyCache;          // [LayerTag][ElementName] -> StateKey
     TMap<FName, TMap<FName, FName>> NestedArtChildTagCache;          // [ParentElementName][ElementName] -> ChildTag
     TMap<FName, TMap<FName, TMap<FName, FName>>> NestedArtChildStateKeyCache; // [LayerTag][ParentElementName][ElementName] -> StateKey

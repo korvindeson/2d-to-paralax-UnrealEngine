@@ -123,6 +123,10 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Face Preset|Nested")
     void SetNestedPin3D(EFaceAngleState State, FName LayerTag, int32 Index, const FFacePin3D& Pin);
 
+    // --- POPULATION ---
+    UFUNCTION(BlueprintCallable, Category = "Face Preset")
+    void PopulateDefaultAssignments(const TArray<FString>& LayerNames);
+
     // --- QUERIES ---
     UFUNCTION(BlueprintCallable, Category = "Face Preset")
     bool HasState(EFaceAngleState State) const;

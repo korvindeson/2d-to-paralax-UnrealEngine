@@ -33,10 +33,13 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Face Parallax|Editor Subsystem")
     class UBlueprint* CreateParallaxBlueprint(const FString& PackagePath, const FString& SkeletalMeshPath);
 
-    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Editor Subsystem")
-    class UUserDefinedStruct* EnsureLayerDefStruct(const FString& PackagePath);
+    // (removed: EnsureLayerDefStruct was a stub that always returned nullptr)
 
-    // --- Material Instance editing ---
+    // --- Material Graph (single source of truth for material creation) ---
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Editor Subsystem")
+    void SetupMasterMaterialExpressions(class UMaterial* Material);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Editor Subsystem")
     void SetupMaterialInstanceParams(class UMaterialInstanceConstant* MI, const FString& LayerName, class UMaterial* MasterMaterial);
 
     // --- Toolbar ---
@@ -46,12 +49,11 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Face Parallax|Editor Subsystem")
     void OpenEditorWidget();
 
+    UFUNCTION(Exec, Category = "Face Parallax|Editor Subsystem")
+    void FaceParallaxOpenEditor();
+
 private:
-    void SetupMasterMaterialExpressions(class UMaterial* Material);
     FString ProjectContentDir() const;
     bool SaveAsset(class UObject* Asset);
-    class UObject* LoadOrCreateAsset(const FString& PackagePath, const FString& AssetName, UClass* AssetClass, UFactory* Factory);
-    void FocusOnAsset(const FString& PackagePath);
-
     FDelegateHandle ToolbarExtenderHandle;
 };

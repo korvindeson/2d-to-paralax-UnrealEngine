@@ -2,6 +2,11 @@
 
 FFaceArtSlot UFaceParallaxPreset::GetSlot(EFaceAngleState State, FName LayerTag) const
 {
+    if (LayerTag.IsNone())
+    {
+        return FFaceArtSlot();
+    }
+
     const FFaceViewStateLayerSet* StateSet = ViewAssignments.Find(State);
     if (!StateSet)
     {
@@ -302,6 +307,38 @@ void UFaceParallaxPreset::ClearSwooshArt(EFaceAngleState State, FName LayerTag)
 void UFaceParallaxPreset::ClearAll()
 {
     ViewAssignments.Empty();
+}
+
+// --- POPULATION ---
+
+void UFaceParallaxPreset::PopulateDefaultAssignments(const TArray<FString>& LayerNames)
+{
+    ViewAssignments.Empty();
+
+    TArray<EFaceAngleState> AllStates = {
+        EFaceAngleState::Front, EFaceAngleState::ThreeQuarterRight,
+        EFaceAngleState::RightProfile, EFaceAngleState::BackRight,
+        EFaceAngleState::BackLeft, EFaceAngleState::LeftProfile,
+        EFaceAngleState::ThreeQuarterLeft, EFaceAngleState::Back,
+        EFaceAngleState::Top, EFaceAngleState::Bottom
+    };
+
+    for (EFaceAngleState State : AllStates)
+    {
+        FFaceViewStateLayerSet& StateSet = ViewAssignments.FindOrAdd(State);
+        for (const FString& LayerName : LayerNames)
+        {
+            FName LayerTag = FName(*LayerName);
+            FFaceArtSlot Slot;
+            Slot.CanonicalTransform.Position = FVector2D(0.0f, 0.0f);
+            Slot.CanonicalTransform.Scale = FVector2D(1.0f, 1.0f);
+            Slot.CanonicalTransform.Rotation = 0.0f;
+            Slot.Textures.SyncSoftRefs();
+            StateSet.Layers.Add(LayerTag, Slot);
+        }
+    }
+
+    MarkPackageDirty();
 }
 
 FFaceArtSlot& UFaceParallaxPreset::GetSlotMutable(EFaceAngleState State, FName LayerTag)

@@ -15,6 +15,7 @@ enum class ECameraSource : uint8
     PlayerCamera1    UMETA(DisplayName = "Player Camera 1"),
     SpecifiedActor   UMETA(DisplayName = "Specified Actor"),
     SequencerCamera  UMETA(DisplayName = "Sequencer Camera"),
+    PreviewActor     UMETA(DisplayName = "Preview Actor"),
     Custom           UMETA(DisplayName = "Custom")
 };
 
@@ -219,8 +220,11 @@ USTRUCT(BlueprintType)
 struct FFaceAppliedTextures
 {
     GENERATED_BODY()
+    UPROPERTY()
     UTexture2D* Albedo = nullptr;
+    UPROPERTY()
     UTexture2D* Normal = nullptr;
+    UPROPERTY()
     UTexture2D* Depth = nullptr;
 };
 

@@ -1,6 +1,6 @@
 # FaceParallax — 2D Face Parallax System for Unreal Engine 5
 
-Camera-driven 2D face rendering with multi-layer parallax, depth map support, view-state transitions across 10 angles, real-time depth debug visualizer, preset asset system, and in-editor visual editor with 577+ automated tests.
+Camera-driven 2D face rendering with multi-layer parallax, depth map support, view-state transitions across 10 angles, real-time depth debug visualizer, preset asset system, and in-editor visual editor with 774+ automated tests.
 
 ---
 
@@ -46,7 +46,7 @@ The system renders a 2D character face that responds to camera angle — switchi
 | `FaceParallaxEditorWidget.h/.cpp` | Editor Widget | C++ `UUserWidget` subclass providing bindable functions for every setting across 19 categories. Diagnostic log overlay, auto-refresh via `FCoreUObjectDelegates::OnObjectModified`. |
 | `deploy.py` | Deployment script | Creates master material, material instances, preset data asset, and character BP inside the Unreal Editor Python console |
 | `_gen_embed.py` | Maintenance script | Re-encodes all `.h`/`.cpp` files into `deploy.py`'s `EMBEDDED_SOURCES` for self-contained deployment |
-| `Tests/ParallaxMathTests.cpp` | Math tests | Standalone C++17 (no UE dep) — 577 tests covering state machine, transforms, blink/expression/viseme, swoosh, parameters, nested art + jiggle, 3D pin projection, batch ops, zone multipliers |
+| `Tests/ParallaxMathTests.cpp` | Math tests | Standalone C++17 (no UE dep) — 774 tests covering state machine, transforms, blink/expression/viseme, swoosh, parameters, nested art + jiggle, 3D pin projection, batch ops, zone multipliers |
 | `Tests/SyntaxValidator.py` | Syntax validator | Brace/macro balance, include guards — enforces clean parsing on all source files |
 | `Tests/run_tests.ps1` | Test runner | Syntax validator + C++ math tests + optional UE build test |
 | `Tests/ue_build_test.ps1` | UE build test | Compiles SAMPLES project with `Build.bat`, verifies DLL output |
@@ -211,7 +211,7 @@ Per-frame `SetTextureParameterValue` calls are guarded by pointer comparison aga
 
 ### Async Texture Loading
 
-`AsyncLoadSlotTextures` calls `UAssetManager::GetStreamableManager().RequestAsyncLoad()` with `FStreamableDelegate` bound to `OnAsyncTexturesLoaded`. Active handles are tracked in `ActiveTextureLoads`; existing handles are cancelled when new loads are initiated. Textures are resolved from soft object pointers and written into the slot's hard refs and cache. No `LoadSynchronous` calls remain.
+`AsyncLoadSlotTextures` calls `UAssetManager::GetStreamableManager().RequestAsyncLoad()` with `FStreamableDelegate` bound to `OnAsyncTexturesLoaded`. Active handles are tracked in `ActiveTextureLoads`; existing handles are cancelled when new loads are initiated. Textures are resolved from soft object pointers and written into the slot's hard refs and cache. Only the `CurrentState` textures are resolved on load (not all 10 states). A `LoadGeneration` counter prevents stale callbacks from overwriting newer loads. No `LoadSynchronous` calls remain.
 
 ### Sequencer Camera Cache
 
@@ -348,6 +348,15 @@ The `UUserWidget` subclass constructs its entire UI via `RebuildWidget()` — no
 
 **19 function categories:** Preset, ViewState, Transform, ViewOverride, Textures, Camera, DebugOverlays, Status, DynamicArt, TextureAndTransformParams, Blink, Expression, Viseme, Parameter, ParamBinding, Swoosh, UI, NestedArt, Targets.
 
+**Widget API:**
+| Method | Description |
+|---|---|
+| `SetLayerVisibility(LayerTag, bVisible)` | Toggles visibility of primitives tagged with `LayerTag`; updates persistent `LayerVisibilityOverrides` map |
+| `GetLayerVisibility(LayerTag)` | Returns `false` if overridden hidden, `true` otherwise |
+| `ColorByDepth(bEnabled)` | Toggles depth heat-map visualization on the preview mesh; guarded against redundant rebuilds |
+| `ApplySearchFilter(Filter)` | Filters property sections by title substring match; also shows all sections when filter matches any layer name |
+| `RunDiagnostics()` | Prints preset status, missing states/layers, and error counts to the diagnostic log overlay |
+
 ---
 
 ## Building and Testing
@@ -363,9 +372,13 @@ Add the source files to your UE5 module. Ensure `Build.cs` includes the dependen
 ```
 
 This runs:
-1. **Python syntax validator** — braces/macros/includes on all `.h`/`.cpp` files
-2. **C++ math tests** — 577 standalone tests (g++ from msys64 ucrt64)
-3. **UE build test** — full compilation of SAMPLES project with `Build.bat`
+1. **`_gen_embed.py` staleness check** — verifies embedded sources match disk files
+2. **Python syntax validator** — braces/macros/includes on all `.h`/`.cpp` files
+3. **C++ math tests** — 774+ standalone tests (g++ from msys64 ucrt64)
+4. **UE build test** — full compilation of SAMPLES project with `Build.bat`
+
+Optional flags:
+- `-SyncSamples` — copies root `*.h`/`*.cpp` to `SAMPLES/MyProject/Source/MyProject/` before the UE build
 
 ### Maintaining deploy.py
 
@@ -514,7 +527,7 @@ In the component's `LayerDefinitions` array, adjust per-layer:
 | `HalfZoneWidth` | 22.5 | View Angles |
 | `ZoneBoundaryMultipliers` | {1,3,5,7} | View Angles |
 | `CrossfadeSpeed` | 15.0 | Transitions |
-| `HysteresisDegrees` | 2.0 | Transitions |
+| `HysteresisFrames` | 3 | Transitions |
 | `MaxParallaxOffset` | 5.0 | Parallax |
 | `MaxVerticalParallaxOffset` | 3.0 | Parallax |
 | `DepthMapIntensity` | 1.0 | Depth Maps |
@@ -550,7 +563,7 @@ _gen_embed.py                            — Source re-encoder for deploy.py
 AGENTS.md                                — Agent guide with rules and test info
 
 Tests/
-  ParallaxMathTests.cpp                  — 577 standalone C++ tests
+  ParallaxMathTests.cpp                  — 774 standalone C++ tests
   SyntaxValidator.py                     — Python syntax validation
   run_tests.ps1                          — Test runner
   ue_build_test.ps1                      — UE build test

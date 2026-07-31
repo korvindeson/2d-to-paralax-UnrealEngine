@@ -151,6 +151,9 @@ void UDepthDebugVisualizerComponent::SampleDepthMap(UTexture2D* Texture,
     if (TexWidth == 0 || TexHeight == 0)
     {
         UE_LOG(LogTemp, Warning, TEXT("[UDepthDebugVisualizerComponent] Texture has zero dimensions."));
+        Texture->AddressX = (TextureAddress)OriginalAddressX;
+        Texture->AddressY = (TextureAddress)OriginalAddressY;
+        bAddressModeSaved = false;
         return;
     }
 
@@ -165,6 +168,9 @@ void UDepthDebugVisualizerComponent::SampleDepthMap(UTexture2D* Texture,
     TArray64<uint8> SourceData;
     if (!Texture->Source.GetMipData(SourceData, 0))
     {
+        Texture->AddressX = (TextureAddress)OriginalAddressX;
+        Texture->AddressY = (TextureAddress)OriginalAddressY;
+        bAddressModeSaved = false;
         return;
     }
 
@@ -172,6 +178,9 @@ void UDepthDebugVisualizerComponent::SampleDepthMap(UTexture2D* Texture,
     if (BytesPerPixel == 0)
     {
         UE_LOG(LogTemp, Warning, TEXT("[UDepthDebugVisualizerComponent] Compressed texture format — cannot read source data directly. Reimport with uncompressed format."));
+        Texture->AddressX = (TextureAddress)OriginalAddressX;
+        Texture->AddressY = (TextureAddress)OriginalAddressY;
+        bAddressModeSaved = false;
         return;
     }
 

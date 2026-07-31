@@ -33,10 +33,26 @@ class UFaceParallaxEditorWidget : public UUserWidget
 public:
     virtual TSharedRef<SWidget> RebuildWidget() override;
     virtual void BeginDestroy() override;
+    virtual void PostInitProperties() override;
     // ===== TARGETS =====
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Editor|Targets",
         meta = (DisplayName = "Preview Actor"))
-    TObjectPtr<AFaceParallaxPreviewActor> PreviewActor;
+    TWeakObjectPtr<AFaceParallaxPreviewActor> PreviewActor;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Targets")
+    void SetPreviewActor(AFaceParallaxPreviewActor* NewPreviewActor);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Targets")
+    AFaceParallaxPreviewActor* GetPreviewActor() const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Targets")
+    void SetDataModel(UFaceParallaxDataModel* NewDataModel);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Targets")
+    UFaceParallaxDataModel* GetDataModel() const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Targets")
+    void ClearStaleTargets();
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Editor|Targets",
         meta = (DisplayName = "Active Preset"))
@@ -221,7 +237,7 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Camera")
     void ResetCamera();
 
-    // ===== DEBUGOAVERLAYS =====
+    // ===== DEBUG OVERLAYS =====
     UFUNCTION(BlueprintCallable, Category = "Face Editor|DebugOverlays")
     void ShowTextures(bool bVisible);
 
@@ -897,15 +913,10 @@ private:
     TSharedPtr<SCheckBox> CheckColorByDepth;
     TSharedPtr<SVerticalBox> CfgBox;
 
-    TSet<FName> HiddenLayers;
-
     bool bLocalShowTextures = false;
     bool bLocalShowDepthMesh = false;
     bool bLocalShowWireframe = false;
     bool bLocalColorByDepth = false;
-
-    // Help text popup
-    TSharedPtr<SWidget> HelpWindow;
 
     // ===== ZONE DIAGRAM =====
     TSharedPtr<SWidget> ZoneDiagramWidget;
@@ -925,9 +936,18 @@ private:
     TSharedPtr<SScrollBox> CrossLayerScroll;
     TSharedPtr<STextBlock> TextCrossLayer;
 
+    // ===== REENTRANCY GUARD =====
+    bool bIsRefreshing = false;
+
+public:
+    // ===== SUPPRESS VALIDATION UNTIL TARGETS ARE SET =====
+    bool bSuppressValidation = true;
+
+private:
     // ===== SEARCH =====
     TSharedPtr<SSearchBox> SearchBox;
     FString SearchFilter;
+    TMap<TWeakPtr<SWidget>, FString> SectionSectionTitles;
 
     // ===== PARAM REFERENCE =====
     TSharedPtr<STextBlock> TextParamRefResults;

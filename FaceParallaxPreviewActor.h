@@ -128,4 +128,5 @@ private:
 
     bool bOrbitDirty = true;
     bool bCaptureDirty = true;
+    bool bLastColorByDepth = false;
 };
