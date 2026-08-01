@@ -4,8 +4,8 @@
 #include "Engine/Texture2D.h"
 #include "FaceParallaxTypes.generated.h"
 
-#ifndef MYPROJECT_API
-#define MYPROJECT_API
+#ifndef FACEPARALLAX_API
+#define FACEPARALLAX_API
 #endif
 
 UENUM(BlueprintType)
@@ -35,7 +35,7 @@ enum class EFaceAngleState : uint8
 };
 
 USTRUCT(BlueprintType)
-struct FFaceTextureSet
+struct FACEPARALLAX_API FFaceTextureSet
 {
     GENERATED_BODY()
 
@@ -105,7 +105,7 @@ struct FFaceTextureSet
 };
 
 USTRUCT(BlueprintType)
-struct FFaceArtTransform
+struct FACEPARALLAX_API FFaceArtTransform
 {
     GENERATED_BODY()
 
@@ -147,7 +147,7 @@ enum class ESwooshPhase : uint8
 };
 
 USTRUCT(BlueprintType)
-struct FFaceSwooshArt
+struct FACEPARALLAX_API FFaceSwooshArt
 {
     GENERATED_BODY()
 
@@ -194,7 +194,7 @@ enum class EFaceParamTarget : uint8
 };
 
 USTRUCT(BlueprintType)
-struct FFaceParamBinding
+struct FACEPARALLAX_API FFaceParamBinding
 {
     GENERATED_BODY()
 
@@ -217,7 +217,7 @@ struct FFaceParamBinding
 
 // Cache of last-applied texture pointers to avoid redundant material parameter pushes.
 USTRUCT(BlueprintType)
-struct FFaceAppliedTextures
+struct FACEPARALLAX_API FFaceAppliedTextures
 {
     GENERATED_BODY()
     UPROPERTY()
@@ -229,7 +229,7 @@ struct FFaceAppliedTextures
 };
 
 USTRUCT(BlueprintType)
-struct FFaceJiggleSettings
+struct FACEPARALLAX_API FFaceJiggleSettings
 {
     GENERATED_BODY()
 
@@ -250,7 +250,7 @@ struct FFaceJiggleSettings
 };
 
 USTRUCT(BlueprintType)
-struct FFaceProfile3D
+struct FACEPARALLAX_API FFaceProfile3D
 {
     GENERATED_BODY()
 
@@ -268,7 +268,7 @@ struct FFaceProfile3D
 };
 
 USTRUCT(BlueprintType)
-struct FFacePin3D
+struct FACEPARALLAX_API FFacePin3D
 {
     GENERATED_BODY()
 
@@ -300,7 +300,7 @@ struct FFacePin3D
 };
 
 USTRUCT(BlueprintType)
-struct FFaceNestedArt
+struct FACEPARALLAX_API FFaceNestedArt
 {
     GENERATED_BODY()
 
@@ -355,7 +355,7 @@ struct FFaceNestedArt
 };
 
 USTRUCT(BlueprintType)
-struct FFaceVisemeFrameArray
+struct FACEPARALLAX_API FFaceVisemeFrameArray
 {
     GENERATED_BODY()
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Art Slot")
@@ -363,7 +363,7 @@ struct FFaceVisemeFrameArray
 };
 
 USTRUCT(BlueprintType)
-struct FFaceExpressionVisemeMap
+struct FACEPARALLAX_API FFaceExpressionVisemeMap
 {
     GENERATED_BODY()
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Art Slot")
@@ -371,7 +371,7 @@ struct FFaceExpressionVisemeMap
 };
 
 USTRUCT(BlueprintType)
-struct FFaceArtSlot
+struct FACEPARALLAX_API FFaceArtSlot
 {
     GENERATED_BODY()
 
@@ -452,7 +452,7 @@ struct FFaceArtSlot
 };
 
 USTRUCT(BlueprintType)
-struct FFaceViewStateLayerSet
+struct FACEPARALLAX_API FFaceViewStateLayerSet
 {
     GENERATED_BODY()
 

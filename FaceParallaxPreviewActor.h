@@ -11,7 +11,7 @@ class UDepthDebugVisualizerComponent;
 class UTextureRenderTarget2D;
 
 UCLASS(BlueprintType)
-class AFaceParallaxPreviewActor : public AActor
+class FACEPARALLAX_API AFaceParallaxPreviewActor : public AActor
 {
     GENERATED_BODY()
 
@@ -40,6 +40,18 @@ public:
 
     UFUNCTION(BlueprintCallable, Category = "Preview")
     void SetRenderTarget(UTextureRenderTarget2D* RenderTarget);
+
+    // Creates (or reuses) a render target for the scene capture so the widget
+    // canvas has something to draw. Returns the active target.
+    UFUNCTION(BlueprintCallable, Category = "Preview")
+    UTextureRenderTarget2D* CreateRenderTarget(int32 SizeX, int32 SizeY);
+
+    UFUNCTION(BlueprintCallable, Category = "Preview")
+    UTextureRenderTarget2D* GetRenderTarget() const;
+
+    // Requests a one-shot scene capture on the next tick.
+    UFUNCTION(BlueprintCallable, Category = "Preview")
+    void RequestCapture() { bCaptureDirty = true; }
 
     // --- CAMERA CONTROL ---
     UFUNCTION(BlueprintCallable, Category = "Preview|Camera")

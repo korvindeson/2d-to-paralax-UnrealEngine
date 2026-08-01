@@ -13,6 +13,9 @@
 #include <string>
 #include <vector>
 
+// Phase H: the layout design-contract manifest (pure C++, no UE deps).
+#include "../FaceParallaxLayoutSpec.h"
+
 // --- Minimal math types matching our UE types ---
 struct FVector2D {
     double X, Y;
@@ -5393,6 +5396,139 @@ void TestVisualHullDepth() {
 }
 
 // ========================
+// PER-VIEW VISUAL HULL (mirrors UFaceParallaxComponent::VisualHullDepthStatic
+// yaw/pitch overload): screen point P is in the TARGET view's frame. The max
+// depth Z' along the view ray whose front-space point stays inside every
+// silhouette prism is solved by binary search; the result is the min of that
+// bound and a dome falloff measured against the front silhouette projected
+// into the target view. At yaw 0 / pitch 0 this equals VisualHullDepth above.
+// ========================
+
+static double VisualHullDepthView(const FVector2D* Front, int NF, const FVector2D* Right, int NR,
+    const FVector2D* Left, int NL, const FVector2D* Top, int NT, const FVector2D* Bottom, int NB,
+    FVector2D P, double YawDeg, double PitchDeg) {
+    auto Interior = [&](const FVector2D* Pts, int N, FVector2D Q) -> double {
+        if (N < 2) return 1.0;
+        return fmax(0.0, SilhouetteDistanceToEdge(Pts, N, Q));
+    };
+    const double PI = 3.14159265358979323846;
+    const double YawRad = YawDeg * PI / 180.0;
+    const double PitchRad = PitchDeg * PI / 180.0;
+    const double CosY = cos(YawRad), SinY = sin(YawRad);
+    const double CosP = cos(PitchRad), SinP = sin(PitchRad);
+
+    // Front silhouette's vertical extent (rows are Y-ascending, (xMin, Y, xMax, Y)).
+    // The distance helper clamps out-of-range queries to the nearest row, which
+    // would otherwise leave top/bottom views unbounded along the head's height.
+    const bool bFrontHasExtent = NF >= 2;
+    const double FrontYMin = bFrontHasExtent ? Front[0].Y : -1.0;
+    const double FrontYMax = bFrontHasExtent ? Front[NF - 2].Y : 1.0;
+
+    auto Feasible = [&](double Xp, double Yp, double Zp) -> bool {
+        const double Fx = Xp * CosY + Zp * (SinY * CosP);
+        const double Fy = Yp * CosP - Zp * SinP;
+        const double Zf = -Xp * SinY + Yp * (CosY * SinP) + Zp * (CosY * CosP);
+        if (bFrontHasExtent && (Fy < FrontYMin || Fy > FrontYMax)) return false;
+        if (SilhouetteDistanceToEdge(Front, NF, FVector2D(Fx, Fy)) < 0.0) return false;
+        const double HS = fmin(Interior(Right, NR, FVector2D(0.0, Fy)), Interior(Left, NL, FVector2D(0.0, Fy)));
+        const double HT = fmin(Interior(Top, NT, FVector2D(Fx, 0.0)), Interior(Bottom, NB, FVector2D(Fx, 0.0)));
+        return fabs(Zf) <= HS && fabs(Zf) <= HT;
+    };
+
+    double ZBound = 0.0;
+    if (Feasible(P.X, P.Y, 0.0)) {
+        double Lo = 0.0, Hi = 1.0;
+        for (int i = 0; i < 14; ++i) {
+            const double Mid = (Lo + Hi) * 0.5;
+            if (Feasible(P.X, P.Y, Mid)) Lo = Mid; else Hi = Mid;
+        }
+        ZBound = Lo;
+    }
+
+    double Dome = 1.0;
+    if (fabs(CosY) >= 0.2 && fabs(CosP) >= 0.2 && NF >= 2) {
+        std::vector<FVector2D> Projected;
+        Projected.reserve(NF);
+        for (int i = 0; i + 1 < NF; i += 2) {
+            double Px0 = Front[i].X * CosY;
+            double Py0 = Front[i].X * (SinY * SinP) + Front[i].Y * CosP;
+            double Px1 = Front[i + 1].X * CosY;
+            double Py1 = Front[i + 1].X * (SinY * SinP) + Front[i + 1].Y * CosP;
+            if (CosY < 0.0) std::swap(Px0, Px1);
+            Projected.push_back(FVector2D(Px0, Py0));
+            Projected.push_back(FVector2D(Px1, Py1));
+        }
+        Dome = fmax(0.0, SilhouetteDistanceToEdge(Projected.data(), (int)Projected.size(), P));
+    }
+    const double D = fmin(ZBound, Dome);
+    return D < 0.0 ? 0.0 : (D > 1.0 ? 1.0 : D);
+}
+
+void TestVisualHullDepthView() {
+    printf("\n=== VisualHullDepthView ===\n");
+
+    // Same fixture as TestVisualHullDepth: front square [-0.5,0.5]^2,
+    // right/left profile strips [-0.25,0.25], top/bottom squares [-0.5,0.5].
+    FVector2D Front[] = {
+        FVector2D(-0.5, -0.5), FVector2D(0.5, -0.5),
+        FVector2D(-0.5, 0.0), FVector2D(0.5, 0.0),
+        FVector2D(-0.5, 0.5), FVector2D(0.5, 0.5)
+    };
+    const int NF = sizeof(Front) / sizeof(Front[0]);
+    FVector2D Strip[] = {
+        FVector2D(-0.25, -0.5), FVector2D(0.25, -0.5),
+        FVector2D(-0.25, 0.0), FVector2D(0.25, 0.0),
+        FVector2D(-0.25, 0.5), FVector2D(0.25, 0.5)
+    };
+    const int NS = sizeof(Strip) / sizeof(Strip[0]);
+    FVector2D Square[] = {
+        FVector2D(-0.5, -0.5), FVector2D(0.5, -0.5),
+        FVector2D(-0.5, 0.0), FVector2D(0.5, 0.0),
+        FVector2D(-0.5, 0.5), FVector2D(0.5, 0.5)
+    };
+    const int NQ = sizeof(Square) / sizeof(Square[0]);
+
+    // (yaw 0, pitch 0) must equal the legacy front-view hull exactly.
+    // Depth bounds come from a 14-iteration binary search (1e-3 tolerance).
+    TEST("Front view center equals legacy",
+        fabs(VisualHullDepthView(Front, NF, Strip, NS, Strip, NS, Square, NQ, Square, NQ, FVector2D(0, 0), 0, 0) - 0.25) < 1e-3);
+    TEST("Front view interior equals legacy",
+        fabs(VisualHullDepthView(Front, NF, Strip, NS, Strip, NS, Square, NQ, Square, NQ, FVector2D(0.4, 0), 0, 0) - 0.1) < 1e-3);
+    TEST("Front view edge equals legacy",
+        fabs(VisualHullDepthView(Front, NF, Strip, NS, Strip, NS, Square, NQ, Square, NQ, FVector2D(0.5, 0), 0, 0)) < 1e-3);
+    TEST("Front view outside equals legacy",
+        VisualHullDepthView(Front, NF, Strip, NS, Strip, NS, Square, NQ, Square, NQ, FVector2D(0.9, 0.9), 0, 0) == 0.0);
+
+    // RightProfile (yaw 90): dome is degenerate and skipped; depth = front
+    // half-width (the head's X extent along the profile view axis), capped by
+    // the top/bottom silhouettes as the point approaches the head's edges.
+    TEST("Profile view center = front half-width",
+        fabs(VisualHullDepthView(Front, NF, Strip, NS, Strip, NS, Square, NQ, Square, NQ, FVector2D(0, 0), 90, 0) - 0.5) < 1e-3);
+    TEST("Profile view inside strip capped by top silhouette",
+        fabs(VisualHullDepthView(Front, NF, Strip, NS, Strip, NS, Square, NQ, Square, NQ, FVector2D(0.2, 0), 90, 0) - 0.3) < 1e-3);
+    TEST("Profile view outside profile strip zero",
+        VisualHullDepthView(Front, NF, Strip, NS, Strip, NS, Square, NQ, Square, NQ, FVector2D(0.3, 0), 90, 0) == 0.0);
+
+    // ThreeQuarterRight (yaw 45): both bounds active; foreshortened dome.
+    TEST("3QR center = foreshortened dome",
+        fabs(VisualHullDepthView(Front, NF, Strip, NS, Strip, NS, Square, NQ, Square, NQ, FVector2D(0, 0), 45, 0) - 0.35355) < 1e-3);
+    TEST("3QR near edge dome falloff",
+        fabs(VisualHullDepthView(Front, NF, Strip, NS, Strip, NS, Square, NQ, Square, NQ, FVector2D(0.3, 0), 45, 0) - 0.05355) < 1e-3);
+
+    // Back (yaw 180): profile half-width governs; dome mirrors the front shape.
+    TEST("Back view depth = profile half-width",
+        fabs(VisualHullDepthView(Front, NF, Strip, NS, Strip, NS, Square, NQ, Square, NQ, FVector2D(0, 0), 180, 0) - 0.25) < 1e-3);
+
+    // Top (pitch 90): dome skipped; depth = front half-height.
+    TEST("Top view depth = front half-height",
+        fabs(VisualHullDepthView(Front, NF, Strip, NS, Strip, NS, Square, NQ, Square, NQ, FVector2D(0, 0), 0, 90) - 0.5) < 1e-3);
+
+    // Outside in any view frame: zero.
+    TEST("3QR outside zero",
+        VisualHullDepthView(Front, NF, Strip, NS, Strip, NS, Square, NQ, Square, NQ, FVector2D(0.9, 0.9), 45, 0) == 0.0);
+}
+
+// ========================
 // CAMERA SNAP TO VIEW (mirrors widget SetActiveViewState + component zone centers)
 // ========================
 
@@ -5529,6 +5665,11 @@ static float MirrorGizmoPixelsToUVX(float Px, float CanvasX)
     return CanvasX <= 0.0f ? 0.0f : Px / CanvasX;
 }
 
+static float MirrorGizmoUVToPixelsX(float U, float CanvasX)
+{
+    return U * CanvasX;
+}
+
 void TestPhaseBAlignmentMirrors() {
     printf("\n=== PhaseBAlignmentMirrors ===\n");
 
@@ -5566,6 +5707,24 @@ void TestPhaseBAlignmentMirrors() {
     TEST("GizmoPixelsToUV negative canvas guarded", MirrorGizmoPixelsToUVX(100.0f, -50.0f) == 0.0f);
     TEST("GizmoPixelsToUV round trip 0.25", MirrorGizmoPixelsToUVX(0.25f * 900.0f, 900.0f) == 0.25f);
     TEST("GizmoPixelsToUV full canvas", MirrorGizmoPixelsToUVX(450.0f, 450.0f) == 1.0f);
+
+    // Inverse mapping (widget GizmoUVToPixels): pixels = UV * canvas size.
+    // Round trip through the pair must be identity.
+    TEST("GizmoUVToPixels 0.5*450 -> 225", MirrorGizmoUVToPixelsX(0.5f, 450.0f) == 225.0f);
+    TEST("GizmoUVToPixels zero UV -> 0", MirrorGizmoUVToPixelsX(0.0f, 450.0f) == 0.0f);
+    TEST("GizmoUVToPixels full UV -> canvas", MirrorGizmoUVToPixelsX(1.0f, 450.0f) == 450.0f);
+    TEST("GizmoUVToPixels negative UV -> negative", MirrorGizmoUVToPixelsX(-0.25f, 450.0f) == -112.5f);
+    TEST("GizmoUVToPixels beyond 1 overflows canvas", MirrorGizmoUVToPixelsX(1.25f, 400.0f) == 500.0f);
+    TEST("GizmoUVToPixels zero canvas -> 0", MirrorGizmoUVToPixelsX(0.5f, 0.0f) == 0.0f);
+    {
+        bool bRoundTrip = true;
+        for (float U : { -0.5f, 0.0f, 0.125f, 0.25f, 0.5f, 0.75f, 1.0f, 1.5f })
+        {
+            const float Px = MirrorGizmoUVToPixelsX(U, 900.0f);
+            if (std::abs(MirrorGizmoPixelsToUVX(Px, 900.0f) - U) > 1e-6f) bRoundTrip = false;
+        }
+        TEST("GizmoUVToPixels/PixelsToUV round trip identity", bRoundTrip);
+    }
 
     // Transform copy guard: src == dst is a no-op
     TEST("Copy-from guard rejects same state",
@@ -5900,6 +6059,321 @@ void TestPhaseEFMirrors() {
     TEST("Mismatch zero guard", !MirrorVisemeFramesMismatch(0, 3));
     TEST("Mismatch equal -> false", !MirrorVisemeFramesMismatch(3, 3));
     TEST("Mismatch 2 vs 4 -> true", MirrorVisemeFramesMismatch(2, 4));
+}
+
+// ====================================================================
+// Phase G mirrors: outline-depth bake quantization (widget
+// BuildOutlineDepthTexture: clamp 0..1, round to byte, BGRA with opaque
+// alpha) and depth-scope targeting (GenerateDepthFromOutlinesImpl:
+// 0 = Front only, 1 = 8 horizontal states, 2 = all 10 states).
+// ====================================================================
+
+static bool MirrorOutlineDepthToBytes(const std::vector<float>& Depth, int Grid, std::vector<unsigned char>& Out)
+{
+    if ((int)Depth.size() != Grid * Grid) return false;
+    Out.assign((size_t)Grid * Grid * 4, 0);
+    for (int i = 0; i < Grid * Grid; ++i)
+    {
+        const double N = std::clamp((double)Depth[i], 0.0, 1.0);
+        const unsigned char V = (unsigned char)std::round(N * 255.0);
+        Out[i * 4 + 0] = V;
+        Out[i * 4 + 1] = V;
+        Out[i * 4 + 2] = V;
+        Out[i * 4 + 3] = 255;
+    }
+    return true;
+}
+
+static int MirrorOutlineDepthTargets(int Scope, int Out[10])
+{
+    int C = 0;
+    if (Scope == 0)
+    {
+        Out[C++] = 0;
+    }
+    else
+    {
+        const int Count = Scope == 1 ? 8 : 10;
+        for (int i = 0; i < Count; ++i) Out[C++] = i;
+    }
+    return C;
+}
+
+void TestPhaseGWidgetMirrors() {
+    printf("\n=== PhaseGWidgetMirrors ===\n");
+
+    // Outline-depth bake quantization
+    {
+        std::vector<float> Depth = { 0.0f, 0.5f, 1.0f, -0.25f };
+        std::vector<unsigned char> Bytes;
+        TEST("Bake size 2x2 accepted", MirrorOutlineDepthToBytes(Depth, 2, Bytes));
+        TEST("Bake zero -> 0", Bytes[0] == 0);
+        TEST("Bake 0.5 -> 128", Bytes[4] == 128);
+        TEST("Bake one -> 255", Bytes[8] == 255);
+        TEST("Bake negative clamps to 0", Bytes[12] == 0);
+        TEST("Bake alpha opaque", Bytes[3] == 255 && Bytes[7] == 255);
+        TEST("Bake RGB uniform", Bytes[0] == Bytes[1] && Bytes[1] == Bytes[2]);
+    }
+    {
+        std::vector<float> Depth = { 0.2f };
+        std::vector<unsigned char> Bytes;
+        TEST("Bake 1x1 accepted", MirrorOutlineDepthToBytes(Depth, 1, Bytes));
+        TEST("Bake 0.2 -> 51", Bytes[0] == 51);
+    }
+    {
+        std::vector<float> Depth = { 0.5f, 0.5f, 0.5f };
+        std::vector<unsigned char> Bytes;
+        TEST("Bake wrong size rejected", !MirrorOutlineDepthToBytes(Depth, 2, Bytes));
+        TEST("Bake grid zero rejected", !MirrorOutlineDepthToBytes(Depth, 0, Bytes));
+    }
+
+    // Depth-scope targeting
+    {
+        int Targets[10];
+        const int N0 = MirrorOutlineDepthTargets(0, Targets);
+        TEST("Scope 0 targets Front only", N0 == 1 && Targets[0] == 0);
+        const int N1 = MirrorOutlineDepthTargets(1, Targets);
+        bool bAll8 = N1 == 8;
+        for (int i = 0; i < N1; ++i) if (Targets[i] != i) bAll8 = false;
+        TEST("Scope 1 targets 8 horizontal states", bAll8);
+        const int N2 = MirrorOutlineDepthTargets(2, Targets);
+        bool bAll10 = N2 == 10;
+        for (int i = 0; i < N2; ++i) if (Targets[i] != i) bAll10 = false;
+        TEST("Scope 2 targets all 10 states", bAll10);
+    }
+}
+
+// --- Phase H: UI design-contract tests (P1..P13 over the layout manifest) ---
+void TestPhaseHUIDesign() {
+    printf("\n=== PhaseHUIDesign ===\n");
+
+    // Positive contract: the real manifest must be clean.
+    const std::vector<FPLayout::FPLayoutNode> Spec = FPLayout::BuildSpec();
+    TEST("Phase H: manifest builds (435 nodes)", Spec.size() == 435u);
+    TEST("Phase H: every node reachable from root", FPLayout::CountReachable(Spec) == (int)Spec.size());
+    const int RootIdx = FPLayout::FindRootIndex(Spec);
+    TEST("Phase H: single root is the last node", RootIdx == (int)Spec.size() - 1);
+    const std::vector<FPLayout::FPRect> Rects = FPLayout::ResolveLayout(Spec);
+    TEST("Phase H: root rect matches design (1001x858)",
+        Rects[(size_t)RootIdx].W == 1001.0 && Rects[(size_t)RootIdx].H == 858.0);
+    const std::vector<FPLayout::FPViolation> V = FPLayout::ValidateDesign(Spec);
+    TEST("Phase H: zero design violations (P1..P13)", V.empty());
+
+    // Scroll-viewport contract: the 5 rails are fixed 180x560 clipped viewports,
+    // so their content can never overlap other panels or leave the screen.
+    {
+        const char* RailNames[5] = { "RL-Layers", "RL-Transform", "RL-Camera", "RL-Debug", "RL-Advanced" };
+        bool bViewports = true;
+        for (const char* nm : RailNames)
+        {
+            const FPLayout::FPLayoutNode* found = nullptr;
+            for (const FPLayout::FPLayoutNode& n : Spec)
+                if (std::string(n.Name) == nm) { found = &n; break; }
+            if (!found || !found->bClipH || found->FixedH != FPLayout::MainRowHeight
+                || found->FixedW != FPLayout::RailWidth)
+                bViewports = false;
+        }
+        TEST("Phase H: rails are 180x560 clipped scroll viewports", bViewports);
+    }
+
+    // Design-system constants mirrored from RebuildWidget.
+    TEST("Phase H: RailWidth=180", FPLayout::RailWidth == 180.0);
+    TEST("Phase H: PropsWidth=340", FPLayout::PropsWidth == 340.0);
+    TEST("Phase H: MainRowHeight=560", FPLayout::MainRowHeight == 560.0);
+    TEST("Phase H: ThumbSize=72", FPLayout::ThumbSize == 72.0);
+    TEST("Phase H: StateStripHeight=26", FPLayout::StateStripHeight == 26.0);
+    TEST("Phase H: MaxMargin=8", FPLayout::MaxMargin == 8.0);
+    {
+        bool bPalette = false;
+        for (double p : FPLayout::PaletteVals) if (p == 6.0) bPalette = true;
+        TEST("Phase H: rhythm palette defined", bPalette);
+    }
+
+    // Known anchor nodes must exist.
+    auto Has = [&](const char* name) {
+        for (const FPLayout::FPLayoutNode& n : Spec)
+            if (std::string(n.Name) == name) return true;
+        return false;
+    };
+    TEST("Phase H: Toolbar present", Has("Toolbar"));
+    TEST("Phase H: RAIL-Switcher present", Has("RAIL-Switcher"));
+    TEST("Phase H: RL-Layers present", Has("RL-Layers"));
+    TEST("Phase H: RL-Advanced present", Has("RL-Advanced"));
+    TEST("Phase H: PR-ThumbCol0 present", Has("PR-ThumbCol0"));
+    TEST("Phase H: TB-ClearStale present", Has("TB-ClearStale"));
+    TEST("Phase H: BA-BotBar present", Has("BA-BotBar"));
+
+    // Negative controls: every principle must fire on a planted violation.
+    auto Violates = [](const std::vector<FPLayout::FPLayoutNode>& nodes, FPLayout::DesignRule rule) {
+        for (const FPLayout::FPViolation& v : FPLayout::ValidateDesign(nodes))
+            if (v.Rule == rule) return true;
+        return false;
+    };
+    {
+        FPLayout::Builder B;
+        const int Root = FPLayout::GRID(B, "Root", FPLayout::LF(B, "A", 40, 20), FPLayout::LF(B, "B", 40, 20));
+        B.N[(size_t)Root].Spacing = 1.0;
+        TEST("Phase H: validator fires NoSiblingOverlap (P1)", Violates(B.N, FPLayout::DesignRule::NoSiblingOverlap));
+    }
+    {
+        FPLayout::Builder B;
+        const int Root = FPLayout::HF(B, "Root", FPLayout::LF(B, "A", 100, 20), FPLayout::LF(B, "B", 100, 20));
+        B.N[(size_t)Root].FixedW = 150.0;
+        B.N[(size_t)Root].Spacing = 1.0;
+        TEST("Phase H: validator fires OutsideParent (P2)", Violates(B.N, FPLayout::DesignRule::OutsideParent));
+    }
+    {
+        FPLayout::Builder B;
+        FPLayout::VF(B, "Root", FPLayout::LF(B, "A", 0, 0));
+        TEST("Phase H: validator fires ZeroSize (P3)", Violates(B.N, FPLayout::DesignRule::ZeroSize));
+    }
+    {
+        FPLayout::Builder B;
+        const int Root = FPLayout::HF(B, "Root", FPLayout::LF(B, "A", 20, 20), FPLayout::LF(B, "B", 20, 20));
+        B.N[(size_t)Root].Spacing = -2.0;
+        TEST("Phase H: validator fires SpacingSanity (P4)", Violates(B.N, FPLayout::DesignRule::SpacingSanity));
+    }
+    {
+        FPLayout::Builder B;
+        const int Root = FPLayout::HF(B, "Root", FPLayout::LF(B, "A", 20, 20), FPLayout::LF(B, "B", 20, 20));
+        B.N[(size_t)Root].Spacing = 5.0;
+        TEST("Phase H: validator fires OffPaletteSpacing (P5)", Violates(B.N, FPLayout::DesignRule::OffPaletteSpacing));
+    }
+    {
+        FPLayout::Builder B;
+        const int Root = FPLayout::VF(B, "Root", FPLayout::LF(B, "A", 20, 20));
+        B.N[(size_t)Root].PadL = 10.0;
+        TEST("Phase H: validator fires MarginOverBudget (P6)", Violates(B.N, FPLayout::DesignRule::MarginOverBudget));
+    }
+    {
+        FPLayout::Builder B;
+        const int Root = FPLayout::HF(B, "Root", FPLayout::LF(B, "A", 20, 20), FPLayout::LF(B, "B", 20, 20));
+        B.N[(size_t)Root].Spacing = 1.0;
+        B.N[(size_t)B.N[(size_t)Root].Children[1]].MarginL = -25.0;
+        TEST("Phase H: validator fires ReadOrderBroken (P7)", Violates(B.N, FPLayout::DesignRule::ReadOrderBroken));
+    }
+    {
+        FPLayout::Builder B;
+        const int Root = FPLayout::GRID(B, "Root", FPLayout::LF(B, "A", 40, 20), FPLayout::LF(B, "B", 40, 20));
+        B.N[(size_t)Root].Spacing = 1.0;
+        B.N[(size_t)B.N[(size_t)Root].Children[1]].MarginL = 2.0;
+        TEST("Phase H: validator fires GridMisaligned (P8)", Violates(B.N, FPLayout::DesignRule::GridMisaligned));
+    }
+    {
+        FPLayout::Builder B;
+        const int Root = FPLayout::VF(B, "Root", FPLayout::LF(B, "A", 20, 20), FPLayout::LF(B, "B", 20, 20));
+        B.N[(size_t)Root].bSection = true;
+        TEST("Phase H: validator fires SectionTitleFirst (P9)", Violates(B.N, FPLayout::DesignRule::SectionTitleFirst));
+    }
+    {
+        FPLayout::Builder B;
+        const int Root = FPLayout::HF(B, "Root", FPLayout::LF(B, "A", 200, 20));
+        B.N[(size_t)Root].FixedW = 100.0;
+        TEST("Phase H: validator fires FitNoClip (P10)", Violates(B.N, FPLayout::DesignRule::FitNoClip));
+    }
+    {
+        FPLayout::Builder B;
+        const int Root = FPLayout::VF(B, "Root", FPLayout::LF(B, "A", 20, 20));
+        B.N[(size_t)Root].FixedW = 200.0;
+        TEST("Phase H: validator fires MinimalSpace (P11)", Violates(B.N, FPLayout::DesignRule::MinimalSpace));
+    }
+    {
+        // P12: two unrelated subtrees (different parents) forced to intersect.
+        FPLayout::Builder B;
+        const int Root = FPLayout::VF(B, "Root",
+            FPLayout::HF(B, "RowA", FPLayout::LF(B, "A", 100, 20)),
+            FPLayout::HF(B, "RowB", FPLayout::LF(B, "B", 100, 20)));
+        B.N[(size_t)Root].Spacing = 1.0;
+        B.N[(size_t)B.N[(size_t)Root].Children[1]].MarginT = -15.0;
+        TEST("Phase H: validator fires GlobalOverlap (P12)", Violates(B.N, FPLayout::DesignRule::GlobalOverlap));
+    }
+    {
+        // P12 exemption: overlay siblings stacked in one switcher must NOT fire.
+        FPLayout::Builder B;
+        FPLayout::OV(B, "Root",
+            FPLayout::VF(B, "S1", FPLayout::LF(B, "A", 100, 20)),
+            FPLayout::VF(B, "S2", FPLayout::LF(B, "B", 100, 20)));
+        TEST("Phase H: overlay stack exempt from GlobalOverlap (P12)",
+            !Violates(B.N, FPLayout::DesignRule::GlobalOverlap));
+    }
+    {
+        // P13: a leaf extending past the root (screen) right edge.
+        FPLayout::Builder B;
+        const int Root = FPLayout::HF(B, "Root", FPLayout::LF(B, "A", 200, 20));
+        B.N[(size_t)Root].FixedW = 100.0;
+        TEST("Phase H: validator fires ScreenBounds (P13)", Violates(B.N, FPLayout::DesignRule::WithinScreenBounds));
+    }
+    {
+        // P13 exemption: viewport-clipped content may exceed the screen.
+        FPLayout::Builder B;
+        const int Root = FPLayout::HF(B, "Root",
+            FPLayout::VF(B, "Viewport", FPLayout::LF(B, "A", 200, 20)));
+        B.N[(size_t)Root].FixedW = 100.0;
+        B.N[(size_t)Root].FixedH = 20.0;
+        B.N[(size_t)B.N[(size_t)Root].Children[0]].FixedW = 100.0;
+        B.N[(size_t)B.N[(size_t)Root].Children[0]].FixedH = 20.0;
+        B.N[(size_t)B.N[(size_t)Root].Children[0]].bClipH = true;
+        TEST("Phase H: viewport content exempt from ScreenBounds (P13)",
+            !Violates(B.N, FPLayout::DesignRule::WithinScreenBounds));
+    }
+    {
+        // P14: the props pane must leave a right-edge gap against the screen
+        // (real widget: MainRow props slot gets right padding). Mirrors the
+        // "items overlap the end of the screen" defect.
+        const FPLayout::FPRect& rr = Rects[(size_t)RootIdx];
+        int PropsIdx = -1;
+        for (size_t pi = 0; pi < Spec.size(); ++pi)
+            if (std::string(Spec[pi].Name) == "PROPS") { PropsIdx = (int)pi; break; }
+        bool bGap = false;
+        if (PropsIdx >= 0)
+        {
+            const FPLayout::FPRect& pr = Rects[(size_t)PropsIdx];
+            bGap = (rr.X + rr.W) - (pr.X + pr.W) >= FPLayout::PropsRightGap - 0.001;
+        }
+        TEST("Phase H: props pane keeps a right-edge gap (P14)", bGap);
+    }
+    {
+        // P15: scroll viewport content must keep a right inset so items do not
+        // run under the scrollbar (real widget: SBox padding inside PropScroll).
+        const FPLayout::FPLayoutNode* Scroll = nullptr;
+        for (const FPLayout::FPLayoutNode& n : Spec)
+            if (std::string(n.Name) == "PR-Scroll") { Scroll = &n; break; }
+        TEST("Phase H: PR-Scroll content keeps a right inset (P15)",
+            Scroll && Scroll->PadR >= FPLayout::PropsScrollInsetR - 0.001);
+    }
+    {
+        // Section stacking guard: every section directly inside a clipped
+        // viewport stacks naturally (no flex) and never overlaps its sibling
+        // (real widget contract: sections use AutoHeight slots - bare AddSlot
+        // would default to Fill and paint sections over each other).
+        bool bStacked = true;
+        for (const FPLayout::FPLayoutNode& n : Spec)
+        {
+            if (!n.bClipH) continue;
+            for (size_t c = 0; c < n.Children.size() && bStacked; ++c)
+            {
+                const FPLayout::FPLayoutNode& ch = Spec[(size_t)n.Children[c]];
+                if (!ch.bSection) continue;
+                if (ch.bFlexH) bStacked = false;
+            }
+        }
+        for (size_t i = 0; i < Spec.size() && bStacked; ++i)
+        {
+            const FPLayout::FPLayoutNode& n = Spec[i];
+            if (!n.bClipH) continue;
+            for (size_t a = 0; a < n.Children.size() && bStacked; ++a)
+                for (size_t b2 = a + 1; b2 < n.Children.size(); ++b2)
+                {
+                    const FPLayout::FPRect& ra = Rects[(size_t)n.Children[a]];
+                    const FPLayout::FPRect& rb = Rects[(size_t)n.Children[b2]];
+                    if (ra.W > 0.001 && rb.W > 0.001 && ra.H > 0.001 && rb.H > 0.001 &&
+                        ra.X < rb.X + rb.W - 0.001 && rb.X < ra.X + ra.W - 0.001 &&
+                        ra.Y < rb.Y + rb.H - 0.001 && rb.Y < ra.Y + ra.H - 0.001)
+                        bStacked = false;
+                }
+        }
+        TEST("Phase H: viewport sections auto-stack without overlap", bStacked);
+    }
 }
 
 // --- Pin View-Angle Rotation Tests (mirrors UFaceParallaxComponent::PinRotationFromYawDev) ---
@@ -6368,12 +6842,15 @@ int main() {
 
     TestSilhouetteDistanceToEdge();
     TestVisualHullDepth();
+    TestVisualHullDepthView();
     TestCameraSnapMapping();
     TestImportChannelDetection();
     TestPhaseBAlignmentMirrors();
     TestPhaseCMirrors();
     TestPhaseDMirrors();
     TestPhaseEFMirrors();
+    TestPhaseGWidgetMirrors();
+    TestPhaseHUIDesign();
     TestPinRotation();
     TestNestedEffectiveTransform();
     TestPinDataSurvivesSync();

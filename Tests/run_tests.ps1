@@ -40,84 +40,61 @@ if (-not $EngineBatchDir) {
     }
 }
 
-# 1a. Verify _gen_embed.py is up-to-date (compare embedded sources to disk)
-Write-Host "--- _gen_embed.py Staleness Check ---" -ForegroundColor Yellow
-$genEmbedPy = Join-Path $root "_gen_embed.py"
-$genEmbedCheck = Join-Path $root "Tests\_gen_embed_check.py"
-if (Test-Path $genEmbedPy) {
-    # Parse EMBEDDED_SOURCES from deploy.py via regex (avoid importing unreal module)
-    @"
-import re, os, base64
-with open(os.path.join(r'$root', 'deploy.py'), 'r', encoding='utf-8') as f:
-    content = f.read()
-# Find EMBEDDED_SOURCES dict block: from '{' at brace_start to matching '}'
-m_start = re.search(r'EMBEDDED_SOURCES\s*=\s*\{', content)
-if not m_start:
-    print('Could not find EMBEDDED_SOURCES in deploy.py')
-    exit(1)
-brace_depth = 0
-start = content.index('{', m_start.start())
-end = start
-for i in range(start, len(content)):
-    if content[i] == '{': brace_depth += 1
-    elif content[i] == '}':
-        brace_depth -= 1
-        if brace_depth == 0: end = i + 1; break
-block = content[start:end]
-# Extract quoted filename and base64 string pairs
-pairs = re.findall(r'\"([\w.]+)\":\s*base64\.b64decode\(\'([^\']+)\'\)', block)
-ok = True
-for fname, b64data in pairs:
-    fpath = os.path.join(r'$root', fname)
-    if not os.path.exists(fpath):
-        print(f'MISSING: {fname}')
-        ok = False; continue
-    with open(fpath, 'rb') as f:
-        disk_data = f.read()
-    emb_data = base64.b64decode(b64data)
-    if disk_data != emb_data:
-        print(f'STALE: {fname} (run _gen_embed.py to update)')
-        ok = False
-if ok:
-    print('All embedded sources are up-to-date')
-    exit(0)
-else:
-    exit(1)
-"@ | Out-File -FilePath $genEmbedCheck -Encoding utf8
-    $pyOut = python $genEmbedCheck 2>&1
-    $pyExit = $LASTEXITCODE
-    Remove-Item $genEmbedCheck -ErrorAction SilentlyContinue
-    Write-Host $pyOut
-    if ($pyExit -ne 0) {
-        $failed = $true
-        Write-Host "_GEN_EMBED STALENESS CHECK FAILED" -ForegroundColor Red
-    } else {
-        Write-Host "_GEN_EMBED CHECK PASSED" -ForegroundColor Green
-    }
-} else {
-    Write-Host "_gen_embed.py not found, skipping" -ForegroundColor DarkYellow
-}
-Write-Host ""
-
-# 1b. Sync SAMPLES before UE build (required for compilation fidelity)
+# 1a. Sync SAMPLES before UE build (required for compilation fidelity)
 $doSync = $SyncSamples -or $IncludeUEBuild
 if ($doSync) {
     Write-Host "--- SAMPLES Sync ---" -ForegroundColor Yellow
-    $samplesDir = Join-Path $root "SAMPLES\MyProject\Source\MyProject"
-    if (Test-Path $samplesDir) {
-        Get-ChildItem "$root\*.h", "$root\*.cpp" | ForEach-Object {
-            $dest = Join-Path $samplesDir $_.Name
-            Copy-Item -Path $_.FullName -Destination $dest -Force
-            Write-Host "  Copied $($_.Name)"
+    $pluginRoot = Join-Path $root "SAMPLES\MyProject\Plugins\FaceParallax\Source"
+    $runtimePub = Join-Path $pluginRoot "FaceParallax\Public"
+    $runtimePrv = Join-Path $pluginRoot "FaceParallax\Private"
+    $editorPub  = Join-Path $pluginRoot "FaceParallaxEditor\Public"
+    $editorPrv  = Join-Path $pluginRoot "FaceParallaxEditor\Private"
+
+    $runtimePublicFiles = @("FaceParallaxTypes.h","FaceParallaxComponent.h","FaceParallaxPreset.h","FaceParallaxPreviewActor.h","DepthDebugVisualizerComponent.h")
+    $runtimePrivateFiles = @("FaceParallaxComponent.cpp","FaceParallaxPreset.cpp","FaceParallaxPreviewActor.cpp","DepthDebugVisualizerComponent.cpp","FaceParallaxModule.cpp")
+    $editorPublicFiles = @("FaceParallaxEditorWidget.h","FaceParallaxEditorSubsystem.h")
+    $editorPrivateFiles = @("FaceParallaxEditorWidget.cpp","FaceParallaxEditorSubsystem.cpp",
+        "FaceParallaxEditorWidgetShared.h","FaceParallaxEditorWidgetUI.cpp",
+        "FaceParallaxEditorWidgetInteractions.cpp","FaceParallaxEditorWidgetPanels.cpp",
+        "FaceParallaxLayoutSpec.h")
+
+    if ((Test-Path $runtimePub) -and (Test-Path $editorPrv)) {
+        foreach ($f in $runtimePublicFiles) {
+            $src = Join-Path $root $f
+            if (Test-Path $src) {
+                Copy-Item -Path $src -Destination (Join-Path $runtimePub $f) -Force
+                Write-Host "  Copied $f"
+            }
+        }
+        foreach ($f in $runtimePrivateFiles) {
+            $src = Join-Path $root $f
+            if (Test-Path $src) {
+                Copy-Item -Path $src -Destination (Join-Path $runtimePrv $f) -Force
+                Write-Host "  Copied $f"
+            }
+        }
+        foreach ($f in $editorPublicFiles) {
+            $src = Join-Path $root $f
+            if (Test-Path $src) {
+                Copy-Item -Path $src -Destination (Join-Path $editorPub $f) -Force
+                Write-Host "  Copied $f"
+            }
+        }
+        foreach ($f in $editorPrivateFiles) {
+            $src = Join-Path $root $f
+            if (Test-Path $src) {
+                Copy-Item -Path $src -Destination (Join-Path $editorPrv $f) -Force
+                Write-Host "  Copied $f"
+            }
         }
         Write-Host "SAMPLES SYNC COMPLETED" -ForegroundColor Green
     } else {
-        Write-Host "SAMPLES directory not found, skipping" -ForegroundColor DarkYellow
+        Write-Host "Plugin source dirs not found, skipping" -ForegroundColor DarkYellow
     }
     Write-Host ""
 }
 
-# 1c. Python syntax validator
+# 1b. Python syntax validator
 if (-not $NoPython) {
     Write-Host "--- Python Syntax Validator ---" -ForegroundColor Yellow
     try {
@@ -192,14 +169,12 @@ if ($IncludeUEBuild -and $EngineBatchDir) {
     }
     $UEProjectRoot = Resolve-Path $UEProjectRoot
     $UProjectPath = Join-Path $UEProjectRoot "MyProject.uproject"
-    $ModuleName = "MyProjectEditor"
-    $BuildArgs = @($ModuleName, "Win64", "Development", "`"$UProjectPath`"", "-WaitMutex", "-FromMsBuild")
 
     Write-Host "  Project: $UProjectPath"
     Write-Host "  Engine:   $EngineBatchDir"
-    Write-Host "  Building $ModuleName..."
+    Write-Host "  Building MyProjectEditor..."
 
-    $buildOut = & "Build.bat" $ModuleName "Win64" "Development" "`"$UProjectPath`"" "-WaitMutex" "-FromMsBuild" 2>&1
+    $buildOut = & "Build.bat" "MyProjectEditor" "Win64" "Development" "`"$UProjectPath`"" "-WaitMutex" "-FromMsBuild" 2>&1
     $buildExit = $LASTEXITCODE
 
     $env:PATH = $origPath
@@ -210,9 +185,18 @@ if ($IncludeUEBuild -and $EngineBatchDir) {
         Write-Host $buildOut | Select-String -Pattern "error"
     } else {
         Write-Host "UE BUILD PASSED" -ForegroundColor Green
-        $DllPath = Join-Path $UEProjectRoot "Binaries\Win64\UnrealEditor-MyProject.dll"
-        if (Test-Path $DllPath) {
-            Write-Host "[OK] DLL: $DllPath" -ForegroundColor Green
+        $PluginBin = Join-Path $UEProjectRoot "Plugins\FaceParallax\Binaries\Win64"
+        $RuntimeDll = Join-Path $PluginBin "UnrealEditor-FaceParallax.dll"
+        $EditorDll = Join-Path $PluginBin "UnrealEditor-FaceParallaxEditor.dll"
+        if (Test-Path $RuntimeDll) {
+            Write-Host "[OK] Runtime DLL: $RuntimeDll" -ForegroundColor Green
+        } else {
+            Write-Host "[WARN] Runtime DLL not found: $RuntimeDll" -ForegroundColor Yellow
+        }
+        if (Test-Path $EditorDll) {
+            Write-Host "[OK] Editor DLL: $EditorDll" -ForegroundColor Green
+        } else {
+            Write-Host "[WARN] Editor DLL not found: $EditorDll" -ForegroundColor Yellow
         }
     }
     Write-Host ""

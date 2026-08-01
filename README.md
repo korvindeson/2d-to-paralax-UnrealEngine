@@ -1,6 +1,6 @@
 # FaceParallax — 2D Face Parallax System for Unreal Engine 5
 
-Camera-driven 2D face rendering with multi-layer parallax, depth map support, view-state transitions across 10 angles, real-time depth debug visualizer, preset asset system, and in-editor visual editor with 774+ automated tests.
+Camera-driven 2D face rendering with multi-layer parallax, depth map support, view-state transitions across 10 angles, real-time depth debug visualizer, preset asset system, and in-editor visual editor with 1044 automated tests.
 
 ---
 
@@ -43,12 +43,18 @@ The system renders a 2D character face that responds to camera angle — switchi
 | `FaceParallaxPreset.h/.cpp` | DataAsset | Stores per-state × per-layer texture + transform assignments. Batch operations, Pin3D accessors, swoosh art, nested elements. |
 | `DepthDebugVisualizerComponent.h/.cpp` | Debug component | Procedural mesh from depth map, wireframe, color-by-depth, configurable grid resolution |
 | `FaceParallaxPreviewActor.h/.cpp` | Preview actor | Skeletal mesh + scene capture + orbit controls + per-part transform access |
-| `FaceParallaxEditorWidget.h/.cpp` | Editor Widget | C++ `UUserWidget` subclass providing bindable functions for every setting across 19 categories. Diagnostic log overlay, auto-refresh via `FCoreUObjectDelegates::OnObjectModified`. |
-| `deploy.py` | Deployment script | Creates master material, material instances, preset data asset, and character BP inside the Unreal Editor Python console |
-| `_gen_embed.py` | Maintenance script | Re-encodes all `.h`/`.cpp` files into `deploy.py`'s `EMBEDDED_SOURCES` for self-contained deployment |
-| `Tests/ParallaxMathTests.cpp` | Math tests | Standalone C++17 (no UE dep) — 1011 tests covering state machine, transforms, blink/expression/viseme, swoosh, parameters, nested art + jiggle, 3D pin projection + view-angle rotation, batch ops, zone multipliers |
+| `FaceParallaxEditorWidget.h` | Editor Widget header | C++ `UUserWidget` subclass providing bindable functions for every setting across 19 categories. The Blueprint-facing API surface; implementation is split across four translation units below. |
+| `FaceParallaxEditorWidget.cpp` | Editor Widget core | Widget core API: targets, preset/transform/texture accessors, import, camera, blink/expression/viseme/params/swoosh/nested-art data methods, sync/override/batch ops |
+| `FaceParallaxEditorWidgetUI.cpp` | Widget UI construction | `RebuildWidget()` — full Slate layout (workspace rails, preview canvas, gizmo overlay, panels) plus UI-local helper factories |
+| `FaceParallaxEditorWidgetInteractions.cpp` | Widget interactions | Selection/refresh-entry, gizmo + pin math, folder import wizard, edge overlay/histogram, viseme grid, nested outliner, param table, problems panel |
+| `FaceParallaxEditorWidgetPanels.cpp` | Widget panels + diagnostics | `RefreshUI()` and all `Refresh*`/`Rebuild*` panel methods, zone diagram, status matrix, cross-layer/tag/material cross-refs, outline→depth bake, snapshot, diagnostics |
+| `FaceParallaxEditorWidgetShared.h` | Widget shared internals | Anonymous-namespace helpers (channel/view-state suffix parsing, `FPresetTransactionScope`, `AccentBlue`, `MakeLbl`/`MakeBtn`) + the `SFaceLayerGizmo` nested class, shared by all widget translation units |
+| `FaceParallaxLayoutSpec.h` | UI design contract (Phase H) | Pure C++17 layout manifest + metrics/placement solver + P1–P15 design-principle validator over the widget tree. Self-checked in `RebuildWidget` and fully covered by `TestPhaseHUIDesign`. |
+| `FaceParallaxEditorSubsystem.h/.cpp` | Editor subsystem | Registers the toolbar button + `FaceParallaxOpenEditor` console command and hosts the widget in a docked nomad tab. Asset deployment is handled entirely by `deploy.py` (repo root) |
+| `FaceParallaxModule.cpp` | Module entry | `IMPLEMENT_MODULE(FDefaultModuleImpl, FaceParallax)` — required for the runtime DLL to register |
+| `Tests/ParallaxMathTests.cpp` | Math tests | Standalone C++17 (no UE dep) — 1082 tests covering state machine, transforms, blink/expression/viseme, swoosh, parameters, nested art + jiggle, 3D pin projection + view-angle rotation, batch ops, zone multipliers, per-view visual hull, Phase H layout-design contract |
 | `Tests/SyntaxValidator.py` | Syntax validator | Brace/macro balance, include guards — enforces clean parsing on all source files |
-| `Tests/run_tests.ps1` | Test runner | Syntax validator + C++ math tests + optional UE build test |
+| `Tests/run_tests.ps1` | Test runner | Root→SAMPLES sync + Python syntax validator + C++ math tests + optional UE build test |
 | `Tests/ue_build_test.ps1` | UE build test | Compiles SAMPLES project with `Build.bat`, verifies DLL output |
 | `SAMPLES/MyProject/` | Standalone UE5 project copy | Used for CI/offline compilation verification |
 
@@ -64,28 +70,25 @@ The system renders a 2D character face that responds to camera angle — switchi
 
 ### Module
 
-Include the module in your project's `Build.cs`:
+The plugin lives at `SAMPLES/MyProject/Plugins/FaceParallax/` with two modules:
 
-```csharp
-PublicDependencyModuleNames.AddRange(new string[] {
-    "Core", "CoreUObject", "Engine", "InputCore",
-    "LevelSequence", "CinematicCamera", "AssetRegistry",
-    "ProceduralMeshComponent",
-});
+- **`FaceParallax`** (Runtime) — `FaceParallax.Build.cs` public deps: `Core`, `CoreUObject`, `Engine`, `InputCore`, `ProceduralMeshComponent`. Entry point: `IMPLEMENT_MODULE(FDefaultModuleImpl, FaceParallax)` in `FaceParallaxModule.cpp`.
+- **`FaceParallaxEditor`** (Editor) — depends on the runtime module plus editor modules (`Slate`, `UMG`, `UMGEditor`, `UnrealEd`, `AssetTools`, `ToolMenus`, `EditorSubsystem`, `LevelEditor`, `ContentBrowser`, `DesktopPlatform`, `EditorScriptingUtilities`, `MaterialEditor`, `LevelSequence`, `CinematicCamera`, `Kismet`). Entry point: `IMPLEMENT_MODULE(FDefaultModuleImpl, FaceParallaxEditor)` in `FaceParallaxEditorSubsystem.cpp`.
 
-if (Target.Type == TargetRules.TargetType.Editor)
-{
-    PrivateDependencyModuleNames.AddRange(new string[] {
-        "ContentBrowser", "AssetRegistry", "UnrealEd", "DesktopPlatform",
-    });
-}
-```
-
-Also add `"ProceduralMeshComponent"` to your `.uproject` plugin list:
+Add the plugin to your `.uproject`:
 
 ```json
 "Plugins": [
-    { "Name": "ProceduralMeshComponent", "Enabled": true }
+    { "Name": "FaceParallax", "Enabled": true }
+]
+```
+
+Plugin-level dependencies must also be declared in `FaceParallax.uplugin`:
+
+```json
+"Plugins": [
+    { "Name": "ProceduralMeshComponent", "Enabled": true },
+    { "Name": "EditorScriptingUtilities", "Enabled": true }
 ]
 ```
 
@@ -356,14 +359,19 @@ The edges of the rotation views drive depth-map generation. `UFaceParallaxCompon
 
 **Visual hull:** `VisualHullDepthStatic` combines the view silhouettes — Front defines the 2D shape, Right/LeftProfile constrain depth per height, Top/Bottom constrain depth per width — so every rotation-view edge contributes depth info. `SilhouetteDistanceToEdgeStatic` returns signed distance to the nearest edge (interpolated between scanlines), positive inside, negative outside.
 
+**View-consistent variant:** the yaw/pitch overload of `VisualHullDepthStatic` evaluates the hull in the *target view's* camera frame: it binary-searches the max depth along the view ray whose front-space point stays inside every silhouette prism, then takes the min with a dome falloff measured against the front silhouette foreshortened into that view (skipped when the projection is degenerate — profile yaw or top/bottom pitch). At yaw 0 / pitch 0 it reduces exactly to the front-view hull. Back views (yaw > 90°) mirror the projected rows to keep the (xMin, xMax) convention; top/bottom views bound depth by the front silhouette's vertical extent. The art-camera angle per state is the default zone-center table (`VisualHullYawForState` / `VisualHullPitchForState`).
+
 **Component API:**
 | Method | Description |
 |---|---|
 | `ExtractSilhouettePoints(State, MaxPoints)` | Scans the state's albedo and returns (xMin, xMax) pairs per scanline |
 | `SilhouetteDistanceToEdge(State, LocalPoint)` | Signed distance to the nearest silhouette edge for a state |
-| `GenerateDepthBufferFromOutlines(GridSize, OutDepth, OutCellSize)` | Builds a visual-hull depth buffer over the grid |
+| `GenerateDepthBufferFromOutlines(GridSize, OutDepth, OutCellSize)` | Builds a visual-hull depth buffer over the grid (front view) |
+| `GenerateDepthBufferFromOutlinesForView(GridSize, YawDegrees, PitchDegrees, OutDepth, OutCellSize)` | Builds the hull buffer in an arbitrary view's camera frame (editor tooling) |
 | `SilhouetteDistanceToEdgeStatic(Points, Point)` | Pure static signed-distance math (unit-tested) |
 | `VisualHullDepthStatic(Front, Right, Left, Top, Bottom, Point)` | Pure static visual-hull depth (unit-tested) |
+| `VisualHullDepthStatic(Front, Right, Left, Top, Bottom, Point, YawDegrees, PitchDegrees)` | Pure static per-view visual-hull depth (unit-tested) |
+| `VisualHullYawForState(State)` / `VisualHullPitchForState(State)` | Art-camera yaw/pitch per view state (default zone-center table) |
 | `ClearOutlinePointCache()` | Drops the cached scan results |
 | `SetOutlineViewState(State)` / `SetOutlineViewEnabled(State, bEnabled)` | Adds a state to / sets membership in `OutlineViewStates` |
 | `ClearOutlineViewStates()` / `IsOutlineViewState(State)` / `GetOutlineViewStates()` | Manage and query the outline-view set |
@@ -379,6 +387,7 @@ The `AFaceParallaxPreviewActor` provides orbit-controlled preview with dirty-fla
 - `bOrbitDirty` flag — `UpdateCaptureTransform()` only runs when yaw/pitch/distance/FOV changed
 - `bCaptureDirty` flag — `SceneCapture->CaptureScene()` only called after transform updates
 - `bCaptureEveryFrame = false`, `bCaptureOnMovement = false` — zero GPU cost when idle
+- `CreateRenderTarget()` / `GetRenderTarget()` / `RequestCapture()` — the editor widget provisions a 512×512 scene-capture target when a preview actor is selected and shows it in the canvas; without an actor the canvas falls back to the selected layer's albedo so it is never blank
 
 **Camera Controls:** SetOrbitYaw, SetOrbitPitch, SetOrbitDistance, SetPreviewFOV, ResetCamera, SetAutoRotate.
 
@@ -386,7 +395,7 @@ The `AFaceParallaxPreviewActor` provides orbit-controlled preview with dirty-fla
 
 ## Editor Widget (UFaceParallaxEditorWidget)
 
-The `UUserWidget` subclass constructs its entire UI via `RebuildWidget()` — no UMG Designer needed.
+The `UUserWidget` subclass constructs its entire UI via `RebuildWidget()` — no UMG Designer needed. Implementation is split into four translation units (`FaceParallaxEditorWidget.cpp` core API, `FaceParallaxEditorWidgetUI.cpp` construction, `FaceParallaxEditorWidgetInteractions.cpp`, `FaceParallaxEditorWidgetPanels.cpp`) sharing internal helpers through `FaceParallaxEditorWidgetShared.h`; the header is the single Blueprint-facing surface.
 
 **Key improvements:**
 - **Diagnostic log overlay** — `SMultiLineEditableTextBox` at bottom of widget; `RunDiagnostics()` reports preset status, missing states/layers
@@ -413,6 +422,7 @@ The `UUserWidget` subclass constructs its entire UI via `RebuildWidget()` — no
 - **Batch import by channel suffix** — imports auto-assign by filename suffix (`_N`/`_Normal`/`_normalmap` → Normal, `_D`/`_Depth`/`_height`/`_displacement` → Depth, else Albedo); "Import & Assign" and toolbar "Import Art..." both use it when a layer is selected
 - **Quick Actions** — Auto-Fit All, Sync All→All, Clear All Overrides, Duplicate Front→This, Fill Missing Views (copies the active slot's art to views that have no albedo yet)
 - **Outline view management** — per-state checkboxes bound to the component's `OutlineViewStates` (All/None shortcuts); depth grid resolution is user-editable (8–256)
+- **Outline → depth with scope + confirm** — "Generate Depth from Outlines" is arm/confirm-guarded (first click arms, second click commits; Detect Profile runs the combined flow unarmed) and offers a bake scope (Front only / 8 h-states / all 10). Each target view receives its own per-view visual-hull map computed in that view's camera frame instead of a verbatim copy of the front map, and the bake only touches the depth channel of the target states' layers
 - **Toolbar search** — the filter box moved to the toolbar so it applies across all 6 property panels (right pane + 5 rails)
 - **Live numeric camera readouts** — Yaw/Pitch/Dist values shown next to the sliders and updated on refresh
 - **Restore Snapshot** — renamed from the misleading "Undo" and given an explanatory tooltip; Clear State/Clear All require a confirming second click; "Log: ON/OFF" collapses the diagnostic log
@@ -435,7 +445,9 @@ The `UUserWidget` subclass constructs its entire UI via `RebuildWidget()` — no
 | `ImportTexturesFromFiles(Files)` | Imports image files into `/Game/FaceParallax/Imported` via `FAssetToolsModule` and returns the created `UTexture2D`s |
 | `AssignTextureToSlot(Tex, State, LayerTag, Channel)` | Assigns a texture to Albedo/Normal/Depth of a slot, auto-fits if enabled, refreshes UI |
 | `OpenImportArtDialog()` | File dialog + import + status feedback (toolbar "Import Art..." and Import tab) |
-| `GenerateDepthFromOutlines(GridSize)` | Extracts silhouette edges from outline-state albedos, builds a visual-hull depth buffer, bakes it into all layers' depth channels |
+| `GenerateDepthFromOutlines(GridSize)` | Arm/confirm-guarded silhouette → depth bake: builds the visual-hull buffer and writes the depth channel of the scoped view states (per-view reprojection) |
+| `SetOutlineDepthScope(Scope)` / `GetOutlineDepthScope()` | Bake scope: 0 = front only, 1 = 8 horizontal states, 2 = all 10 states |
+| `GetOutlineDepthArmed()` | True between the arm click and the confirming click |
 | `SetOutlineOverlayVisible(bVisible)` / `GetOutlineOverlayVisible()` | Toggles the depth-buffer overlay on the preview image |
 | `SetOutlineViewEnabled(State, bEnabled)` | Adds or removes a state from `OutlineViewStates` (per-checkbox management; `SetOutlineViewState` only adds) |
 | `SetActiveRailIndex(Index)` | Switches the left rail panel (0 Layers, 1 Transform, 2 Camera, 3 Debug, 4 Advanced) |
@@ -462,7 +474,7 @@ The `UUserWidget` subclass constructs its entire UI via `RebuildWidget()` — no
 
 ### Project Setup
 
-Add the source files to your UE5 module. Ensure `Build.cs` includes the dependencies listed in the Module section above.
+The plugin is a standalone UE5.8 plugin — copy `SAMPLES/MyProject/Plugins/FaceParallax/` into your project's `Plugins/` directory and enable it in the `.uproject`. During development, the root `*.h`/`*.cpp` copies are canonical; `Tests\run_tests.ps1` syncs them into the plugin before every UE build.
 
 ### Running Tests
 
@@ -471,33 +483,23 @@ Add the source files to your UE5 module. Ensure `Build.cs` includes the dependen
 ```
 
 This runs:
-1. **`_gen_embed.py` staleness check** — verifies embedded sources match disk files
+1. **SAMPLES sync** — copies the 19 root source files into `SAMPLES/MyProject/Plugins/FaceParallax/Source/` (runtime Public/Private, editor Public/Private)
 2. **Python syntax validator** — braces/macros/includes on all `.h`/`.cpp` files
-3. **C++ math tests** — 1011+ standalone tests (g++ from msys64 ucrt64), including silhouette-edge distance, visual-hull depth, camera-snap zone-center mapping, import channel-suffix detection, Phase B–F mirror suites (gizmo mapping, link broadcast, suffix parser, sync drift, luminance histogram, Sobel edge density, fill ratio, grid columns, sorted-unique dedupe, frame-count mismatch), and pin view-angle rotation (mapping, clamping, wrapping, sensitivity, back-view authoring round-trip, slider normalization, 8-state projection sweep, effective-transform rotation accumulation, cross-view sync pin preservation)
-4. **UE build test** — full compilation of SAMPLES project with `Build.bat`
+3. **C++ math tests** — 1082 standalone tests (g++ from msys64 ucrt64), including silhouette-edge distance, visual-hull depth (front view + per-view yaw/pitch variant), camera-snap zone-center mapping, import channel-suffix detection, Phase B–G mirror suites (gizmo mapping both directions + round trip, link broadcast, suffix parser, sync drift, luminance histogram, Sobel edge density, fill ratio, grid columns, sorted-unique dedupe, frame-count mismatch, outline-depth bake quantization, depth-scope targeting), pin view-angle rotation (mapping, clamping, wrapping, sensitivity, back-view authoring round-trip, slider normalization, 8-state projection sweep, effective-transform rotation accumulation, cross-view sync pin preservation), and Phase H UI design contract (P1–P15 over the layout manifest: zero violations, the exact 5-rail scroll-viewport set (rails 180×560 clipped in nested horizontal+vertical SScrollBoxes), mirrored design constants, anchor-node presence, negative controls proving every principle fires, P14 props-pane right-edge gap and P15 scroll-content right inset, plus section slots auto-stacked so sections never paint over each other)
+4. **UE build test** — full compilation of `SAMPLES/MyProject` with `Build.bat` (must produce `UnrealEditor-FaceParallax.dll` and `UnrealEditor-FaceParallaxEditor.dll`)
 
 Optional flags:
-- `-SyncSamples` — copies root `*.h`/`*.cpp` to `SAMPLES/MyProject/Source/MyProject/` before the UE build
-
-### Maintaining deploy.py
-
-After editing source files:
-```powershell
-python _gen_embed.py
-```
-This re-encodes all `.h`/`.cpp` into `deploy.py`'s `EMBEDDED_SOURCES` for self-contained deployment.
+- `-SyncSamples` — copies root `*.h`/`*.cpp` to the plugin source dirs without building
 
 ---
 
 ## Deployment: Step-by-Step
 
-This section walks through the complete workflow from running `deploy.py` to opening the editor widget and adding art to your character.
+This section walks through the complete workflow from running the deployment script (`deploy.py`) to opening the editor widget and adding art to your character. **All binary assets are created by `deploy.py`** — the one and only deployment mechanism (there is no C++ deploy pipeline).
 
 ### Prerequisites
 
-- Unreal Engine 5.x project with the FaceParallax source files in a module
-- `ProceduralMeshComponent` plugin enabled in `.uproject`
-- Build.cs updated with all dependencies (see Module section)
+- Unreal Engine 5.x project with the FaceParallax plugin enabled
 - A skeletal mesh for your character (the head or body mesh)
 
 ### Step 1: Compile the C++ Code
@@ -509,49 +511,47 @@ This section walks through the complete workflow from running `deploy.py` to ope
 
 Verify the build succeeds with no errors. The FaceParallax C++ classes (component, preset, preview actor, editor widget, depth debug visualizer) are now available.
 
-### Step 2: Run deploy.py Inside Unreal Editor
+### Step 2: Run the Deployment Script (deploy.py)
 
-**Important:** `deploy.py` runs inside the Unreal Editor Python console, not as a standalone script. It creates binary assets that cannot be generated from text files.
+From the Python console in the editor (this is the canonical command):
 
-1. Open your project in the Unreal Editor
-2. Open the **Output Log** (Window → Developer Tools → Output Log)
-3. Switch to the **Python** tab
-4. Run:
 ```python
-exec(open(r"D:\Projects\YourProject\deploy.py").read())
+py "G:\tailedstories\paralax\deploy.py"
 ```
 
-Alternatively, launch the editor with the script:
+Or headlessly via commandlet:
+
 ```powershell
 UnrealEditor-Cmd.exe "D:\Projects\YourProject\YourProject.uproject" -run=pythonscript -script="deploy.py"
 ```
+
+`deploy.py` verifies the C++ plugin classes are loaded, deletes stale legacy assets, then creates everything.
 
 **What deploy.py creates:**
 
 | Asset | Path | Description |
 |---|---|---|
-| `M_FaceParallax_Master` | `/Game/FaceParallax/Materials/` | Master material with all parameters wired (crossfade, parallax, expression blend, depth debug, nested art pivot) |
-| `MI_FaceParallax_{LayerTag}` | `/Game/FaceParallax/Materials/Instances/` | One material instance per layer, parented to master |
-| `DA_FaceParallax_Default` | `/Game/FaceParallax/Presets/` | Preset DataAsset with ViewAssignments for all 10 states × all layer tags |
-| `BP_FaceParallaxCharacter` | `/Game/Characters/` | Character BP with FaceParallaxComponent attached, pre-configured HeadBoneName, LayerDefinitions, and skeletal mesh |
-| `WBP_FaceParallaxEditor` | `/Game/FaceParallax/Blueprints/` | Editor widget BP derived from `UFaceParallaxEditorWidget` |
-| `RT_FaceParallaxPreview` | `/Game/FaceParallax/Textures/` | 1024×1024 render target for the preview actor's scene capture |
-| Preview actor | Editor world (spawned) | `AFaceParallaxPreviewActor` with skeletal mesh, preset, and face-layer quads applied |
+| `M_FaceParallax_Master` | `/Game/FaceParallax/Materials/` | Master material with all parameters wired (crossfade, parallax, expression blend, depth debug, nested art pivot) — this is the name the runtime component loads |
+| `MI_FaceParallax_{LayerTag}` | `/Game/FaceParallax/Materials/Instances/` | One material instance per layer, parented to master, with all runtime parameter defaults |
+| `DA_FaceParallaxPreset` | `/Game/FaceParallax/Presets/` | Preset DataAsset with ViewAssignments for all 10 states × all layer tags |
+| `BP_FaceParallaxCharacter` | `/Game/FaceParallax/Blueprints/` | Character BP with FaceParallaxComponent attached, skeletal mesh assigned, wired in place |
+| `WBP_FaceParallaxEditor` | `/Game/FaceParallax/Blueprints/` | Editor widget BP derived from `UFaceParallaxEditorWidget` (existing asset is deleted and recreated with a clean CDO — no stale imports) |
+| `RT_FaceParallaxPreview` | `/Game/FaceParallax/Textures/` | Render target wired to the preview actor |
 
 **What deploy.py also does:**
 
-- Assigns the skeletal mesh (config `CHARACTER_MESH_PATH` at the top of `deploy.py` — point it at your own mesh to skip manual assignment; falls back to the Mannequin) and sets the mesh's relative offset to `(0,0,-90)` so the mannequin stands with its feet on the ground instead of hovering at the capsule center
-- Auto-adds the `FaceParallaxComponent` to the character BP if missing (via `SubobjectDataSubsystem`; the component's C++ defaults `HeadBoneName="head"`, `bAutoSpawnLayerQuads=true` apply automatically — assign `ActivePreset` in the BP or at runtime)
-- Repairs an existing character BP in place (re-checks mesh, offset, and component; never deletes the asset)
 - Gives the master material white albedo fallbacks so face-layer quads stay visible in the preview even before any art is imported (unassigned layers sample UE's built-in 1x1 white `DefaultTexture` and render as white patches instead of invisible black)
-- Spawns the face-layer quads on the preview actor (plane meshes attached to the head bone, tagged with each layer tag, material instance per layer applied, Front-state nested art included)
+- Cleans the widget BP CDO's `PreviewActor`/`ActivePreset` references so the asset never bakes stale level-actor/preset imports
+- Deletes legacy/wrong-named assets from older pipelines: `DA_FaceParallax_Default` (stale class import — "its class does not exist"), `M_FaceParallaxMaster` (wrong name), `Materials/MI_Face_*` (wrong path)
+- Spawns exactly one `AFaceParallaxPreviewActor` in the level (stale actors removed first), assigns mesh + render target + preset, and spawns layer quads so art is visible immediately
+- The widget's fallback preset chain is: actor's component preset → `DA_FaceParallaxPreset` → AssetRegistry scan for any `UFaceParallaxPreset` → in-memory default (4 standard layers)
+- Opening the editor tab auto-spawns a `AFaceParallaxPreviewActor` when none exists in the level; the actor combo lists all existing preview actors for manual re-selection
 
 ### Step 3: Spawn Face-Layer Quads (Automated)
 
 Face-layer quads are plane meshes tagged with the layer tag (e.g. `Eyes`, `Brows`, `Mouth`, `Hair`) that the component discovers and drives via dynamic material instances.
 
-- **Preview actor** — deploy.py spawns quads automatically; the widget's **Spawn Quads** toolbar button re-runs this at any time
-- **Character/pawn at runtime** — set `bAutoSpawnLayerQuads = true` (default) on the component: at BeginPlay it spawns quads for every `LayerDefinitions` entry that has no tagged primitive already present on the actor, then applies the active preset's textures. Hand-placed quads are never duplicated (skips tags that already have a tagged primitive)
+- **Preview actor** — the widget's **Spawn Quads** toolbar button spawns quads automatically; at runtime, set `bAutoSpawnLayerQuads = true` (default) on the component: at BeginPlay it spawns quads for every `LayerDefinitions` entry that has no tagged primitive already present on the actor, then applies the active preset's textures. Hand-placed quads are never duplicated (skips tags that already have a tagged primitive)
 
 Spawn settings on the component (category `Face Parallax|Layer Quads`):
 
@@ -573,8 +573,7 @@ With the widget open (type `FaceParallaxOpenEditor` in the console, or click the
 **Troubleshooting the editor widget:**
 
 - **Widget target properties (`PreviewActor`, `ActivePreset`) are `Transient`** — they are runtime bindings and are never serialized into the widget asset. This prevents `Illegal TEXT reference ... Import failed` warnings and the PreviewActor "resets to none" issue.
-- **There is exactly one preview actor** — `deploy.py` destroys stale preview actors before spawning the current one.
-- **The widget must open as a docked tab** inside the main editor window. If you get a separate floating window, the old C++ module is still loaded (Live Coding patches do not survive editor restarts — run `deploy.py` again in the new session). Verify the build with the log markers: `[FaceParallax] EditorSubsystem initialized — DOCKED-TAB BUILD v3` and `[FaceParallax] OpenEditorWidget — invoking nomad tab 'FaceParallaxEditor'`. Every button click logs `[FaceParallaxWidget] CLICK '...'`, and every widget rebuild logs `[FaceParallaxWidget] REBUILD DOCKED-TAB v3`.
+- **The widget must open as a docked tab** inside the main editor window. If you get a separate floating window, the old C++ module is still loaded (Live Coding patches do not survive editor restarts — restart the editor and run `deploy.py` again in the new session). Verify the build with the log markers: `[FaceParallax] EditorSubsystem initialized - DOCKED-TAB BUILD v3 (marker 0xV3)` and `[FaceParallax] OpenEditorWidget — invoking nomad tab 'FaceParallaxEditor'`. Every button click logs `[FaceParallaxWidget] CLICK '...'`, and every widget rebuild logs `[FaceParallaxWidget] REBUILD DOCKED-TAB v3`.
 - **`FaceParallaxOpenEditor` is a registered console command** (not just a `UFUNCTION(Exec)`) — the subsystem registers it with `IConsoleManager` at initialization, so it dispatches even if Live Coding has left the exec binding stale. If typing it still does nothing, restart the editor and run `deploy.py` again — the command is only registered by the freshly built module.
 
 1. **Select a View State** — click one of the 10 state buttons (Front, 3/4R, ProR, etc.)
@@ -664,16 +663,22 @@ FaceParallaxComponent.h/.cpp             — Core parallax component
 FaceParallaxPreset.h/.cpp                — Preset DataAsset
 DepthDebugVisualizerComponent.h/.cpp     — Depth debug visualizer
 FaceParallaxPreviewActor.h/.cpp          — Preview actor
-FaceParallaxEditorWidget.h/.cpp          — Editor widget
-deploy.py                                — UE Python asset creation script
-_gen_embed.py                            — Source re-encoder for deploy.py
+FaceParallaxEditorWidget.h               — Editor widget header (Blueprint-facing API)
+FaceParallaxEditorWidget.cpp             — Widget core API (targets, accessors, batch ops)
+FaceParallaxEditorWidgetUI.cpp           — Widget Slate construction (RebuildWidget)
+FaceParallaxEditorWidgetInteractions.cpp — Widget selection, gizmo/pin math, wizard, grids
+FaceParallaxEditorWidgetPanels.cpp       — Widget refresh, panels, diagnostics
+FaceParallaxEditorWidgetShared.h         — Shared widget internals (helpers + SFaceLayerGizmo)
+FaceParallaxLayoutSpec.h                 — Phase H layout manifest + P1..P15 design validator
+FaceParallaxEditorSubsystem.h/.cpp       — Editor subsystem (toolbar, tab; deployment is deploy.py)
+deploy.py                                — THE deployment script: creates every binary asset in-editor
+FaceParallaxModule.cpp                   — Runtime module entry (IMPLEMENT_MODULE)
 AGENTS.md                                — Agent guide with rules and test info
 
 Tests/
-  ParallaxMathTests.cpp                  — 774 standalone C++ tests
+  ParallaxMathTests.cpp                  — 1082 standalone C++ tests
   SyntaxValidator.py                     — Python syntax validation
   run_tests.ps1                          — Test runner
-  ue_build_test.ps1                      — UE build test
 
-SAMPLES/MyProject/                       — Standalone UE5 project for CI builds
+SAMPLES/MyProject/                       — Standalone UE5 project (plugin copy) for CI builds
 ```

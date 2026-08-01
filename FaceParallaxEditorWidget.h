@@ -845,8 +845,19 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Outline")
     bool GetOutlineOverlayVisible() const;
 
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Outline")
+    void SetOutlineDepthScope(int32 Scope);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Outline")
+    int32 GetOutlineDepthScope() const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Outline")
+    bool GetOutlineDepthArmed() const;
+
     UFUNCTION(BlueprintCallable, Category = "Face Editor|UI")
     void SetRenderTarget(class UTextureRenderTarget2D* RT);
+
+    void RefreshCanvasPreview();
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Editor|UI",
         meta = (DisplayName = "Preview Render Target"))
@@ -947,6 +958,7 @@ private:
     bool bAutoFitOnAssign = true;
     TArray<FName> LayerNames;
     int32 GetLayerIndex(FName Tag) const;
+    TArray<FName> GetUILayerTags() const;
     int32 SelectedNestedElementIndex = 0;
     bool GetSelectedPinElement(FFaceNestedArt& OutEl, int32& OutCount);
     FVector2D GetSelectedPinUV();
@@ -1116,10 +1128,18 @@ private:
 
     // ===== OUTLINE → DEPTH =====
     bool bOutlineOverlayVisible = false;
+    // 0 = front view only, 1 = 8 horizontal states, 2 = all 10 states.
+    int32 OutlineDepthScope = 0;
+    // Arm/confirm guard: the destructive depth bake needs a second click.
+    bool bOutlineDepthArmed = false;
     UPROPERTY(Transient)
     TObjectPtr<class UTexture2D> OutlineDepthTexture;
     UPROPERTY(Transient)
     TObjectPtr<class UTexture2D> EdgeOverlayTexture;
+    // Per-state depth textures baked by the last GenerateDepthFromOutlines run
+    // (kept referenced until the next run; each target view gets its own map).
+    UPROPERTY(Transient)
+    TArray<TObjectPtr<class UTexture2D>> OutlineDepthTextures;
     FSlateBrush OutlineDepthBrush;
     FSlateBrush OnionSkinBrush;
     FSlateBrush EdgeOverlayBrush;
@@ -1128,7 +1148,8 @@ private:
     TSharedPtr<STextBlock> TextOutlineStats;
     TSharedPtr<SEditableTextBox> EditOutlineGridSize;
     TArray<TSharedPtr<SCheckBox>> OutlineViewChecks;
-    void BuildOutlineDepthTexture(const TArray<float>& Depth, int32 GridSize);
+    bool GenerateDepthFromOutlinesImpl(int32 GridSize);
+    class UTexture2D* BuildOutlineDepthTexture(const TArray<float>& Depth, int32 GridSize, bool bUpdatePreview);
     void RefreshOutlineViewChecks();
 
     // ===== DIAGNOSTIC LOG =====
@@ -1148,6 +1169,10 @@ public:
     bool bSuppressValidation = true;
 
 private:
+    // One-shot warning latches: validate methods log only on the first miss
+    // per state change instead of spamming on every RefreshUI.
+    mutable bool bActivePresetWarned = false;
+    mutable bool bPreviewActorWarned = false;
     // ===== SEARCH =====
     TSharedPtr<SSearchBox> SearchBox;
     FString SearchFilter;

@@ -87,6 +87,29 @@ void AFaceParallaxPreviewActor::SetRenderTarget(UTextureRenderTarget2D* RenderTa
     }
 }
 
+UTextureRenderTarget2D* AFaceParallaxPreviewActor::CreateRenderTarget(int32 SizeX, int32 SizeY)
+{
+    if (!SceneCapture) return nullptr;
+    if (UTextureRenderTarget2D* Existing = SceneCapture->TextureTarget)
+    {
+        return Existing;
+    }
+    UTextureRenderTarget2D* RT = NewObject<UTextureRenderTarget2D>(GetTransientPackage(), TEXT("PreviewRT"));
+    RT->InitAutoFormat(FMath::Max(16, SizeX), FMath::Max(16, SizeY));
+    RT->RenderTargetFormat = RTF_RGBA8;
+    RT->ClearColor = FLinearColor(0.12f, 0.12f, 0.12f, 1.0f);
+    RT->TargetGamma = 2.2f;
+    RT->UpdateResource();
+    SceneCapture->TextureTarget = RT;
+    bCaptureDirty = true;
+    return RT;
+}
+
+UTextureRenderTarget2D* AFaceParallaxPreviewActor::GetRenderTarget() const
+{
+    return SceneCapture ? SceneCapture->TextureTarget : nullptr;
+}
+
 void AFaceParallaxPreviewActor::SetOrbitYaw(float Degrees)
 {
     OrbitYaw = FMath::Fmod(Degrees, 360.0f);

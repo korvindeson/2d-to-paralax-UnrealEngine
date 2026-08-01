@@ -1228,6 +1228,33 @@ void UFaceParallaxComponent::SyncLayerDefinitionsFromPreset()
             bChanged = true;
         }
     }
+
+    // The constructor seeds a bare placeholder layer ("FaceLayer") so the
+    // component works before a preset exists. Now that the preset is the
+    // source of truth for layers, drop the placeholder if it has no slot in
+    // the preset and still has default values (a user layer that happens to
+    // be named "FaceLayer" has non-default values or preset slots and survives).
+    auto PresetHasLayerAnyState = [this](const FName& Tag)
+    {
+        for (int32 S = 0; S <= (int32)EFaceAngleState::Bottom; ++S)
+        {
+            if (ActivePreset->GetAllLayerTags((EFaceAngleState)S).Contains(Tag))
+            {
+                return true;
+            }
+        }
+        return false;
+    };
+    for (int32 i = LayerDefinitions.Num() - 1; i >= 0; --i)
+    {
+        const FFaceLayerDef& Def = LayerDefinitions[i];
+        if (!IsSeedPlaceholderLayerDef(Def)) continue;
+        if (PresetHasLayerAnyState(Def.LayerTag)) continue;
+        if (LayerDefinitions.Num() <= 1) break;
+        LayerDefinitions.RemoveAt(i);
+        bChanged = true;
+    }
+
     if (bChanged)
     {
         LayerParallaxOffsets.SetNum(LayerDefinitions.Num());
@@ -2756,6 +2783,151 @@ bool UFaceParallaxComponent::GenerateDepthBufferFromOutlines(int32 GridSize, TAr
         }
     }
     return bAny;
+}
+
+float UFaceParallaxComponent::VisualHullYawForState(EFaceAngleState State)
+{
+    // Default zone centers: HalfZoneWidth 22.5, multipliers {1, 3, 5, 7}
+    static const float BM[4] = { 22.5f, 67.5f, 112.5f, 157.5f };
+    switch (State)
+    {
+        case EFaceAngleState::Front:               return 0.0f;
+        case EFaceAngleState::ThreeQuarterRight:   return (BM[0] + BM[1]) * 0.5f;
+        case EFaceAngleState::RightProfile:        return (BM[1] + BM[2]) * 0.5f;
+        case EFaceAngleState::BackRight:           return (BM[2] + BM[3]) * 0.5f;
+        case EFaceAngleState::Back:                return 180.0f;
+        case EFaceAngleState::BackLeft:            return -(BM[2] + BM[3]) * 0.5f;
+        case EFaceAngleState::LeftProfile:         return -(BM[1] + BM[2]) * 0.5f;
+        case EFaceAngleState::ThreeQuarterLeft:    return -(BM[0] + BM[1]) * 0.5f;
+        default:                                   return 0.0f;
+    }
+}
+
+float UFaceParallaxComponent::VisualHullPitchForState(EFaceAngleState State)
+{
+    if (State == EFaceAngleState::Top) return 90.0f;
+    if (State == EFaceAngleState::Bottom) return -90.0f;
+    return 0.0f;
+}
+
+bool UFaceParallaxComponent::GenerateDepthBufferFromOutlinesForView(int32 GridSize, float YawDegrees,
+    float PitchDegrees, TArray<float>& OutDepth, float& OutCellSize) const
+{
+    OutDepth.Reset();
+    GridSize = FMath::Clamp(GridSize, 8, 256);
+    OutCellSize = 2.0f / (float)GridSize;
+
+    TArray<FVector2D> Front = ExtractSilhouettePoints(EFaceAngleState::Front);
+    TArray<FVector2D> Right = ExtractSilhouettePoints(EFaceAngleState::RightProfile);
+    TArray<FVector2D> Left = ExtractSilhouettePoints(EFaceAngleState::LeftProfile);
+    TArray<FVector2D> Top = ExtractSilhouettePoints(EFaceAngleState::Top);
+    TArray<FVector2D> Bottom = ExtractSilhouettePoints(EFaceAngleState::Bottom);
+
+    const bool bAny = Front.Num() >= 2;
+    OutDepth.Reserve(GridSize * GridSize);
+    for (int32 gy = 0; gy < GridSize; ++gy)
+    {
+        const float Y = -1.0f + OutCellSize * ((float)gy + 0.5f);
+        for (int32 gx = 0; gx < GridSize; ++gx)
+        {
+            const float X = -1.0f + OutCellSize * ((float)gx + 0.5f);
+            OutDepth.Add(VisualHullDepthStatic(Front, Right, Left, Top, Bottom,
+                FVector2D(X, Y), YawDegrees, PitchDegrees));
+        }
+    }
+    return bAny;
+}
+
+float UFaceParallaxComponent::VisualHullDepthStatic(
+    const TArray<FVector2D>& Front, const TArray<FVector2D>& Right,
+    const TArray<FVector2D>& Left, const TArray<FVector2D>& Top,
+    const TArray<FVector2D>& Bottom, FVector2D P, float YawDegrees, float PitchDegrees)
+{
+    auto Interior = [](const TArray<FVector2D>& Pts, FVector2D Q) -> float
+    {
+        if (Pts.Num() < 2)
+        {
+            return 1.0f;
+        }
+        return FMath::Max(0.0f, SilhouetteDistanceToEdgeStatic(Pts, Q));
+    };
+
+    const float YawRad = FMath::DegreesToRadians(YawDegrees);
+    const float PitchRad = FMath::DegreesToRadians(PitchDegrees);
+    const float CosY = FMath::Cos(YawRad), SinY = FMath::Sin(YawRad);
+    const float CosP = FMath::Cos(PitchRad), SinP = FMath::Sin(PitchRad);
+
+    // Camera basis in front space: R = screen right, U = screen up, depth axis
+    // is -V (V = view direction). Screen point P = (X', Y') in the target view.
+    auto FrontSpace = [&](float Xp, float Yp, float Zp, float& OutFx, float& OutFy, float& OutZf)
+    {
+        OutFx = Xp * CosY + Zp * (SinY * CosP);
+        OutFy = Yp * CosP - Zp * SinP;
+        OutZf = -Xp * SinY + Yp * (CosY * SinP) + Zp * (CosY * CosP);
+    };
+
+    // Front silhouette's vertical extent (rows are Y-ascending, (xMin, Y, xMax, Y)).
+    // The distance helper clamps out-of-range queries to the nearest row, which
+    // would otherwise leave top/bottom views unbounded along the head's height.
+    const bool bFrontHasExtent = Front.Num() >= 2;
+    const float FrontYMin = bFrontHasExtent ? Front[0].Y : -1.0f;
+    const float FrontYMax = bFrontHasExtent ? Front[Front.Num() - 2].Y : 1.0f;
+
+    // Feasibility: is the hull point at depth Z' (screen X', Y') inside every prism?
+    auto Feasible = [&](float Xp, float Yp, float Zp) -> bool
+    {
+        float Fx, Fy, Zf;
+        FrontSpace(Xp, Yp, Zp, Fx, Fy, Zf);
+        if (bFrontHasExtent && (Fy < FrontYMin || Fy > FrontYMax)) return false;
+        if (SilhouetteDistanceToEdgeStatic(Front, FVector2D(Fx, Fy)) < 0.0f) return false;
+        const float HS = FMath::Min(Interior(Right, FVector2D(0.0f, Fy)), Interior(Left, FVector2D(0.0f, Fy)));
+        const float HT = FMath::Min(Interior(Top, FVector2D(Fx, 0.0f)), Interior(Bottom, FVector2D(Fx, 0.0f)));
+        return FMath::Abs(Zf) <= HS && FMath::Abs(Zf) <= HT;
+    };
+
+    // Max depth along the view ray (binary search; membership is monotone in Z'
+    // for camera angles in the parallax range).
+    float ZBound = 0.0f;
+    if (Feasible(P.X, P.Y, 0.0f))
+    {
+        float Lo = 0.0f, Hi = 1.0f;
+        for (int32 Iter = 0; Iter < 14; ++Iter)
+        {
+            const float Mid = (Lo + Hi) * 0.5f;
+            if (Feasible(P.X, P.Y, Mid)) Lo = Mid;
+            else Hi = Mid;
+        }
+        ZBound = Lo;
+    }
+
+    // Dome falloff: distance to the front silhouette foreshortened into the
+    // target view. Skipped when the projection is degenerate (profile/back-ish
+    // yaw or top/bottom pitch), where membership alone defines the surface.
+    float Dome = 1.0f;
+    if (FMath::Abs(CosY) >= 0.2f && FMath::Abs(CosP) >= 0.2f && Front.Num() >= 2)
+    {
+        TArray<FVector2D> Projected;
+        Projected.Reserve(Front.Num());
+        for (int32 i = 0; i + 1 < Front.Num(); i += 2)
+        {
+            // Flat front point (Fx, Fy, 0) into the target view's screen space.
+            // Views past 90 degrees mirror the front shape; keep (xMin, xMax)
+            // row ordering by swapping the pair when yaw flips horizontally.
+            float Px0 = Front[i].X * CosY;
+            float Py0 = Front[i].X * (SinY * SinP) + Front[i].Y * CosP;
+            float Px1 = Front[i + 1].X * CosY;
+            float Py1 = Front[i + 1].X * (SinY * SinP) + Front[i + 1].Y * CosP;
+            if (CosY < 0.0f)
+            {
+                Swap(Px0, Px1);
+            }
+            Projected.Add(FVector2D(Px0, Py0));
+            Projected.Add(FVector2D(Px1, Py1));
+        }
+        Dome = FMath::Max(0.0f, SilhouetteDistanceToEdgeStatic(Projected, P));
+    }
+
+    return FMath::Clamp(FMath::Min(ZBound, Dome), 0.0f, 1.0f);
 }
 
 void UFaceParallaxComponent::SetNestedPin3D(EFaceAngleState State, FName LayerTag, int32 Index, const FFacePin3D& Pin)

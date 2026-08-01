@@ -52,7 +52,31 @@ class SyntaxValidator:
             self._check_pragma_once(fp, text)
         # 5. UCLASS/UPROPERTY/UFUNCTION macro balance
         self._check_uht_macros(fp, text)
-        # 6. (no-op removed — class/struct semicolons caught by compiler)
+        # 6. Section slots in the editor widget must be AutoHeight (default
+        #    SVerticalBox slots are Fill: bare AddSlot would stretch every
+        #    section to an equal share and tall content paints over the next
+        #    section - the "View Override on top of Scale Y" defect).
+        if fp.name == 'FaceParallaxEditorWidgetUI.cpp':
+            self._check_section_slots(fp, text)
+
+    def _check_section_slots(self, fp: Path, text: str):
+        # A section slot add is:  <Box>->AddSlot() [ ...MakeSectionBox(...) ] ;
+        # The slot must specify a size rule (.AutoHeight() / .FillHeight())
+        # before the content bracket; bare AddSlot() defaults to Fill.
+        for m in re.finditer(r'AddSlot\(\)', text):
+            start = m.start()
+            pre = text[m.end():]
+            pre = pre[:pre.find('[')] if '[' in pre else pre[:pre.find(';')] if ';' in pre else pre
+            if re.search(r'\.(AutoHeight|FillHeight)\s*\(', pre):
+                continue
+            stmt_end = text.find(';', start)
+            if stmt_end < 0:
+                stmt_end = len(text)
+            stmt = text[start:stmt_end]
+            if 'MakeSectionBox' in stmt:
+                line = text.count('\n', 0, start) + 1
+                self._error(fp, f"line {line}: section slot added without "
+                                 f"AutoHeight/FillHeight (sections would overlap)")
 
     def _check_balance(self, fp, lines, pair, name):
         open_ch, close_ch = pair[0], pair[1]

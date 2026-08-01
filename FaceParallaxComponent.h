@@ -14,7 +14,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(FOnFaceStateChangedSignature, EFace
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_ThreeParams(FOnParamValueChangedSignature, FName, ParamName, float, OldValue, float, NewValue);
 
 USTRUCT(BlueprintType)
-struct FFaceLayerDef
+struct FACEPARALLAX_API FFaceLayerDef
 {
     GENERATED_BODY()
 
@@ -40,8 +40,20 @@ struct FFaceLayerDef
     float DepthMax = 1.0f;
 };
 
+// The component constructor seeds a bare placeholder layer ("FaceLayer" with
+// all-default values) so the component works before a preset exists; it is
+// never a real layer. Shared predicate for every site that reads component
+// layer definitions to feed preset lookups (component sync, editor widget UI).
+static inline bool IsSeedPlaceholderLayerDef(const FFaceLayerDef& Def)
+{
+    return Def.LayerTag == FName(TEXT("FaceLayer"))
+        && FMath::IsNearlyEqual(Def.DepthScale, 1.0f)
+        && FMath::IsNearlyEqual(Def.DepthMapIntensity, 1.0f)
+        && !Def.bInvertParallax;
+}
+
 UCLASS(ClassGroup=(Custom), meta=(BlueprintSpawnableComponent))
-class UFaceParallaxComponent : public UActorComponent
+class FACEPARALLAX_API UFaceParallaxComponent : public UActorComponent
 {
     GENERATED_BODY()
 
@@ -362,6 +374,22 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Face Parallax|Outline")
     bool GenerateDepthBufferFromOutlines(int32 GridSize, TArray<float>& OutDepth, float& OutCellSize) const;
 
+    // View-consistent depth map: same visual-hull math as the front view, but
+    // evaluated in the rotated camera frame of the given yaw/pitch. The surface
+    // is the max depth along the view ray whose front-space point stays inside
+    // every silhouette prism, plus a dome falloff measured against the front
+    // silhouette foreshortened into the view. At yaw 0 / pitch 0 the result is
+    // identical to GenerateDepthBufferFromOutlines. Editor tooling only.
+    bool GenerateDepthBufferFromOutlinesForView(int32 GridSize, float YawDegrees, float PitchDegrees,
+        TArray<float>& OutDepth, float& OutCellSize) const;
+
+    // Art-camera convention for the per-view depth maps: the yaw/pitch of the
+    // camera the state artwork was drawn for (default zone-center table,
+    // HalfZoneWidth 22.5, multipliers {1, 3, 5, 7}). Mirrored by ZoneCenterYaw/
+    // ZoneCenterPitch in the standalone test harness.
+    static float VisualHullYawForState(EFaceAngleState State);
+    static float VisualHullPitchForState(EFaceAngleState State);
+
     // Pure math (shared with the standalone test harness):
     // Points are consecutive (xMin, xMax) pairs per scanline, sorted by Y ascending,
     // normalized to [-1,1]. Returns signed distance in normalized units:
@@ -375,6 +403,17 @@ public:
         const TArray<FVector2D>& Front, const TArray<FVector2D>& Right,
         const TArray<FVector2D>& Left, const TArray<FVector2D>& Top,
         const TArray<FVector2D>& Bottom, FVector2D LocalPoint);
+
+    // View-consistent variant: screen point P is in the TARGET view's frame
+    // (yaw/pitch of the view camera). Solves the max depth Z' along the view ray
+    // whose front-space point stays inside the hull prisms, then takes the min
+    // with a dome falloff measured in the target view's screen space. At yaw 0 /
+    // pitch 0 this reduces exactly to VisualHullDepthStatic.
+    static float VisualHullDepthStatic(
+        const TArray<FVector2D>& Front, const TArray<FVector2D>& Right,
+        const TArray<FVector2D>& Left, const TArray<FVector2D>& Top,
+        const TArray<FVector2D>& Bottom, FVector2D LocalPoint,
+        float YawDegrees, float PitchDegrees);
 
     // Pin view-angle rotation: maps yaw deviation from a state's zone center
     // to a rotation angle. Deviation is wrapped to [-180,180], normalized by

@@ -9,7 +9,7 @@ class UMaterialInterface;
 class UTexture2D;
 
 UCLASS(ClassGroup=(Custom), meta=(BlueprintSpawnableComponent))
-class UDepthDebugVisualizerComponent : public UActorComponent
+class FACEPARALLAX_API UDepthDebugVisualizerComponent : public UActorComponent
 {
     GENERATED_BODY()
 

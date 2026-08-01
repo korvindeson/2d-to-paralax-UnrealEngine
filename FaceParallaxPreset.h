@@ -6,7 +6,7 @@
 #include "FaceParallaxPreset.generated.h"
 
 UCLASS(BlueprintType, AutoExpandCategories = ("View Assignments|Canvas"))
-class UFaceParallaxPreset : public UDataAsset
+class FACEPARALLAX_API UFaceParallaxPreset : public UDataAsset
 {
     GENERATED_BODY()
 

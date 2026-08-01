@@ -18,31 +18,9 @@ public:
     virtual void Initialize(FSubsystemCollectionBase& Collection) override;
     virtual void Deinitialize() override;
 
-    // --- Deploy pipeline ---
-    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Editor Subsystem")
-    bool RunDeploy(const FString& ContentRoot = TEXT("/Game/FaceParallax"));
-
-    // --- Individual asset creators ---
-    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Editor Subsystem")
-    class UMaterial* CreateMasterMaterial(const FString& PackagePath);
-
-    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Editor Subsystem")
-    class UMaterialInstanceConstant* CreateLayerMaterialInstance(const FString& PackagePath, const FString& LayerName, class UMaterial* MasterMaterial);
-
-    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Editor Subsystem")
-    class UFaceParallaxPreset* CreateDefaultPreset(const FString& PackagePath, const TArray<FString>& LayerNames);
-
-    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Editor Subsystem")
-    class UBlueprint* CreateParallaxBlueprint(const FString& PackagePath, const FString& SkeletalMeshPath);
-
-    // (removed: EnsureLayerDefStruct was a stub that always returned nullptr)
-
-    // --- Material Graph (single source of truth for material creation) ---
-    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Editor Subsystem")
-    void SetupMasterMaterialExpressions(class UMaterial* Material);
-
-    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Editor Subsystem")
-    void SetupMaterialInstanceParams(class UMaterialInstanceConstant* MI, const FString& LayerName, class UMaterial* MasterMaterial);
+    // Note: asset deployment (materials, preset, character BP, editor widget BP,
+    // render target, preview actor) is handled entirely by the deployment script
+    // deploy.py — see the repo root. There is no C++ deploy pipeline.
 
     // --- Toolbar ---
     void RegisterToolbar();
@@ -60,8 +38,6 @@ public:
     TObjectPtr<class UFaceParallaxEditorWidget> EditorWidgetInstance;
 
 private:
-    FString ProjectContentDir() const;
-    bool SaveAsset(class UObject* Asset);
     TSharedRef<class SDockTab> SpawnEditorTab(const class FSpawnTabArgs& Args);
     FDelegateHandle ToolbarExtenderHandle;
     bool bTabSpawnerRegistered = false;
