@@ -5600,23 +5600,90 @@ void TestCameraSnapMapping() {
 
 // ========================
 // IMPORT CHANNEL DETECTION (mirrors widget ChannelFromTextureName)
+// Channel markers count only as the FINAL token: a trailing view-state
+// suffix is stripped first, so both {Part}_{View}_{Map} ("Eyes_Front_Normal")
+// and {Part}_{Map}_{View} ("Eyes_N_Front") naming work, while layer names
+// containing "n"/"d" tokens ("Eyes_Nose_Front", "Eyes_Dyed_Front", a bare
+// "Depth" layer) never match a channel marker.
 // ========================
+
+static bool MirrorEndsWith(const std::string& L, const char* Suf) {
+    size_t n = strlen(Suf);
+    return L.size() >= n && L.compare(L.size() - n, n, Suf) == 0;
+}
+
+// Mirrors MatchStateSuffix: returns the matched view-state suffix length (0 = none).
+static size_t MirrorStateSuffixLen(const std::string& L) {
+    static const char* Sufs[] = {
+        "_threequarterright", "_threequarterleft", "_3quarterright", "_3quarterleft",
+        "_rightprofile", "_leftprofile", "_backright", "_backleft",
+        "_front", "_back", "_top", "_bottom",
+        "_3r", "_3l", "_pr", "_pl", "_br", "_bl", "_f", "_b", "_t", "_bot"
+    };
+    for (const char* S : Sufs) {
+        size_t n = strlen(S);
+        if (L.size() >= n && L.compare(L.size() - n, n, S) == 0) return n;
+    }
+    return 0;
+}
 
 static const char* ChannelFromName(const std::string& Name) {
     std::string L = Name;
     for (auto& c : L) c = (char)tolower(c);
-    if (L.find("_normal") != std::string::npos || L.find("_norm") != std::string::npos ||
-        L.find("_n") != std::string::npos || L.find("_normalmap") != std::string::npos)
+    size_t StateLen = MirrorStateSuffixLen(L);
+    if (StateLen) L.resize(L.size() - StateLen);
+    if (MirrorEndsWith(L, "_normalmap") || MirrorEndsWith(L, "_normal") ||
+        MirrorEndsWith(L, "_norm") || MirrorEndsWith(L, "_n"))
         return "Normal";
-    if (L.find("_depth") != std::string::npos || L.find("_d") != std::string::npos ||
-        L.find("_height") != std::string::npos || L.find("_displacement") != std::string::npos)
+    if (MirrorEndsWith(L, "_displacement") || MirrorEndsWith(L, "_depth") ||
+        MirrorEndsWith(L, "_height") || MirrorEndsWith(L, "_d"))
         return "Depth";
     return "Albedo";
+}
+
+// Mirrors StripChannelSuffix: strips the channel token and re-attaches any
+// trailing view-state suffix so the caller's state match still resolves.
+static std::string StripChannelName(const std::string& Name, const char* Channel) {
+    if (strcmp(Channel, "Normal") != 0 && strcmp(Channel, "Depth") != 0)
+        return Name;
+    std::string L = Name;
+    for (auto& c : L) c = (char)tolower(c);
+    size_t StateLen = MirrorStateSuffixLen(L);
+    std::string Cand = StateLen ? L.substr(0, L.size() - StateLen) : L;
+    const char* Suffixes[4] = {};
+    if (strcmp(Channel, "Normal") == 0) {
+        Suffixes[0] = "_normalmap"; Suffixes[1] = "_normal";
+        Suffixes[2] = "_norm";       Suffixes[3] = "_n";
+    } else {
+        Suffixes[0] = "_displacement"; Suffixes[1] = "_depth";
+        Suffixes[2] = "_height";       Suffixes[3] = "_d";
+    }
+    for (const char* S : Suffixes) {
+        if (MirrorEndsWith(Cand, S)) {
+            std::string Result = Name.substr(0, Cand.size() - strlen(S));
+            if (StateLen) Result += Name.substr(Name.size() - StateLen);
+            return Result;
+        }
+    }
+    return Name;
+}
+
+// Mirrors the folder wizard's part (layer) name derivation:
+// ChannelFromTextureName -> StripChannelSuffix -> MatchStateSuffix -> part.
+static std::string WizardPartName(const std::string& Name) {
+    const char* Channel = ChannelFromName(Name);
+    std::string B = StripChannelName(Name, Channel);
+    std::string L = B;
+    for (auto& c : L) c = (char)tolower(c);
+    size_t StateLen = MirrorStateSuffixLen(L);
+    if (StateLen == 0) return ""; // no view suffix: not a wizard-named file
+    return B.substr(0, B.size() - StateLen);
 }
 
 void TestImportChannelDetection() {
     printf("\n=== ImportChannelDetection ===\n");
 
+    // Existing behavior (channel token is the final token)
     TEST("Eyes_Normal -> Normal", strcmp(ChannelFromName("Eyes_Normal"), "Normal") == 0);
     TEST("Eyes_norm -> Normal", strcmp(ChannelFromName("Eyes_norm"), "Normal") == 0);
     TEST("Eyes_N -> Normal", strcmp(ChannelFromName("Eyes_N"), "Normal") == 0);
@@ -5627,6 +5694,54 @@ void TestImportChannelDetection() {
     TEST("Eyes -> Albedo", strcmp(ChannelFromName("Eyes"), "Albedo") == 0);
     TEST("Displacement suffix beats plain name", strcmp(ChannelFromName("Eyes_displacement"), "Depth") == 0);
     TEST("Normalmap suffix -> Normal", strcmp(ChannelFromName("Eyes_normalmap"), "Normal") == 0);
+
+    // {Part}_{View}_{Map} convention (wizard hint order)
+    TEST("Eyes_Front_Normal -> Normal", strcmp(ChannelFromName("Eyes_Front_Normal"), "Normal") == 0);
+    TEST("Eyes_3R_Depth -> Depth", strcmp(ChannelFromName("Eyes_3R_Depth"), "Depth") == 0);
+    TEST("Eyes_Back_n -> Normal", strcmp(ChannelFromName("Eyes_Back_n"), "Normal") == 0);
+    TEST("Eyes_Front -> Albedo (no channel)", strcmp(ChannelFromName("Eyes_Front"), "Albedo") == 0);
+    TEST("Eyes_Back -> Albedo (no channel)", strcmp(ChannelFromName("Eyes_Back"), "Albedo") == 0);
+
+    // {Part}_{Map}_{View} convention (channel before view suffix)
+    TEST("Eyes_N_Front -> Normal", strcmp(ChannelFromName("Eyes_N_Front"), "Normal") == 0);
+    TEST("Eyes_D_Back -> Depth", strcmp(ChannelFromName("Eyes_D_Back"), "Depth") == 0);
+    TEST("Eyes_N_3R -> Normal", strcmp(ChannelFromName("Eyes_N_3R"), "Normal") == 0);
+    TEST("Eyes_N_f -> Normal", strcmp(ChannelFromName("Eyes_N_f"), "Normal") == 0);
+
+    // Layer names containing n/d tokens must NOT match channel markers
+    TEST("Eyes_Nose_Front -> Albedo", strcmp(ChannelFromName("Eyes_Nose_Front"), "Albedo") == 0);
+    TEST("Eyes_Nose -> Albedo", strcmp(ChannelFromName("Eyes_Nose"), "Albedo") == 0);
+    TEST("Brow_Neck_Front -> Albedo", strcmp(ChannelFromName("Brow_Neck_Front"), "Albedo") == 0);
+    TEST("Ears_Nails -> Albedo", strcmp(ChannelFromName("Ears_Nails"), "Albedo") == 0);
+    TEST("Ears_Nails_N -> Normal (real channel)", strcmp(ChannelFromName("Ears_Nails_N"), "Normal") == 0);
+    TEST("Eyes_Dyed_Front -> Albedo", strcmp(ChannelFromName("Eyes_Dyed_Front"), "Albedo") == 0);
+    TEST("Eyes_Dyed -> Albedo", strcmp(ChannelFromName("Eyes_Dyed"), "Albedo") == 0);
+    TEST("Depth_Front -> Albedo (bare Depth layer)", strcmp(ChannelFromName("Depth_Front"), "Albedo") == 0);
+    TEST("Nose_Depth_Front -> Depth (real channel)", strcmp(ChannelFromName("Nose_Depth_Front"), "Depth") == 0);
+    TEST("Nose_N_Back -> Normal", strcmp(ChannelFromName("Nose_N_Back"), "Normal") == 0);
+    TEST("Nails_Front -> Albedo", strcmp(ChannelFromName("Nails_Front"), "Albedo") == 0);
+    TEST("Neck_n -> Normal (real channel)", strcmp(ChannelFromName("Neck_n"), "Normal") == 0);
+    TEST("Top_d -> Depth", strcmp(ChannelFromName("Top_d"), "Depth") == 0);
+    TEST("Brow_3QuarterRight_N -> Normal", strcmp(ChannelFromName("Brow_3QuarterRight_N"), "Normal") == 0);
+
+    // Channel markers are only final tokens
+    TEST("Eyes_normal_2020 -> Albedo", strcmp(ChannelFromName("Eyes_normal_2020"), "Albedo") == 0);
+    TEST("Eyes_depth_v2 -> Albedo", strcmp(ChannelFromName("Eyes_depth_v2"), "Albedo") == 0);
+    TEST("Eyes_normalmap_backup -> Albedo", strcmp(ChannelFromName("Eyes_normalmap_backup"), "Albedo") == 0);
+    TEST("Bare N -> Albedo (no underscore)", strcmp(ChannelFromName("N"), "Albedo") == 0);
+    TEST("Bare D -> Albedo (no underscore)", strcmp(ChannelFromName("D"), "Albedo") == 0);
+
+    // Wizard part derivation: channel/view tokens never leak into layer names
+    TEST("Part Eyes_N_Front -> Eyes", WizardPartName("Eyes_N_Front") == "Eyes");
+    TEST("Part Eyes_Front_Normal -> Eyes", WizardPartName("Eyes_Front_Normal") == "Eyes");
+    TEST("Part Nose_D_3R -> Nose", WizardPartName("Nose_D_3R") == "Nose");
+    TEST("Part Eyes_Back_d -> Eyes", WizardPartName("Eyes_Back_d") == "Eyes");
+    TEST("Part Nose_N -> empty (no view)", WizardPartName("Nose_N").empty());
+    TEST("Part Eyes_Dyed_Front keeps layer", WizardPartName("Eyes_Dyed_Front") == "Eyes_Dyed");
+    TEST("Part Depth_Front keeps layer", WizardPartName("Depth_Front") == "Depth");
+    TEST("Part Eyes_Front -> Eyes", WizardPartName("Eyes_Front") == "Eyes");
+    TEST("Part Eyes_N_3R -> Eyes", WizardPartName("Eyes_N_3R") == "Eyes");
+    TEST("Part with no view suffix -> empty", WizardPartName("Eyes_N").empty());
 }
 
 // ====================================================================
@@ -6149,7 +6264,7 @@ void TestPhaseHUIDesign() {
 
     // Positive contract: the real manifest must be clean.
     const std::vector<FPLayout::FPLayoutNode> Spec = FPLayout::BuildSpec();
-    TEST("Phase H: manifest builds (435 nodes)", Spec.size() == 435u);
+    TEST("Phase H: manifest builds (424 nodes)", Spec.size() == 424u);
     TEST("Phase H: every node reachable from root", FPLayout::CountReachable(Spec) == (int)Spec.size());
     const int RootIdx = FPLayout::FindRootIndex(Spec);
     TEST("Phase H: single root is the last node", RootIdx == (int)Spec.size() - 1);
@@ -6317,6 +6432,82 @@ void TestPhaseHUIDesign() {
             !Violates(B.N, FPLayout::DesignRule::WithinScreenBounds));
     }
     {
+        // P16: five plain sections in a clipped viewport must fire.
+        FPLayout::Builder B;
+        const int Root = FPLayout::VF(B, "Root",
+            FPLayout::VF(B, "Viewport",
+                FPLayout::VF(B, "S1", FPLayout::LF(B, "T1", 20, 10), FPLayout::LF(B, "B1", 20, 20)),
+                FPLayout::VF(B, "S2", FPLayout::LF(B, "T2", 20, 10), FPLayout::LF(B, "B2", 20, 20)),
+                FPLayout::VF(B, "S3", FPLayout::LF(B, "T3", 20, 10), FPLayout::LF(B, "B3", 20, 20)),
+                FPLayout::VF(B, "S4", FPLayout::LF(B, "T4", 20, 10), FPLayout::LF(B, "B4", 20, 20)),
+                FPLayout::VF(B, "S5", FPLayout::LF(B, "T5", 20, 10), FPLayout::LF(B, "B5", 20, 20))));
+        B.N[(size_t)B.N[(size_t)Root].Children[0]].bClipH = true;
+        B.N[(size_t)B.N[(size_t)Root].Children[0]].FixedW = 180.0;
+        B.N[(size_t)B.N[(size_t)Root].Children[0]].FixedH = 560.0;
+        B.N[(size_t)B.N[(size_t)Root].Children[0]].Spacing = 2.0;
+        for (int s = 1; s <= 5; ++s)
+        {
+            const int Sec = B.N[(size_t)B.N[(size_t)Root].Children[0]].Children[(size_t)(s - 1)];
+            B.N[(size_t)Sec].bSection = true;
+            B.N[(size_t)B.N[(size_t)Sec].Children[0]].bTitle = true;
+        }
+        TEST("Phase H: validator fires SectionDensity (P16)",
+            Violates(B.N, FPLayout::DesignRule::DensityOverflow));
+    }
+    {
+        // P16 exemption: accordion sections may be denser than 4.
+        FPLayout::Builder B;
+        const int Root = FPLayout::VF(B, "Root",
+            FPLayout::VF(B, "Viewport",
+                FPLayout::VF(B, "S1", FPLayout::LF(B, "T1", 20, 10), FPLayout::LF(B, "B1", 20, 20)),
+                FPLayout::VF(B, "S2", FPLayout::LF(B, "T2", 20, 10), FPLayout::LF(B, "B2", 20, 20)),
+                FPLayout::VF(B, "S3", FPLayout::LF(B, "T3", 20, 10), FPLayout::LF(B, "B3", 20, 20)),
+                FPLayout::VF(B, "S4", FPLayout::LF(B, "T4", 20, 10), FPLayout::LF(B, "B4", 20, 20)),
+                FPLayout::VF(B, "S5", FPLayout::LF(B, "T5", 20, 10), FPLayout::LF(B, "B5", 20, 20))));
+        B.N[(size_t)B.N[(size_t)Root].Children[0]].bClipH = true;
+        B.N[(size_t)B.N[(size_t)Root].Children[0]].FixedW = 180.0;
+        B.N[(size_t)B.N[(size_t)Root].Children[0]].FixedH = 560.0;
+        B.N[(size_t)B.N[(size_t)Root].Children[0]].Spacing = 2.0;
+        for (int s = 1; s <= 5; ++s)
+        {
+            const int Sec = B.N[(size_t)B.N[(size_t)Root].Children[0]].Children[(size_t)(s - 1)];
+            B.N[(size_t)Sec].bSection = true;
+            B.N[(size_t)Sec].bAccordion = true;
+            B.N[(size_t)B.N[(size_t)Sec].Children[0]].bTitle = true;
+        }
+        TEST("Phase H: accordion sections exempt from SectionDensity (P16)",
+            !Violates(B.N, FPLayout::DesignRule::DensityOverflow));
+    }
+    {
+        // Real manifest: the dense rails must be accordion-marked.
+        const char* DebugSections[] = { "Sec-Import", "Sec-Config", "Sec-EdgeAnalysis",
+            "Sec-OutlineDepth", "Sec-DepthDebug", "Sec-HullReview", "Sec-VisemeGrid", "Sec-Problems" };
+        const char* AdvancedSections[] = { "Sec-AllLayers", "Sec-ParamRef", "Sec-ParamTable", "Sec-NestedPins" };
+        const char* PropsSections[] = { "Sec-Transform", "Sec-ViewOverride", "Sec-SyncToViews", "Sec-Alignment" };
+        bool bAccordionOk = true;
+        auto CheckAcc = [&](const char* nm)
+        {
+            const FPLayout::FPLayoutNode* found = nullptr;
+            for (const FPLayout::FPLayoutNode& n : Spec)
+                if (std::string(n.Name) == nm) { found = &n; break; }
+            if (!found || !found->bAccordion) bAccordionOk = false;
+        };
+        for (const char* nm : DebugSections) CheckAcc(nm);
+        for (const char* nm : AdvancedSections) CheckAcc(nm);
+        for (const char* nm : PropsSections) CheckAcc(nm);
+        TEST("Phase H: Debug/Advanced/Props sections are accordions (P16)", bAccordionOk);
+    }
+    {
+        // State-strip pick button replaces the old props-pane sync picker row.
+        bool bPickBtn = false, bOldPickRow = false;
+        for (const FPLayout::FPLayoutNode& n : Spec)
+        {
+            if (std::string(n.Name) == "ST-PickBtn") bPickBtn = true;
+            if (std::string(n.Name) == "SY-Pick0") bOldPickRow = true;
+        }
+        TEST("Phase H: ST-PickBtn present, SY-PickRow removed", bPickBtn && !bOldPickRow);
+    }
+    {
         // P14: the props pane must leave a right-edge gap against the screen
         // (real widget: MainRow props slot gets right padding). Mirrors the
         // "items overlap the end of the screen" defect.
@@ -6374,6 +6565,106 @@ void TestPhaseHUIDesign() {
         }
         TEST("Phase H: viewport sections auto-stack without overlap", bStacked);
     }
+}
+
+// --- Phase 4: hotspot region hit-testing (named polygon buckets) ---
+void TestHotspotRegions() {
+    printf("\n=== HotspotRegions ===\n");
+    using R = FPLayout::FPHotspotRegion;
+    using V = std::vector<FPLayout::FPHotspotPoint>;
+    const V Empty;
+    const V Sq = { FPLayout::HP(0,0), FPLayout::HP(1,0), FPLayout::HP(1,1), FPLayout::HP(0,1) };
+    const std::vector<R> SqList = { R{"Sq", Sq} };
+
+    // Boundary-inclusive semantics.
+    TEST("Square interior hit", FPLayout::FPHotspotHitIndex(SqList, 0.5, 0.5) == 0);
+    TEST("Square outside miss", FPLayout::FPHotspotHitIndex(SqList, 2.0, 2.0) == -1);
+    TEST("Square edge counts as inside", FPLayout::FPHotspotHitIndex(SqList, 0.5, 0.0) == 0);
+    TEST("Square vertex counts as inside", FPLayout::FPHotspotHitIndex(SqList, 0.0, 0.0) == 0);
+    TEST("Square just outside edge misses", FPLayout::FPHotspotHitIndex(SqList, 0.5, -1e-6) == -1);
+    TEST("Square just outside vertex misses", FPLayout::FPHotspotHitIndex(SqList, 1.0 + 1e-6, 1.0) == -1);
+
+    // Concave L-shape: reflex vertex at (1,1), notch quadrant at top-right.
+    const V L = { FPLayout::HP(0,0), FPLayout::HP(2,0), FPLayout::HP(2,1),
+                  FPLayout::HP(1,1), FPLayout::HP(1,2), FPLayout::HP(0,2) };
+    const std::vector<R> LList = { R{"L", L} };
+    TEST("Concave: lobe inside hits", FPLayout::FPHotspotHitIndex(LList, 0.5, 1.5) == 0);
+    TEST("Concave: notch outside misses", FPLayout::FPHotspotHitIndex(LList, 1.5, 1.5) == -1);
+    TEST("Concave: reflex vertex counts as inside", FPLayout::FPHotspotHitIndex(LList, 1.0, 1.0) == 0);
+    TEST("Concave: notch interior misses", FPLayout::FPHotspotHitIndex(LList, 1.2, 1.6) == -1);
+
+    // Duplicate consecutive vertex: degenerate edge must be skipped, results identical.
+    const V Ldup = { FPLayout::HP(0,0), FPLayout::HP(2,0), FPLayout::HP(2,1),
+                     FPLayout::HP(1,1), FPLayout::HP(1,1), FPLayout::HP(1,2),
+                     FPLayout::HP(0,2) };
+    const std::vector<R> LdupList = { R{"Ld", Ldup} };
+    TEST("Duplicate vertex: lobe still hits", FPLayout::FPHotspotHitIndex(LdupList, 0.5, 1.5) == 0);
+    TEST("Duplicate vertex: notch still misses", FPLayout::FPHotspotHitIndex(LdupList, 1.5, 1.5) == -1);
+    TEST("Duplicate vertex: duplicate point counts as inside", FPLayout::FPHotspotHitIndex(LdupList, 1.0, 1.0) == 0);
+
+    // Hole: outer 0..1 square with a 0.4..0.6 hole.
+    R WithHole;
+    WithHole.Name = "Ring";
+    WithHole.Outer = Sq;
+    WithHole.Holes.push_back(
+        { FPLayout::HP(0.4,0.4), FPLayout::HP(0.6,0.4), FPLayout::HP(0.6,0.6), FPLayout::HP(0.4,0.6) });
+    const std::vector<R> Ring = { WithHole };
+    TEST("Hole: outer but not hole hits", FPLayout::FPHotspotHitIndex(Ring, 0.2, 0.5) == 0);
+    TEST("Hole: inside hole misses", FPLayout::FPHotspotHitIndex(Ring, 0.5, 0.5) == -1);
+    TEST("Hole: hole boundary excluded", FPLayout::FPHotspotHitIndex(Ring, 0.4, 0.5) == -1);
+    TEST("Hole: outer boundary still hits", FPLayout::FPHotspotHitIndex(Ring, 0.0, 0.5) == 0);
+
+    // Empty and degenerate loops.
+    const std::vector<R> EmptyList = { R{"E", Empty} };
+    TEST("Empty loop never hits", FPLayout::FPHotspotHitIndex(EmptyList, 0.5, 0.5) == -1);
+    const V Pt = { FPLayout::HP(1,1) };
+    const std::vector<R> PtList = { R{"P", Pt} };
+    TEST("Degenerate loop: exact point hits", FPLayout::FPHotspotHitIndex(PtList, 1.0, 1.0) == 0);
+    TEST("Degenerate loop: near point misses", FPLayout::FPHotspotHitIndex(PtList, 1.0 + 1e-6, 1.0) == -1);
+
+    // Collinear edges.
+    const V Tri = { FPLayout::HP(0,0), FPLayout::HP(2,0), FPLayout::HP(1,2) };
+    const std::vector<R> TriList = { R{"T", Tri} };
+    TEST("Triangle interior hits", FPLayout::FPHotspotHitIndex(TriList, 1.0, 0.5) == 0);
+    TEST("Triangle base midpoint is boundary", FPLayout::FPHotspotHitIndex(TriList, 1.0, 0.0) == 0);
+    TEST("Triangle outside misses", FPLayout::FPHotspotHitIndex(TriList, 3.0, 1.0) == -1);
+
+    // Overlapping buckets: first match wins, table order is decisive.
+    const V B = { FPLayout::HP(0.5,0.5), FPLayout::HP(1.5,0.5), FPLayout::HP(1.5,1.5), FPLayout::HP(0.5,1.5) };
+    TEST("Overlap: first table entry wins", FPLayout::FPHotspotHitIndex({ R{"A", Sq}, R{"B", B} }, 0.75, 0.75) == 0);
+    TEST("Overlap: exclusive second region hits", FPLayout::FPHotspotHitIndex({ R{"A", Sq}, R{"B", B} }, 1.25, 1.25) == 1);
+    TEST("Overlap: reorder flips the winner", FPLayout::FPHotspotHitIndex({ R{"B", B}, R{"A", Sq} }, 0.75, 0.75) == 0);
+
+    // Named lookup.
+    const char* HitName = FPLayout::FPHotspotHit(SqList, 0.5, 0.5);
+    TEST("Hit returns bucket name", HitName != nullptr && std::string(HitName) == "Sq");
+    TEST("Miss returns null name", FPLayout::FPHotspotHit(SqList, 5.0, 5.0) == nullptr);
+
+    // Default face template: named regions, concave + hole behavior in place.
+    const std::vector<R> Def = FPLayout::DefaultHotspotRegions();
+    TEST("Template: 13 regions", Def.size() == 13u);
+    bool bNamed = true;
+    for (const R& r : Def)
+        if (!r.Name || !r.Name[0] || r.Outer.empty()) bNamed = false;
+    TEST("Template: all named and non-empty", bNamed);
+    TEST("Template: bridge hits Nose", std::string(FPLayout::FPHotspotHit(Def, 0.5, 0.30)) == "Nose");
+    TEST("Template: tip boundary hits Nose", std::string(FPLayout::FPHotspotHit(Def, 0.5, 0.52)) == "Nose");
+    TEST("Template: below tip misses", FPLayout::FPHotspotHit(Def, 0.5, 0.55) == nullptr);
+    TEST("Template: lip hits Mouth", std::string(FPLayout::FPHotspotHit(Def, 0.5, 0.61)) == "Mouth");
+    TEST("Template: mouth hole yields Teeth", std::string(FPLayout::FPHotspotHit(Def, 0.5, 0.66)) == "Teeth");
+    TEST("Template: hole side yields Teeth too", std::string(FPLayout::FPHotspotHit(Def, 0.55, 0.66)) == "Teeth");
+    TEST("Template: chin hits Chin", std::string(FPLayout::FPHotspotHit(Def, 0.5, 0.76)) == "Chin");
+    TEST("Template: neck hits Neck", std::string(FPLayout::FPHotspotHit(Def, 0.5, 0.94)) == "Neck");
+    TEST("Template: cheek hits CheekL", std::string(FPLayout::FPHotspotHit(Def, 0.10, 0.35)) == "CheekL");
+    TEST("Template: cheek right hits CheekR", std::string(FPLayout::FPHotspotHit(Def, 0.90, 0.35)) == "CheekR");
+    TEST("Template: ear hits EarL", std::string(FPLayout::FPHotspotHit(Def, 0.05, 0.35)) == "EarL");
+    TEST("Template: ear overlap resolves to CheekL", std::string(FPLayout::FPHotspotHit(Def, 0.08, 0.35)) == "CheekL");
+    TEST("Template: outside ear misses", FPLayout::FPHotspotHit(Def, 0.02, 0.35) == nullptr);
+    TEST("Template: eye hits EyeL", std::string(FPLayout::FPHotspotHit(Def, 0.25, 0.24)) == "EyeL");
+    TEST("Template: eye right hits EyeR", std::string(FPLayout::FPHotspotHit(Def, 0.75, 0.24)) == "EyeR");
+    TEST("Template: brow hits BrowL", std::string(FPLayout::FPHotspotHit(Def, 0.26, 0.14)) == "BrowL");
+    TEST("Template: forehead misses", FPLayout::FPHotspotHit(Def, 0.5, 0.14) == nullptr);
+    TEST("Template: corner misses", FPLayout::FPHotspotHit(Def, 0.01, 0.01) == nullptr);
 }
 
 // --- Pin View-Angle Rotation Tests (mirrors UFaceParallaxComponent::PinRotationFromYawDev) ---
@@ -6851,6 +7142,7 @@ int main() {
     TestPhaseEFMirrors();
     TestPhaseGWidgetMirrors();
     TestPhaseHUIDesign();
+    TestHotspotRegions();
     TestPinRotation();
     TestNestedEffectiveTransform();
     TestPinDataSurvivesSync();

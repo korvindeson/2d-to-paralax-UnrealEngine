@@ -46,6 +46,11 @@
 //                          (screen) rect - nothing may drift off the screen,
 //                          right edge included. Scroll-viewport content is
 //                          exempt (clipped at the viewport rect).
+//   P16 SectionDensity    - a clipped viewport may hold at most 4 plain
+//                          sections; anything denser must be marked bAccordion
+//                          (one-open-per-group collapsible section stack).
+//                          Dense plain stacks paint over each other in a
+//                          560px-tall viewport - the "rail explosion" defect.
 //
 // Scroll-viewport model: the rails are fixed 180x560 viewports whose content
 // (wide button rows, tall section stacks) scrolls; bClipH marks the viewport
@@ -57,6 +62,7 @@
 #include <string>
 #include <vector>
 #include <initializer_list>
+#include <utility>
 
 namespace FPLayout {
 
@@ -112,7 +118,8 @@ enum class DesignRule : unsigned char {
     FitNoClip,          // P10
     MinimalSpace,       // P11
     GlobalOverlap,      // P12
-    WithinScreenBounds  // P13
+    WithinScreenBounds, // P13
+    DensityOverflow     // P16
 };
 
 struct FPViolation {
@@ -138,6 +145,7 @@ inline const char* RuleName(DesignRule r)
         case DesignRule::MinimalSpace:      return "MinimalSpace";
         case DesignRule::GlobalOverlap:     return "GlobalOverlap";
         case DesignRule::WithinScreenBounds:return "ScreenBounds";
+        case DesignRule::DensityOverflow:    return "SectionDensity";
     }
     return "?";
 }
@@ -159,6 +167,7 @@ struct FPLayoutNode {
                            // subtree exempt from P2/P10/P11/P12/P13)
     bool bSection = false; // P9: first child must be a title
     bool bTitle = false;
+    bool bAccordion = false; // P16: one-open-per-group collapsible section
 };
 
 struct FPRect { double X = 0, Y = 0, W = 0, H = 0; };
@@ -238,6 +247,7 @@ inline std::vector<FPLayoutNode> BuildSpec()
     auto Tl  = [&](int i) { b.N[(size_t)i].bTitle = true; };
     auto Sp  = [&](int i) { b.N[(size_t)i].bSpacer = true; };
     auto Clip = [&](int i) { b.N[(size_t)i].bClipH = true; };
+    auto Acc = [&](int i) { b.N[(size_t)i].bAccordion = true; };
     auto GP  = [&](int i, int c, int r) { FPLayoutNode& n = b.N[(size_t)i]; n.GridCol = c; n.GridRow = r; };
 
     // Section helper: given the section container, configure title + body.
@@ -258,19 +268,26 @@ inline std::vector<FPLayoutNode> BuildSpec()
     const int Toolbar = HF(b, "Toolbar",
         LF(b, "TB-NewPreset", 84, 22),
         LF(b, "TB-Save", 42, 22),
-        LF(b, "TB-Import", 105, 22),
+        LF(b, "TB-Import", 97, 22),
         LF(b, "TB-Search", SearchBoxWidth, 22),
         LF(b, "TB-Spacer", 0, 0),
         LF(b, "TB-Help", 21, 22),
-        LF(b, "TB-Spawn", 112, 22),
-        LF(b, "TB-Find", 98, 22),
-        LF(b, "TB-Quads", 98, 22),
+        LF(b, "TB-Spawn", 104, 22),
+        LF(b, "TB-Find", 90, 22),
+        LF(b, "TB-Quads", 90, 22),
         LF(b, "TB-ActorCombo", ActorComboWidth, 22),
-        LF(b, "TB-ClearStale", 91, 22));
+        LF(b, "TB-ClearStale", 83, 22));
     S(Toolbar, ToolbarItemPad);
     P(Toolbar, ToolbarPadL, ToolbarPadV, ToolbarPadL, ToolbarPadV);
     Sp(b.N[(size_t)Toolbar].Children[4]);
     M(b.N[(size_t)Toolbar].Children[3], 6, 2, 6, 2);  // search box slot FMargin(6,2)
+    // Toolbar clusters: 8px left margin opens each group (matches RebuildWidget).
+    // Button widths above are tuned so the toolbar natural width stays 1001
+    // (the design window width contract asserted by Phase H).
+    M(b.N[(size_t)Toolbar].Children[2], 8, 2, 2, 2);  // Import Art
+    M(b.N[(size_t)Toolbar].Children[5], 8, 2, 2, 2);  // Help
+    M(b.N[(size_t)Toolbar].Children[6], 8, 2, 2, 2);  // Spawn Preview
+    M(b.N[(size_t)Toolbar].Children[10], 8, 2, 2, 2); // Clear Stale
 
     // ========================= 2. VIEW STATE STRIP =========================
     const int StateStrip = HF(b, "StateStrip",
@@ -278,10 +295,12 @@ inline std::vector<FPLayoutNode> BuildSpec()
         LF(b, "ST-Tab2", 44, 20), LF(b, "ST-Tab3", 44, 20),
         LF(b, "ST-Tab4", 44, 20), LF(b, "ST-Tab5", 44, 20),
         LF(b, "ST-Tab6", 44, 20), LF(b, "ST-Tab7", 44, 20),
-        LF(b, "ST-Tab8", 44, 20), LF(b, "ST-Tab9", 44, 20));
+        LF(b, "ST-Tab8", 44, 20), LF(b, "ST-Tab9", 44, 20),
+        LF(b, "ST-PickBtn", 52, 20));
     S(StateStrip, StateTabPad);
     P(StateStrip, 2, 3, 2, 3);
     b.N[(size_t)StateStrip].FixedH = StateStripHeight;
+    M(b.N[(size_t)StateStrip].Children[10], 4, 0, 0, 0);
 
     // ========================== 2b. ZONE DIAGRAM ==========================
     const int ZoneDiagram = VF(b, "ZoneDiagram",
@@ -496,6 +515,10 @@ inline std::vector<FPLayoutNode> BuildSpec()
                 LF(b, "CN-Mode0", 64, 20), LF(b, "CN-Mode1", 64, 20),
                 LF(b, "CN-Mode2", 64, 20), LF(b, "CN-Mode3", 64, 20),
                 LF(b, "CN-DisplayLbl", 44, 12),
+                HF(b, "CN-OnionRow",
+                    LF(b, "CN-OnionChk", 20, 20),
+                    LF(b, "CN-OnionSlider", 0, 0),
+                    LF(b, "CN-OpacityLbl", 44, 10)),
                 LF(b, "CN-Spacer", 0, 0)),
             OV(b, "CN-Preview",
                 LF(b, "PV-Image", 0, 0),
@@ -543,18 +566,10 @@ inline std::vector<FPLayoutNode> BuildSpec()
                             LF(b, "SY-Lbl", 72, 14), LF(b, "SY-TexCheck", 20, 20),
                             LF(b, "SY-TexLbl", 22, 10), LF(b, "SY-Spacer", 0, 0), LF(b, "SY-SyncBtn", 124, 20)),
                         HF(b, "SY-BothRow",
-                            LF(b, "SY-BothBtn", 126, 20)),
-                        HF(b, "SY-PickRow",
-                            LF(b, "SY-Pick0", 26, 20), LF(b, "SY-Pick1", 26, 20), LF(b, "SY-Pick2", 26, 20),
-                            LF(b, "SY-Pick3", 26, 20), LF(b, "SY-Pick4", 26, 20), LF(b, "SY-Pick5", 26, 20),
-                            LF(b, "SY-Pick6", 26, 20), LF(b, "SY-Pick7", 26, 20), LF(b, "SY-Pick8", 26, 20),
-                            LF(b, "SY-Pick9", 26, 20)))),
+                            LF(b, "SY-BothBtn", 126, 20)))),
                 VF(b, "Sec-Alignment",
                     LF(b, "Sec-AL2-Title", 140, 14),
                     VF(b, "Sec-AL2-Body",
-                        HF(b, "AL-OnionRow",
-                            LF(b, "AL-OnionChk", 20, 20), LF(b, "AL-OnionLbl", 64, 14),
-                            LF(b, "AL-OnionSlider", 0, 0), LF(b, "AL-OpacityLbl", 44, 10)),
                         HF(b, "AL-LinkRow",
                             LF(b, "AL-LinkChk", 20, 20), LF(b, "AL-LinkLbl", 128, 14))))),
             LF(b, "PR-Status", 220, 12)));
@@ -659,6 +674,8 @@ inline std::vector<FPLayoutNode> BuildSpec()
         b.N[(size_t)RLDebug].FixedH = MainRowHeight;
         b.N[(size_t)RLDebug].FixedW = RailWidth;
         {
+            for (int c = 0; c < (int)b.N[(size_t)RLDebug].Children.size(); ++c)
+                Acc(b.N[(size_t)RLDebug].Children[(size_t)c]);
             const int Im = b.N[(size_t)RLDebug].Children[0];
             SecSetup(Im, 2);
             {
@@ -736,6 +753,8 @@ inline std::vector<FPLayoutNode> BuildSpec()
         b.N[(size_t)RLAdvanced].FixedH = MainRowHeight;
         b.N[(size_t)RLAdvanced].FixedW = RailWidth;
         {
+            for (int c = 0; c < (int)b.N[(size_t)RLAdvanced].Children.size(); ++c)
+                Acc(b.N[(size_t)RLAdvanced].Children[(size_t)c]);
             const int AL = b.N[(size_t)RLAdvanced].Children[0];
             SecSetup(AL, 0);
             P(Bod(AL), SectionBorderPad, SectionBorderPad, SectionBorderPad, SectionBorderPad);
@@ -773,7 +792,16 @@ inline std::vector<FPLayoutNode> BuildSpec()
             const int Mode = b.N[(size_t)Center].Children[0];
             S(Mode, ModeTabPad);
             M(b.N[(size_t)Mode].Children[4], 4, 2, 4, 2);
-            Sp(b.N[(size_t)Mode].Children[5]);
+            {
+                // Onion-skin control (moved next to Display Mode): checkbox +
+                // flex slider + opacity label, kept compact so the mode row
+                // never overflows the center column width budget.
+                const int OnionRow = b.N[(size_t)Mode].Children[5];
+                M(OnionRow, 4, 2, 4, 2);
+                FxW(b.N[(size_t)OnionRow].Children[1]);
+                M(b.N[(size_t)OnionRow].Children[2], 2, 2, 0, 2);
+            }
+            Sp(b.N[(size_t)Mode].Children[6]);
         }
         {
             const int Prev = b.N[(size_t)Center].Children[1];
@@ -802,7 +830,10 @@ inline std::vector<FPLayoutNode> BuildSpec()
             P(Scroll, 2, 2, PropsScrollInsetR, 2);
             S(Scroll, 2);
             for (int c = 0; c < (int)b.N[(size_t)Scroll].Children.size(); ++c)
+            {
                 SecSetup(b.N[(size_t)Scroll].Children[(size_t)c], 2);
+                Acc(b.N[(size_t)Scroll].Children[(size_t)c]);
+            }
         }
         {
             const int Thr = b.N[(size_t)Props].Children[1];
@@ -846,15 +877,10 @@ inline std::vector<FPLayoutNode> BuildSpec()
                 Sp(b.N[(size_t)SR].Children[3]);
                 const int BR = b.N[(size_t)Bod(SY)].Children[1];
                 S(BR, 4);
-                const int Pick = b.N[(size_t)Bod(SY)].Children[2];
-                S(Pick, 2);
             }
             const int AL2 = b.N[(size_t)Scroll].Children[3];
             {
-                const int Onion = b.N[(size_t)Bod(AL2)].Children[0];
-                S(Onion, 4);
-                FxW(b.N[(size_t)Onion].Children[2]);
-                const int Link = b.N[(size_t)Bod(AL2)].Children[1];
+                const int Link = b.N[(size_t)Bod(AL2)].Children[0];
                 S(Link, 4);
             }
         }
@@ -1225,6 +1251,21 @@ inline std::vector<FPViolation> ValidateDesign(const std::vector<FPLayoutNode>& 
         if (n.MarginL > MaxMargin || n.MarginT > MaxMargin || n.MarginR > MaxMargin || n.MarginB > MaxMargin)
             Out.push_back({ DesignRule::MarginOverBudget, n.Name, "slot margin exceeds 8px" });
 
+        // ---- P16 SectionDensity: clipped viewports may hold at most 4
+        // ---- plain sections; denser stacks must be accordion sections.
+        if (n.bClipH)
+        {
+            int PlainSections = 0;
+            for (int ci : n.Children)
+            {
+                const FPLayoutNode& cn = Nodes[(size_t)ci];
+                if (cn.bSection && !cn.bAccordion) ++PlainSections;
+            }
+            if (PlainSections > 4)
+                Out.push_back({ DesignRule::DensityOverflow, n.Name,
+                    "more than 4 plain sections in a clipped viewport (use accordion sections)" });
+        }
+
         // ---- P9 SectionTitleFirst ----
         if (n.bSection)
         {
@@ -1403,6 +1444,133 @@ inline std::vector<FPViolation> ValidateDesign(const std::vector<FPLayoutNode>& 
     }
 
     return Out;
+}
+
+// ============================================================================
+// Hotspot regions: named polygon buckets for spatial part selection (Phase 4).
+// Pure C++17 - hit-tested by SFaceHotspotLayer in the preview canvas and by
+// TestHotspotRegions in the math suite. Semantics:
+//   - A region matches when the point is inside its outer loop (boundary
+//     INCLUSIVE: a point exactly on an edge or vertex counts as inside) and
+//     NOT inside any of its hole loops (hole boundary counts as inside the
+//     hole, i.e. excluded).
+//   - Overlapping regions: first match wins (table order).
+//   - Degenerate loops (fewer than 3 distinct points) match only points that
+//     lie on the loop itself (zero-area boundary).
+// ============================================================================
+struct FPHotspotPoint { double X = 0, Y = 0; };
+
+struct FPHotspotRegion
+{
+    FPHotspotRegion() : Name(nullptr) {}
+    FPHotspotRegion(const char* InName,
+        std::vector<FPHotspotPoint> InOuter = {},
+        std::vector<std::vector<FPHotspotPoint>> InHoles = {})
+        : Name(InName), Outer(std::move(InOuter)), Holes(std::move(InHoles)) {}
+
+    const char* Name = nullptr;
+    std::vector<FPHotspotPoint> Outer;
+    std::vector<std::vector<FPHotspotPoint>> Holes;
+};
+
+inline FPHotspotPoint HP(double X, double Y) { return { X, Y }; }
+
+// Distance from P to the segment AB (squared); -1 when AB is degenerate.
+inline double FPPointSegDist2(double PX, double PY, double AX, double AY, double BX, double BY)
+{
+    const double Dx = BX - AX, Dy = BY - AY;
+    const double L2 = Dx * Dx + Dy * Dy;
+    if (L2 <= 0.0) return -1.0;
+    double T = ((PX - AX) * Dx + (PY - AY) * Dy) / L2;
+    T = T < 0.0 ? 0.0 : (T > 1.0 ? 1.0 : T);
+    const double CX = AX + T * Dx, CY = AY + T * Dy;
+    const double Ex = PX - CX, Ey = PY - CY;
+    return Ex * Ex + Ey * Ey;
+}
+
+// Boundary-inclusive point-in-polygon (even-odd rule, degenerate edges skipped).
+// A point within EpsDist of the loop counts as ON the boundary (inside).
+inline bool FPPointInPolygon(double X, double Y, const std::vector<FPHotspotPoint>& Pts)
+{
+    constexpr double EpsDist = 1e-9;   // real-space boundary tolerance
+    constexpr double EpsDist2 = EpsDist * EpsDist;
+    if (Pts.size() == 1)
+    {
+        const double Dx = X - Pts[0].X, Dy = Y - Pts[0].Y;
+        return Dx * Dx + Dy * Dy <= EpsDist2; // zero-area loop: point itself is the boundary
+    }
+    bool bInside = false;
+    for (size_t i = 0, j = Pts.size() - 1; i < Pts.size(); j = i++)
+    {
+        const double AX = Pts[j].X, AY = Pts[j].Y;
+        const double BX = Pts[i].X, BY = Pts[i].Y;
+        const double D = FPPointSegDist2(X, Y, AX, AY, BX, BY);
+        if (D >= 0.0 && D <= EpsDist2) return true; // on edge or vertex -> inside
+        if ((AY > Y) != (BY > Y))
+        {
+            const double Xint = AX + (Y - AY) * (BX - AX) / (BY - AY);
+            if (Xint > X) bInside = !bInside;
+        }
+    }
+    return bInside;
+}
+
+inline bool FPHotspotMatch(const FPHotspotRegion& R, double X, double Y)
+{
+    if (!FPPointInPolygon(X, Y, R.Outer)) return false;
+    for (const std::vector<FPHotspotPoint>& Hole : R.Holes)
+        if (FPPointInPolygon(X, Y, Hole)) return false;
+    return true;
+}
+
+// First-match-wins named bucket lookup. Returns region index or -1.
+inline int FPHotspotHitIndex(const std::vector<FPHotspotRegion>& Regions, double X, double Y)
+{
+    for (size_t i = 0; i < Regions.size(); ++i)
+        if (FPHotspotMatch(Regions[i], X, Y)) return (int)i;
+    return -1;
+}
+
+inline const char* FPHotspotHit(const std::vector<FPHotspotRegion>& Regions, double X, double Y)
+{
+    const int Idx = FPHotspotHitIndex(Regions, X, Y);
+    return Idx >= 0 ? Regions[(size_t)Idx].Name : nullptr;
+}
+
+// Default face-template regions in UV space (0..1, y-down). Includes one
+// concave bucket (Nose) and one bucket with a hole (Mouth, hole covered by
+// Teeth which is listed after Mouth so first-match-wins yields Teeth).
+inline std::vector<FPHotspotRegion> DefaultHotspotRegions()
+{
+    return {
+        { "BrowL", { HP(0.14, 0.14), HP(0.20, 0.10), HP(0.30, 0.10), HP(0.34, 0.15),
+                     HP(0.28, 0.18), HP(0.19, 0.18) } },
+        { "BrowR", { HP(0.66, 0.10), HP(0.80, 0.10), HP(0.86, 0.14), HP(0.81, 0.18),
+                     HP(0.72, 0.18) } },
+        { "EyeL", { HP(0.15, 0.22), HP(0.20, 0.19), HP(0.31, 0.19), HP(0.35, 0.23),
+                    HP(0.30, 0.29), HP(0.21, 0.29) } },
+        { "EyeR", { HP(0.65, 0.19), HP(0.80, 0.19), HP(0.85, 0.22), HP(0.79, 0.29),
+                    HP(0.70, 0.29) } },
+        { "Nose", // concave: wide bridge, notched sides, narrow tip
+            { HP(0.42, 0.24), HP(0.58, 0.24), HP(0.60, 0.33), HP(0.55, 0.35),
+              HP(0.57, 0.44), HP(0.55, 0.52), HP(0.45, 0.52), HP(0.43, 0.44),
+              HP(0.45, 0.35), HP(0.40, 0.33) } },
+        { "CheekL", { HP(0.06, 0.30), HP(0.13, 0.22), HP(0.20, 0.34), HP(0.21, 0.52),
+                      HP(0.15, 0.64), HP(0.07, 0.58) } },
+        { "CheekR", { HP(0.80, 0.22), HP(0.94, 0.30), HP(0.93, 0.58), HP(0.85, 0.64),
+                      HP(0.79, 0.52) } },
+        { "Mouth", // outer loop with an open-mouth hole
+            { HP(0.36, 0.62), HP(0.42, 0.58), HP(0.58, 0.58), HP(0.64, 0.62),
+              HP(0.62, 0.68), HP(0.56, 0.73), HP(0.44, 0.73), HP(0.38, 0.68) },
+            { { HP(0.43, 0.64), HP(0.57, 0.64), HP(0.59, 0.68), HP(0.41, 0.68) } } },
+        { "Teeth", { HP(0.43, 0.64), HP(0.57, 0.64), HP(0.59, 0.68), HP(0.41, 0.68) } },
+        { "Chin", { HP(0.40, 0.74), HP(0.60, 0.74), HP(0.57, 0.86), HP(0.43, 0.86) } },
+        { "EarL", { HP(0.03, 0.22), HP(0.07, 0.13), HP(0.11, 0.26), HP(0.10, 0.44),
+                    HP(0.06, 0.48) } },
+        { "EarR", { HP(0.89, 0.13), HP(0.97, 0.22), HP(0.94, 0.48), HP(0.90, 0.44),
+                    HP(0.89, 0.26) } },
+        { "Neck", { HP(0.42, 0.88), HP(0.58, 0.88), HP(0.70, 0.98), HP(0.30, 0.98) } }
+    };
 }
 
 } // namespace FPLayout

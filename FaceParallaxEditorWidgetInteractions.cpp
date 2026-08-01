@@ -46,6 +46,28 @@ void UFaceParallaxEditorWidget::SetSelectedLayer(const FString& LayerName)
     }
 }
 
+// Phase 4: a canvas hotspot region was clicked. Select the matching layer
+// (if the preset has one) and open the Import Folder Wizard preselected on
+// that part, so unassigned regions flow straight into assignment.
+void UFaceParallaxEditorWidget::HandleHotspotClick(const FString& RegionName)
+{
+    if (RegionName.IsEmpty()) return;
+    if (ActivePreset)
+    {
+        for (const FName& L : ActivePreset->GetAllLayerTags(ActiveViewState))
+        {
+            if (L.ToString() == RegionName)
+            {
+                SetSelectedLayer(RegionName);
+                break;
+            }
+        }
+    }
+    OpenImportFolderWizard(RegionName);
+    SetStatus(FString::Printf(TEXT("Hotspot '%s': selected, Import Art opened for assignment"),
+        *RegionName), AccentBlue());
+}
+
 // ====================================================================
 // PHASE A: WORKSPACE RAIL
 // ====================================================================
@@ -284,6 +306,10 @@ void UFaceParallaxEditorWidget::SetOnionSkinOpacity(float Opacity)
 
 void UFaceParallaxEditorWidget::RefreshOnionSkin()
 {
+    if (OnionCheckBox.IsValid())
+    {
+        OnionCheckBox->SetIsChecked(bOnionSkin ? ECheckBoxState::Checked : ECheckBoxState::Unchecked);
+    }
     if (OnionSkinImage.IsValid())
     {
         OnionSkinImage->SetVisibility(bOnionSkin ? EVisibility::Visible : EVisibility::Collapsed);
@@ -340,7 +366,7 @@ void UFaceParallaxEditorWidget::RefreshSyncDriftIndicator()
     }
 }
 
-void UFaceParallaxEditorWidget::OpenImportFolderWizard()
+void UFaceParallaxEditorWidget::OpenImportFolderWizard(const FString& PreselectPart)
 {
     if (!GEditor) return;
 
@@ -409,7 +435,7 @@ void UFaceParallaxEditorWidget::OpenImportFolderWizard()
     ScanRow->AddSlot().Padding(FMargin(8,4)).FillWidth(1.0f).VAlign(VAlign_Center)[WizardStatus];
     ScanRow->AddSlot().Padding(FMargin(0,4,8,4)).AutoWidth()
         [SNew(SButton)
-            .OnClicked_Lambda([W, CB, WizardStatus, FolderEdit]()
+            .OnClicked_Lambda([W, CB, WizardStatus, FolderEdit, PreselectPart]()
             {
                 W->Folder = FolderEdit->GetText().ToString();
                 W->Files.Reset(); W->PartOfFile.Reset(); W->Parts.Reset(); W->SelectedPart = -1;
@@ -439,7 +465,19 @@ void UFaceParallaxEditorWidget::OpenImportFolderWizard()
                 WizardStatus->SetText(FText::FromString(FString::Printf(
                     TEXT("Scanned %s: %d parts, %d matching files. Click a part to preview."),
                     *W->Folder, W->Parts.Num(), W->Files.Num())));
+                if (!PreselectPart.IsEmpty())
+                {
+                    const int32 PreIdx = W->Parts.IndexOfByKey(PreselectPart);
+                    if (PreIdx != INDEX_NONE)
+                    {
+                        W->SelectedPart = PreIdx;
+                        WizardStatus->SetText(FText::FromString(FString::Printf(
+                            TEXT("Scanned %s: %d parts, %d matching files - part '%s' preselected."),
+                            *W->Folder, W->Parts.Num(), W->Files.Num(), *PreselectPart)));
+                    }
+                }
                 if (CB->RebuildParts) CB->RebuildParts();
+                if (CB->RebuildPreview) CB->RebuildPreview();
                 return FReply::Handled();
             })
             .Content()

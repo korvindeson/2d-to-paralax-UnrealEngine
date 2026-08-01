@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "FaceParallaxEditorWidget.h"
 #include "FaceParallaxPreset.h"
+#include "FaceParallaxLayoutSpec.h"
 #include <functional>
 
 #if WITH_EDITOR
@@ -19,16 +20,31 @@
 
 namespace
 {
+    // ChannelFromTextureName/StripChannelSuffix strip a trailing view-state
+    // suffix before matching channel markers, so markers only count as the
+    // FINAL token. Both naming conventions work: {Part}_{View}_{Map}
+    // ("Eyes_Front_Normal") and {Part}_{Map}_{View} ("Eyes_N_Front").
+    // Substring matching would misclassify layer names that contain "n"/"d"
+    // tokens ("Eyes_Nose_Front" -> Normal, "Eyes_Dyed_Front" -> Depth, a bare
+    // "Depth" layer -> Depth) and pollute wizard part names ("Eyes_N").
+    int32 MatchStateSuffix(const FString& BaseName, FString& OutSuffix);
+
     FString ChannelFromTextureName(const FString& Name)
     {
         const FString Lower = Name.ToLower();
-        if (Lower.Contains(TEXT("_normal")) || Lower.Contains(TEXT("_norm")) || Lower.Contains(TEXT("_n"))
-            || Lower.Contains(TEXT("_normalmap")))
+        FString Remainder = Lower;
+        FString StateSuffix;
+        if (MatchStateSuffix(Lower, StateSuffix) >= 0)
+        {
+            Remainder = Lower.Left(Lower.Len() - StateSuffix.Len());
+        }
+        if (Remainder.EndsWith(TEXT("_normalmap")) || Remainder.EndsWith(TEXT("_normal"))
+            || Remainder.EndsWith(TEXT("_norm")) || Remainder.EndsWith(TEXT("_n")))
         {
             return TEXT("Normal");
         }
-        if (Lower.Contains(TEXT("_depth")) || Lower.Contains(TEXT("_d"))
-            || Lower.Contains(TEXT("_height")) || Lower.Contains(TEXT("_displacement")))
+        if (Remainder.EndsWith(TEXT("_displacement")) || Remainder.EndsWith(TEXT("_depth"))
+            || Remainder.EndsWith(TEXT("_height")) || Remainder.EndsWith(TEXT("_d")))
         {
             return TEXT("Depth");
         }
@@ -67,23 +83,42 @@ namespace
     }
 
     // Removes the channel suffix matched by ChannelFromTextureName from a file base name.
+    // If the channel token precedes a trailing view-state suffix (e.g. "Eyes_N_Front"),
+    // the state suffix is stripped first and re-attached, so the caller's
+    // MatchStateSuffix/part split still resolves ({Part}_{View}_{Map} input).
     FString StripChannelSuffix(const FString& Name, const FString& Channel)
     {
+        if (Channel != TEXT("Normal") && Channel != TEXT("Depth"))
+        {
+            return Name;
+        }
         const FString Lower = Name.ToLower();
+        FString StateSuffix;
+        const int32 StateIdx = MatchStateSuffix(Lower, StateSuffix);
+        FString Candidate = (StateIdx >= 0)
+            ? Lower.Left(Lower.Len() - StateSuffix.Len())
+            : Lower;
+        const TCHAR* Suffixes[4] = {};
         if (Channel == TEXT("Normal"))
         {
-            for (const TCHAR* S : {TEXT("_normalmap"), TEXT("_normal"), TEXT("_norm"), TEXT("_n")})
-            {
-                if (Lower.EndsWith(S))
-                    return Name.Left(Name.Len() - FCString::Strlen(S));
-            }
+            Suffixes[0] = TEXT("_normalmap"); Suffixes[1] = TEXT("_normal");
+            Suffixes[2] = TEXT("_norm");       Suffixes[3] = TEXT("_n");
         }
-        else if (Channel == TEXT("Depth"))
+        else
         {
-            for (const TCHAR* S : {TEXT("_displacement"), TEXT("_depth"), TEXT("_height"), TEXT("_d")})
+            Suffixes[0] = TEXT("_displacement"); Suffixes[1] = TEXT("_depth");
+            Suffixes[2] = TEXT("_height");       Suffixes[3] = TEXT("_d");
+        }
+        for (const TCHAR* S : Suffixes)
+        {
+            if (Candidate.EndsWith(S))
             {
-                if (Lower.EndsWith(S))
-                    return Name.Left(Name.Len() - FCString::Strlen(S));
+                FString Result = Name.Left(Candidate.Len() - FCString::Strlen(S));
+                if (StateIdx >= 0)
+                {
+                    Result += Name.Right(StateSuffix.Len());
+                }
+                return Result;
             }
         }
         return Name;
@@ -371,5 +406,184 @@ private:
     FVector2D DragStartMouse = FVector2D::ZeroVector;
     FFaceArtTransform DragStartTransform;
     FVector2D DragCenterPx = FVector2D::ZeroVector;
+};
+
+// SFaceAccordion - one-open-per-group collapsible section stack (P16).
+// Sections are AutoHeight slots (the Python validator's section contract);
+// collapsed bodies are Collapsed (zero height) instead of being removed.
+// The first section starts open; clicking a header swaps to that section
+// (or collapses everything when the open section is clicked again).
+class UFaceParallaxEditorWidget::SFaceAccordion : public SCompoundWidget
+{
+public:
+    SLATE_BEGIN_ARGS(SFaceAccordion) {}
+    SLATE_END_ARGS()
+
+    void Construct(const FArguments&)
+    {
+        ChildSlot
+            [ SAssignNew(Box, SVerticalBox) ];
+    }
+
+    void AddSection(const FString& Title, TSharedRef<SWidget> Body)
+    {
+        const int32 Idx = Titles.Num();
+        Titles.Add(Title);
+        Open.Add(Idx == 0);
+
+        TSharedRef<SImage> Arrow = SNew(SImage)
+            .Image(FCoreStyle::Get().GetBrush(TEXT("TreeArrow_Collapsed")));
+        Arrows.Add(Arrow);
+
+        TSharedRef<SButton> Header = SNew(SButton)
+            .ButtonStyle(&FCoreStyle::Get().GetWidgetStyle<FButtonStyle>("NoBorder"))
+            .ContentPadding(FMargin(4, 6, 4, 2))
+            .OnClicked_Lambda([this, Idx]()
+            {
+                const bool bIsOpen = Open[Idx];
+                for (int32 i = 0; i < Open.Num(); ++i) Open[i] = (bIsOpen ? false : (i == Idx));
+                Refresh();
+                return FReply::Handled();
+            })
+            [ SNew(SHorizontalBox)
+                + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+                    .Padding(FMargin(0, 0, 6, 0))[Arrow]
+                + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+                    [SNew(STextBlock)
+                        .Text(FText::FromString(Title))
+                        .Font(FCoreStyle::GetDefaultFontStyle("Bold", 11))
+                        .ColorAndOpacity(FLinearColor(0.9f, 0.9f, 0.9f))]
+                + SHorizontalBox::Slot().FillWidth(1.0f) ];
+        Headers.Add(Header);
+
+        TSharedRef<SVerticalBox> BodyWrap = SNew(SVerticalBox);
+        BodyWrap->AddSlot().AutoHeight().Padding(FMargin(4, 0, 4, 4))
+            [ SNew(SBorder)
+                .BorderImage(FCoreStyle::Get().GetBrush("NoBorder"))
+                .BorderBackgroundColor(FLinearColor(0.08f, 0.08f, 0.08f))
+                .Padding(FMargin(6))
+                [Body] ];
+        Bodies.Add(BodyWrap);
+        Box->AddSlot().AutoHeight()[Header];
+        Box->AddSlot().AutoHeight()[BodyWrap];
+        Refresh();
+    }
+
+    // One-open-per-group expand; -1 collapses every section.
+    void SetExpanded(int32 Idx, bool bExpand)
+    {
+        if (!bExpand)
+        {
+            if (Idx >= 0 && Idx < Open.Num()) Open[Idx] = false;
+            Refresh();
+            return;
+        }
+        for (int32 i = 0; i < Open.Num(); ++i) Open[i] = (i == Idx);
+        Refresh();
+    }
+
+    void ExpandAll()
+    {
+        for (int32 i = 0; i < Open.Num(); ++i) Open[i] = true;
+        Refresh();
+    }
+
+    int32 NumSections() const { return Titles.Num(); }
+    FString SectionTitle(int32 Idx) const
+    {
+        return Titles.IsValidIndex(Idx) ? Titles[Idx] : FString();
+    }
+
+private:
+    void Refresh()
+    {
+        for (int32 i = 0; i < Bodies.Num(); ++i)
+        {
+            Bodies[i]->SetVisibility(Open[i] ? EVisibility::Visible : EVisibility::Collapsed);
+            Arrows[i]->SetImage(FCoreStyle::Get().GetBrush(
+                Open[i] ? TEXT("TreeArrow_Expanded") : TEXT("TreeArrow_Collapsed")));
+        }
+    }
+
+    TSharedPtr<SVerticalBox> Box;
+    TArray<TSharedRef<SImage>> Arrows;
+    TArray<TSharedRef<SButton>> Headers;
+    TArray<TSharedRef<SVerticalBox>> Bodies;
+    TArray<FString> Titles;
+    TArray<bool> Open;
+};
+
+// SFaceHotspotLayer - transparent canvas overlay (Phase 4): maps clicks to UV
+// space and hit-tests FPLayout named polygon buckets (holes/concave supported).
+// Lives below the gizmo in the preview SOverlay, so gizmo drags win; clicks the
+// gizmo rejects fall through to hotspot hit-testing and call
+// Owner->HandleHotspotClick(name). Faint outlines paint the region bounds.
+class UFaceParallaxEditorWidget::SFaceHotspotLayer : public SLeafWidget
+{
+public:
+    SLATE_BEGIN_ARGS(SFaceHotspotLayer) {}
+    SLATE_END_ARGS()
+
+    void Construct(const FArguments&) {}
+
+    UFaceParallaxEditorWidget* Owner = nullptr;
+
+    void SetRegions(const std::vector<FPLayout::FPHotspotRegion>& InRegions)
+    {
+        Regions = InRegions;
+    }
+
+    virtual FVector2D ComputeDesiredSize(float) const override
+    {
+        return FVector2D::ZeroVector;
+    }
+
+    virtual int32 OnPaint(const FPaintArgs&, const FGeometry& AllottedGeometry,
+        const FSlateRect&, FSlateWindowElementList& OutDrawElements,
+        int32 LayerId, const FWidgetStyle&, bool) const override
+    {
+        const FVector2D Size = AllottedGeometry.GetLocalSize();
+        if (Size.X <= 0.0f || Size.Y <= 0.0f || Regions.empty()) return LayerId;
+        const FLinearColor Tint(0.6f, 0.8f, 1.0f, 0.14f);
+        for (const FPLayout::FPHotspotRegion& R : Regions)
+        {
+            DrawLoop(AllottedGeometry, OutDrawElements, LayerId, R.Outer, Size, Tint);
+            for (const std::vector<FPLayout::FPHotspotPoint>& Hole : R.Holes)
+                DrawLoop(AllottedGeometry, OutDrawElements, LayerId, Hole, Size, Tint);
+        }
+        return LayerId + 1;
+    }
+
+    virtual FReply OnMouseButtonDown(const FGeometry& Geo, const FPointerEvent& Ev) override
+    {
+        if (!Owner || Ev.GetEffectingButton() != EKeys::LeftMouseButton)
+            return FReply::Unhandled();
+        const FVector2D CanvasSize = Geo.GetLocalSize();
+        if (CanvasSize.X < 1.0f || CanvasSize.Y < 1.0f) return FReply::Unhandled();
+        const FVector2D Local = Geo.AbsoluteToLocal(Ev.GetScreenSpacePosition());
+        const FVector2D UV = UFaceParallaxEditorWidget::GizmoPixelsToUV(Local, CanvasSize);
+        const char* Name = FPLayout::FPHotspotHit(Regions, UV.X, UV.Y);
+        if (!Name || !Name[0]) return FReply::Unhandled();
+        Owner->HandleHotspotClick(FString(Name));
+        return FReply::Handled();
+    }
+
+private:
+    void DrawLoop(const FGeometry& G, FSlateWindowElementList& L, int32 Id,
+        const std::vector<FPLayout::FPHotspotPoint>& Loop,
+        const FVector2D& Size, const FLinearColor& Tint) const
+    {
+        if (Loop.size() < 2) return;
+        TArray<FVector2D> Pts;
+        Pts.Reserve((int32)Loop.size() + 1);
+        for (const FPLayout::FPHotspotPoint& P : Loop)
+            Pts.Add(FVector2D((float)(P.X * Size.X), (float)(P.Y * Size.Y)));
+        const FVector2D First = Pts[0];
+        Pts.Add(First);
+        FSlateDrawElement::MakeLines(L, Id, G.ToPaintGeometry(), Pts,
+            ESlateDrawEffect::None, Tint, true, 1.0f);
+    }
+
+    std::vector<FPLayout::FPHotspotRegion> Regions;
 };
 #endif

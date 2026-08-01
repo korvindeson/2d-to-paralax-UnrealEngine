@@ -56,8 +56,25 @@ class SyntaxValidator:
         #    SVerticalBox slots are Fill: bare AddSlot would stretch every
         #    section to an equal share and tall content paints over the next
         #    section - the "View Override on top of Scale Y" defect).
-        if fp.name == 'FaceParallaxEditorWidgetUI.cpp':
+        #    The panel construction blocks moved to the panels file with the
+        #    Stage 5 decomposition, so both files are checked.
+        if fp.name in ('FaceParallaxEditorWidgetUI.cpp', 'FaceParallaxEditorWidgetPanels.cpp'):
             self._check_section_slots(fp, text)
+        # 7. Container self-add:  X.Add(X[i]) passes a reference INTO the
+        #    array being modified; TArray's debug check asserts ("element
+        #    already comes from the container being modified" - Array.h
+        #    CheckAddress). The hotspot polygon close-loop hit this in
+        #    DrawLoop and crashed the editor during WBP thumbnail render.
+        self._check_self_add(fp, text)
+
+    def _check_self_add(self, fp: Path, text: str):
+        for m in re.finditer(r'\b(\w+)\s*(?:\.|->)\s*(?:Add|AddLast|Emplace)\s*\(\s*(\w+)\s*\[', text):
+            if m.group(1) != m.group(2):
+                continue
+            line = text.count('\n', 0, m.start()) + 1
+            self._error(fp, f"line {line}: container self-add {m.group(1)}.{m.group(2)}[...] "
+                             f"(element taken from the same array being modified - "
+                             f"copy to a local first)")
 
     def _check_section_slots(self, fp: Path, text: str):
         # A section slot add is:  <Box>->AddSlot() [ ...MakeSectionBox(...) ] ;

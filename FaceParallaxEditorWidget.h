@@ -926,7 +926,8 @@ public:
     void SetGizmoTransform(const FFaceArtTransform& T);
 
     // ===== PHASE C: IMPORT =====
-    void OpenImportFolderWizard();
+    void OpenImportFolderWizard(const FString& PreselectPart = FString());
+    void HandleHotspotClick(const FString& RegionName);   // Phase 4: canvas part pick
     void RefreshSyncDriftIndicator();
     double LastSyncTimestamp = 0.0;
     int32 LastSyncedViewCount = 0;
@@ -1064,7 +1065,7 @@ private:
 
     // ===== VIEW OVERRIDE / SYNC UI =====
     TSharedPtr<SCheckBox> CheckViewOverrideMode;
-    TArray<TSharedPtr<SCheckBox>> SyncViewCheckBoxes;
+    TArray<TSharedPtr<SCheckBox>> SyncViewCheckBoxes;   // shared strip checkboxes (pick-mode toggles, one per state)
     TSharedPtr<SHorizontalBox> SyncPickerRow;
     TSharedPtr<SCheckBox> CheckSyncTextures;
     bool bClearStateArmed = false;
@@ -1087,10 +1088,18 @@ private:
     TSharedPtr<SVerticalBox> SlotPropsBox;          // right pane: selected slot properties
     TSharedPtr<SBox> PreviewHost;                   // center canvas container
     TSharedPtr<SImage> OnionSkinImage;              // onion-skin ghost (Phase B)
+    TSharedPtr<SCheckBox> OnionCheckBox;            // onion-skin toggle on the canvas mode row
     TSharedPtr<SBox> GizmoLayer;                    // gizmo overlay (Phase B)
     TSharedPtr<SImage> EdgeOverlayImage;            // edge-detection overlay (Phase D)
     class SFaceLayerGizmo;
     TSharedPtr<SFaceLayerGizmo> GizmoWidget;        // canvas transform gizmo (Phase B)
+    class SFaceAccordion;
+    TSharedPtr<SFaceAccordion> PropsAccordion;      // right pane: 4 collapsible sections (P16)
+    TSharedPtr<SFaceAccordion> DebugAccordion;      // Debug rail: 8 collapsible sections (P16)
+    TSharedPtr<SFaceAccordion> AdvancedAccordion;   // Advanced rail: 4 collapsible sections (P16)
+    class SFaceHotspotLayer;
+    TSharedPtr<SFaceHotspotLayer> HotspotLayer;     // canvas overlay: spatial part pick (Phase 4)
+    bool bStatePickMode = false;                    // state-strip pick mode: tab clicks toggle sync destinations
     int32 DisplayMode = 0;                          // 0 Textured 1 Depth 2 Wireframe 3 Split
     TArray<TSharedPtr<SImage>> ViewTabDots;         // per-state status dots in view strip
     TSharedPtr<STextBlock> TextSlotAlbedoStatus;    // inline import status (filename/check/warning)
@@ -1206,6 +1215,25 @@ private:
     // ===== ACTOR SELECTION =====
     TArray<TWeakObjectPtr<AFaceParallaxPreviewActor>> ActorOptions;
     void RefreshActorSelector();
+
+    // ===== PANEL BUILDERS (FaceParallaxEditorWidgetPanels.cpp) =====
+    // RebuildWidget's per-panel construction blocks. Each builder
+    // reproduces exactly one block of the former monolithic RebuildWidget
+    // so the widget tree (Phase H design contract) is unchanged.
+    TSharedRef<SWidget> MakeSectionBox(const FString& Title, TSharedRef<SWidget> Content);
+    void BuildPanelToolbar(const TSharedRef<SVerticalBox>& Root);
+    void BuildPanelStateStrip(const TSharedRef<SVerticalBox>& Root);
+    void BuildPanelZoneDiagram(const TSharedRef<SVerticalBox>& Root);
+    void BuildPanelRailContainers(const TSharedRef<SVerticalBox>& Root);
+    void BuildPanelLayers(const TSharedRef<SVerticalBox>& Root);
+    TSharedRef<SVerticalBox> BuildPanelCanvas(const TSharedRef<SVerticalBox>& Root);
+    void BuildPanelSlotProps(const TSharedRef<SVerticalBox>& Root, TSharedRef<SVerticalBox>& PropPanelOut);
+    void BuildPanelTransformRail();
+    void BuildPanelDebugRail();
+    void BuildPanelCameraRail();
+    void BuildPanelAdvancedRail();
+    void BuildPanelTimeline(const TSharedRef<SVerticalBox>& Root);
+    void BuildPanelBottomBar(const TSharedRef<SVerticalBox>& Root);
 
     TSharedPtr<SScrollBox> PropScroll;
 };

@@ -209,6 +209,13 @@ if ($IncludeUEBuild -and $EngineBatchDir) {
 }
 
 Write-Host "===== RESULTS =====" -ForegroundColor Cyan
+
+# Harden cleanup: purge regenerated test artifacts on every exit path.
+foreach ($artifact in @("ParallaxMathTests.exe", "compile.log", "compile_errors.txt")) {
+    $path = Join-Path $testDir $artifact
+    if (Test-Path $path) { Remove-Item -Path $path -Force }
+}
+
 if ($failed) {
     Write-Host "SOME TESTS FAILED" -ForegroundColor Red
     exit 1
