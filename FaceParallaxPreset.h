@@ -24,6 +24,15 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Canvas")
     bool bAutoFitOnAssign = true;
 
+    // --- HOTSPOT → LAYER MAPPING ---
+    // Explicit overrides for spatial part pick routing: anatomical region
+    // name (e.g. "Nose", "CheekL") -> primary layer tag. Empty entries fall
+    // back to FPLayout::FPHotspotLayerMatch derivation (exact, plural,
+    // L/R collapse, prefix). Set by the parts strip's right-click remap menu.
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "View Assignments",
+        meta = (DisplayName = "Hotspot Region → Layer Map"))
+    TMap<FString, FName> HotspotLayerMap;
+
     // --- SLOT ACCESS ---
     UFUNCTION(BlueprintCallable, Category = "Face Preset")
     FFaceArtSlot GetSlot(EFaceAngleState State, FName LayerTag) const;
@@ -157,7 +166,8 @@ public:
     void BatchSetTexturesAllLayers(EFaceAngleState State, const TMap<FName, FFaceTextureSet>& LayerTextures);
 
     UFUNCTION(BlueprintCallable, Category = "Face Preset|Batch")
-    void SyncLayerNestedToAllViews(FName LayerTag, FName ElementName, const FFaceNestedArt& Element);
+    void SyncLayerNestedToAllViews(FName LayerTag, FName ElementName, const FFaceNestedArt& Element,
+        bool bSyncPins = true);
 
     UFUNCTION(BlueprintCallable, Category = "Face Preset|Batch")
     void ClearAllTextures();

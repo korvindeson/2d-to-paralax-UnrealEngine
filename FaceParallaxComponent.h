@@ -422,6 +422,18 @@ public:
     static float PinRotationFromYawDev(float YawDev, float HalfZoneWidth,
         float MinRotation, float MaxRotation, float RotationSensitivity);
 
+    // Phase 5: 2D pitch-aware pin view-angle rotation. Pitch deviation
+    // attenuates the yaw driver (Driver = NormYaw * (1 - |NormPitch|));
+    // at PitchDev = 0 the result is byte-identical to PinRotationFromYawDev.
+    // Pure math (unit-tested by TestPrimaryLayerPin).
+    static float PinRotationFromViewAngles(float YawDev, float PitchDev, float HalfZoneWidth,
+        float MinRotation, float MaxRotation, float RotationSensitivity);
+
+    // Phase 5: view-angle pin scale. Weight 1 - |Cos(YawDev)*Cos(PitchDev)|:
+    // scale 1.0 at the zone center, easing to MinScale at 90 degrees of
+    // deviation in either axis. Pure math (unit-tested).
+    static float PinScaleFromView(float YawDev, float PitchDev, float MinScale);
+
     mutable TMap<EFaceAngleState, TArray<FVector2D>> OutlinePointCache;
 
     // --- PARAMETER SYSTEM ---

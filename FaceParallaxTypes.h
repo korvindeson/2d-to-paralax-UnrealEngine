@@ -297,6 +297,11 @@ struct FACEPARALLAX_API FFacePin3D
         meta = (DisplayName = "Rotation Sensitivity", EditCondition = "bEnableViewAngleRotation",
             ClampMin = "-10.0", ClampMax = "10.0"))
     float RotationSensitivity = 1.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Pin",
+        meta = (DisplayName = "View-Angle Min Scale (at 90deg deviation)",
+            EditCondition = "bEnableViewAngleRotation", ClampMin = "0.05", ClampMax = "1.0"))
+    float MinScale = 0.5f;
 };
 
 USTRUCT(BlueprintType)
@@ -419,6 +424,10 @@ struct FACEPARALLAX_API FFaceArtSlot
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Art Slot",
         meta = (DisplayName = "Nested Art Elements"))
     TArray<struct FFaceNestedArt> NestedElements;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Art Slot",
+        meta = (DisplayName = "Layer 3D Pin (pins the whole layer to a 3D point)"))
+    FFacePin3D LayerPin3D;
 
     FFaceArtTransform GetEffectiveTransform(EFaceAngleState ForState) const
     {

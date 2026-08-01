@@ -9,7 +9,7 @@
 
 struct IConsoleCommand;
 
-UCLASS()
+UCLASS(Config = Editor)
 class UFaceParallaxEditorSubsystem : public UEditorSubsystem
 {
     GENERATED_BODY()
@@ -21,6 +21,13 @@ public:
     // Note: asset deployment (materials, preset, character BP, editor widget BP,
     // render target, preview actor) is handled entirely by the deployment script
     // deploy.py — see the repo root. There is no C++ deploy pipeline.
+
+    // Auto-opens the editor as a docked tab once after the editor loads.
+    // Default ON; set to false to disable, e.g. in DefaultEditor.ini:
+    //   [/Script/FaceParallaxEditor.FaceParallaxEditorSubsystem]
+    //   bAutoOpenEditorOnStartup=false
+    UPROPERTY(Config, EditAnywhere, Category = "Face Parallax|Editor Subsystem")
+    bool bAutoOpenEditorOnStartup = true;
 
     // --- Toolbar ---
     void RegisterToolbar();
@@ -44,4 +51,10 @@ private:
     // Console command registered in Initialize() so typing 'FaceParallaxOpenEditor'
     // always dispatches — UFUNCTION(Exec) bindings can go stale after Live Coding.
     struct IConsoleCommand* ConsoleCommand = nullptr;
+    // Auto-open on startup: binds GEditor->OnEditorLoaded() (fires when the editor
+    // has finished loading), then defers the tab invoke by one ticker delay so the
+    // main editor frame is guaranteed to exist before TryInvokeTab.
+    void ScheduleAutoOpen();
+    void AutoOpenEditorLoaded(double Duration);
+    FDelegateHandle EditorLoadedHandle;
 };

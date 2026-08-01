@@ -234,6 +234,8 @@ public:
                         FSlateLayoutTransform(PinPx - FVector2D(3.0f, 3.0f))),
                     Brush, ESlateDrawEffect::None, FLinearColor(0.2f, 0.2f, 0.2f, 0.95f));
             }
+            if (Owner->bShowPins)
+                PaintPinMarkers(AllottedGeometry, OutDrawElements, LayerId, CanvasSize);
             return LayerId + 3;
         }
 
@@ -295,8 +297,47 @@ public:
                 FSlateLayoutTransform(Corners[2] - FVector2D(5.0f, 5.0f))),
             Brush, ESlateDrawEffect::None, FLinearColor(0.4f, 1.0f, 0.5f, 0.95f));
 
+        // Phase 3: all nested-element pin markers (Show Pins toggle).
+        if (Owner->bShowPins)
+            PaintPinMarkers(AllottedGeometry, OutDrawElements, LayerId, CanvasSize);
+
         return LayerId + 3;
     }
+
+    void PaintPinMarkers(const FGeometry& G, FSlateWindowElementList& L, int32 Id,
+        const FVector2D& CanvasSize) const
+    {
+        const FSlateBrush* Brush = FCoreStyle::Get().GetBrush("WhiteBrush");
+        if (!Owner || !Brush) return;
+        TArray<FFacePinMarker> Markers;
+        Owner->GetLayerPinMarkers(Markers);
+        for (const FFacePinMarker& M : Markers)
+        {
+            const FVector2D Px = UFaceParallaxEditorWidget::GizmoUVToPixels(M.UV, CanvasSize);
+            const float S = M.bPinned ? 13.0f : 9.0f;
+            // Pinned: filled. Unpinned: ring (dark inner box hollows it out).
+            const FLinearColor Col = M.bPinned
+                ? (M.bRotation ? FLinearColor(0.3f, 0.85f, 1.0f, 0.95f)   // cyan: rotation pin
+                               : FLinearColor(1.0f, 0.85f, 0.3f, 0.95f))  // amber: static pin
+                : (M.bJiggle ? FLinearColor(0.75f, 0.4f, 1.0f, 0.9f)      // purple: jiggle element
+                             : FLinearColor(1.0f, 0.3f, 0.3f, 0.9f));     // red: plain pivot anchor
+            FSlateDrawElement::MakeBox(L, Id,
+                G.ToPaintGeometry(FVector2D(S, S),
+                    FSlateLayoutTransform(Px - FVector2D(S * 0.5f, S * 0.5f))),
+                Brush, ESlateDrawEffect::None, Col);
+            if (!M.bPinned)
+            {
+                const float Inner = S - 4.0f;
+                FSlateDrawElement::MakeBox(L, Id,
+                    G.ToPaintGeometry(FVector2D(Inner, Inner),
+                        FSlateLayoutTransform(Px - FVector2D(Inner * 0.5f, Inner * 0.5f))),
+                    Brush, ESlateDrawEffect::None, FLinearColor(0.08f, 0.08f, 0.09f, 0.95f));
+            }
+        }
+    }
+
+    // Public so the widget can re-invalidate the pin overlay after toggles.
+    void InvalidatePaint() { Invalidate(EInvalidateWidgetReason::Paint); }
 
     virtual FReply OnMouseButtonDown(const FGeometry& Geo, const FPointerEvent& Ev) override
     {
@@ -305,107 +346,46 @@ public:
         const FVector2D Local = Geo.AbsoluteToLocal(Ev.GetScreenSpacePosition());
         const FVector2D CanvasSize = Geo.GetLocalSize();
 
+        // Layer-transform mode: the gizmo is a PASSIVE visual overlay — it
+        // never starts move/scale/rotate drags. Every click falls through
+        // (SOverlay keeps routing on Unhandled) to the hotspot layer below,
+        // so clicking a face part selects the zone / imports art. Transform
+        // edits happen in the Transform rail sliders.
+        if (!bPinMode)
+            return FReply::Unhandled();
+
         // Pin mode: drag moves the selected pinned element's 3D pin
         // (writes through SetGizmoPinUV -> SetNestedPinFromUV).
-        if (bPinMode)
+        const FVector2D PinUV = Owner->GetSelectedPinUV();
+        if (PinUV.X >= 0.0f
+            && FVector2D::Distance(Local,
+                UFaceParallaxEditorWidget::GizmoUVToPixels(PinUV, CanvasSize)) < 12.0f)
         {
-            const FVector2D PinUV = Owner->GetSelectedPinUV();
-            if (PinUV.X >= 0.0f
-                && FVector2D::Distance(Local,
-                    UFaceParallaxEditorWidget::GizmoUVToPixels(PinUV, CanvasSize)) < 12.0f)
-            {
-                PinDragMode = 1;
-                return FReply::Handled().CaptureMouse(AsShared());
-            }
-            return FReply::Unhandled();
+            PinDragMode = 1;
+            return FReply::Handled().CaptureMouse(AsShared());
         }
-
-        const FFaceArtTransform T = Owner->GetGizmoTransform();
-        const FVector2D Center = CanvasSize * 0.5f
-            + UFaceParallaxEditorWidget::GizmoUVToPixels(T.Position, CanvasSize);
-        const FVector2D Half = UFaceParallaxEditorWidget::GizmoUVToPixels(T.Scale, CanvasSize) * 0.5f;
-        const float Rad = FMath::DegreesToRadians(T.Rotation);
-        auto RotV = [Rad](const FVector2D& V)
-        {
-            return FVector2D(V.X * FMath::Cos(Rad) - V.Y * FMath::Sin(Rad),
-                             V.X * FMath::Sin(Rad) + V.Y * FMath::Cos(Rad));
-        };
-        const FVector2D RotHandle = Center + RotV(FVector2D(0.0f, -Half.Y - 14.0f));
-        const FVector2D ScaleHandle = Center + RotV(FVector2D(Half.X, Half.Y));
-        DragStartMouse = Local;
-        DragStartTransform = T;
-        DragCenterPx = Center;
-        if (FVector2D::Distance(Local, RotHandle) < 12.0f)
-            DragMode = 3;
-        else if (FVector2D::Distance(Local, ScaleHandle) < 12.0f)
-            DragMode = 2;
-        else if (FMath::Abs(Local.X - Center.X) <= Half.X + 4.0f
-            && FMath::Abs(Local.Y - Center.Y) <= Half.Y + 4.0f)
-            DragMode = 1;
-        else
-            return FReply::Unhandled();
-        return FReply::Handled().CaptureMouse(AsShared());
+        return FReply::Unhandled();
     }
 
     virtual FReply OnMouseMove(const FGeometry& Geo, const FPointerEvent& Ev) override
     {
-        if (!Owner) return FReply::Unhandled();
-        if (PinDragMode == 1)
-        {
-            const FVector2D CanvasSize = Geo.GetLocalSize();
-            Owner->SetGizmoPinUV(UFaceParallaxEditorWidget::GizmoPixelsToUV(
-                Geo.AbsoluteToLocal(Ev.GetScreenSpacePosition()), CanvasSize));
-            return FReply::Handled();
-        }
-        if (DragMode == 0) return FReply::Unhandled();
-        const FVector2D Local = Geo.AbsoluteToLocal(Ev.GetScreenSpacePosition());
+        if (!Owner || PinDragMode != 1) return FReply::Unhandled();
         const FVector2D CanvasSize = Geo.GetLocalSize();
-        FFaceArtTransform NewT = DragStartTransform;
-        const FVector2D Delta = Local - DragStartMouse;
-        switch (DragMode)
-        {
-        case 1:
-            NewT.Position = DragStartTransform.Position
-                + UFaceParallaxEditorWidget::GizmoPixelsToUV(Delta, CanvasSize);
-            break;
-        case 2:
-            {
-                const float StartDist = FVector2D::Distance(DragStartMouse, DragCenterPx);
-                const float NewDist = FVector2D::Distance(Local, DragCenterPx);
-                const float Fac = StartDist > 1.0f ? FMath::Max(0.05f, NewDist / StartDist) : 1.0f;
-                NewT.Scale = DragStartTransform.Scale * Fac;
-            }
-            break;
-        case 3:
-            {
-                const FVector2D StartDir = DragStartMouse - DragCenterPx;
-                const FVector2D NewDir = Local - DragCenterPx;
-                const float StartAng = FMath::Atan2(StartDir.Y, StartDir.X);
-                const float NewAng = FMath::Atan2(NewDir.Y, NewDir.X);
-                NewT.Rotation = DragStartTransform.Rotation
-                    + FMath::RadiansToDegrees(NewAng - StartAng);
-            }
-            break;
-        }
-        Owner->SetGizmoTransform(NewT);
+        Owner->SetGizmoPinUV(UFaceParallaxEditorWidget::GizmoPixelsToUV(
+            Geo.AbsoluteToLocal(Ev.GetScreenSpacePosition()), CanvasSize));
         return FReply::Handled();
     }
 
     virtual FReply OnMouseButtonUp(const FGeometry&, const FPointerEvent&) override
     {
-        if (DragMode == 0 && PinDragMode == 0) return FReply::Unhandled();
-        DragMode = 0;
+        if (PinDragMode == 0) return FReply::Unhandled();
         PinDragMode = 0;
         return FReply::Handled().ReleaseMouseCapture();
     }
 
 private:
-    int32 DragMode = 0; // 0 none, 1 move, 2 scale, 3 rotate
     int32 PinDragMode = 0; // 0 none, 1 pin drag (bPinMode only)
     bool bPinMode = false; // true: gizmo edits the selected pinned element instead of the layer transform
-    FVector2D DragStartMouse = FVector2D::ZeroVector;
-    FFaceArtTransform DragStartTransform;
-    FVector2D DragCenterPx = FVector2D::ZeroVector;
 };
 
 // SFaceAccordion - one-open-per-group collapsible section stack (P16).
@@ -435,6 +415,15 @@ public:
             .Image(FCoreStyle::Get().GetBrush(TEXT("TreeArrow_Collapsed")));
         Arrows.Add(Arrow);
 
+        TSharedRef<STextBlock> TitleText = SNew(STextBlock)
+            .Text(FText::FromString(Title))
+            .Font(FCoreStyle::GetDefaultFontStyle("Bold", 11))
+            .ColorAndOpacity(FLinearColor(0.9f, 0.9f, 0.9f));
+        TSharedRef<STextBlock> SummaryText = SNew(STextBlock)
+            .Text(FText::FromString(TEXT("")))
+            .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+            .ColorAndOpacity(FLinearColor(0.6f, 0.6f, 0.6f));
+        Summaries.Add(SummaryText);
         TSharedRef<SButton> Header = SNew(SButton)
             .ButtonStyle(&FCoreStyle::Get().GetWidgetStyle<FButtonStyle>("NoBorder"))
             .ContentPadding(FMargin(4, 6, 4, 2))
@@ -449,10 +438,10 @@ public:
                 + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
                     .Padding(FMargin(0, 0, 6, 0))[Arrow]
                 + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
-                    [SNew(STextBlock)
-                        .Text(FText::FromString(Title))
-                        .Font(FCoreStyle::GetDefaultFontStyle("Bold", 11))
-                        .ColorAndOpacity(FLinearColor(0.9f, 0.9f, 0.9f))]
+                    [TitleText]
+                + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+                    .Padding(FMargin(8, 0, 0, 0))
+                    [SummaryText]
                 + SHorizontalBox::Slot().FillWidth(1.0f) ];
         Headers.Add(Header);
 
@@ -494,6 +483,23 @@ public:
         return Titles.IsValidIndex(Idx) ? Titles[Idx] : FString();
     }
 
+    // Phase 4b: expose the clickable header widget so section-jump chips and
+    // cross-rail search can scroll the header into view (jump target).
+    TSharedRef<SWidget> GetSectionHeader(int32 Idx) const
+    {
+        return Headers.IsValidIndex(Idx) ? Headers[Idx] : ChildSlot.GetWidget();
+    }
+
+    // Phase 4: show a short summary (e.g. "3 issues") in a section header.
+    void SetSectionSummary(int32 Idx, const FString& Text, const FLinearColor& Color)
+    {
+        if (Summaries.IsValidIndex(Idx))
+        {
+            Summaries[Idx]->SetText(FText::FromString(Text));
+            Summaries[Idx]->SetColorAndOpacity(Color);
+        }
+    }
+
 private:
     void Refresh()
     {
@@ -508,9 +514,236 @@ private:
     TSharedPtr<SVerticalBox> Box;
     TArray<TSharedRef<SImage>> Arrows;
     TArray<TSharedRef<SButton>> Headers;
+    TArray<TSharedPtr<STextBlock>> Summaries;
     TArray<TSharedRef<SVerticalBox>> Bodies;
     TArray<FString> Titles;
     TArray<bool> Open;
+};
+
+// ====================================================================
+// SFaceDisclosure — below-section progressive disclosure (Phase 4b).
+// A collapsible sub-section: clickable header row (arrow + title +
+// summary, e.g. "3 of 8 on") with the body hidden until expanded.
+// Used inside accordion sections (Config checks, Viseme grid) so a rail
+// doesn't bury information behind two long open stacks.
+// ====================================================================
+
+class UFaceParallaxEditorWidget::SFaceDisclosure : public SCompoundWidget
+{
+public:
+    SLATE_BEGIN_ARGS(SFaceDisclosure) {}
+    SLATE_END_ARGS()
+
+    void Construct(const FArguments& InArgs)
+    {
+        bOpen = false;
+        Box = SNew(SVerticalBox);
+        Arrow = SNew(SImage)
+            .Image(FCoreStyle::Get().GetBrush(TEXT("TreeArrow_Collapsed")));
+        TitleText = SNew(STextBlock)
+            .Text(FText::FromString(TEXT("")))
+            .Font(FCoreStyle::GetDefaultFontStyle("Bold", 9))
+            .ColorAndOpacity(FLinearColor(0.85f, 0.85f, 0.85f));
+        SummaryText = SNew(STextBlock)
+            .Text(FText::FromString(TEXT("")))
+            .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+            .ColorAndOpacity(FLinearColor(0.6f, 0.6f, 0.6f));
+        Header = SNew(SButton)
+            .ButtonStyle(&FCoreStyle::Get().GetWidgetStyle<FButtonStyle>("NoBorder"))
+            .ContentPadding(FMargin(2, 4, 2, 2))
+            .OnClicked_Lambda([this]() { Toggle(); return FReply::Handled(); })
+            [ SNew(SHorizontalBox)
+                + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+                    .Padding(FMargin(0, 0, 4, 0))[Arrow.ToSharedRef()]
+                + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+                    [TitleText.ToSharedRef()]
+                + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+                    .Padding(FMargin(8, 0, 0, 0))
+                    [SummaryText.ToSharedRef()]
+                + SHorizontalBox::Slot().FillWidth(1.0f) ];
+        BodyWrap = SNew(SVerticalBox);
+        BodyWrap->SetVisibility(EVisibility::Collapsed);
+        Box->AddSlot().AutoHeight()[Header.ToSharedRef()];
+        Box->AddSlot().AutoHeight().Padding(FMargin(6, 0, 0, 2))
+            [BodyWrap.ToSharedRef()];
+        ChildSlot[Box.ToSharedRef()];
+    }
+
+    void SetTitle(const FString& T) { TitleText->SetText(FText::FromString(T)); }
+    void SetSummary(const FString& T, const FLinearColor& C = FLinearColor(0.6f, 0.6f, 0.6f))
+    {
+        SummaryText->SetText(FText::FromString(T));
+        SummaryText->SetColorAndOpacity(C);
+    }
+    void SetBody(TSharedRef<SWidget> Body)
+    {
+        BodyWrap->ClearChildren();
+        BodyWrap->AddSlot().AutoHeight()[Body];
+    }
+    void SetOpen(bool b)
+    {
+        bOpen = b;
+        Refresh();
+    }
+    void Toggle()
+    {
+        bOpen = !bOpen;
+        Refresh();
+    }
+    bool IsOpen() const { return bOpen; }
+
+private:
+    void Refresh()
+    {
+        BodyWrap->SetVisibility(bOpen ? EVisibility::Visible : EVisibility::Collapsed);
+        Arrow->SetImage(FCoreStyle::Get().GetBrush(
+            bOpen ? TEXT("TreeArrow_Expanded") : TEXT("TreeArrow_Collapsed")));
+    }
+
+    bool bOpen = false;
+    TSharedPtr<SVerticalBox> Box;
+    TSharedPtr<SVerticalBox> BodyWrap;
+    TSharedPtr<SButton> Header;
+    TSharedPtr<SImage> Arrow;
+    TSharedPtr<STextBlock> TitleText;
+    TSharedPtr<STextBlock> SummaryText;
+};
+
+// ====================================================================
+// SFaceCarouselNav — page-flip strip for carousel viewports (P18).
+// "prev | Page i/n | next" buttons; the page label is updated through
+// SetPageText (or by grabbing the exposed Label member). The strip sits
+// BELOW the page viewport; the viewport's own bottom padding keeps the
+// 8px reserve (ScrollReserveBottom, P19) so the last row never blocks
+// the nav buttons.
+// ====================================================================
+
+class UFaceParallaxEditorWidget::SFaceCarouselNav : public SCompoundWidget
+{
+public:
+    SLATE_BEGIN_ARGS(SFaceCarouselNav) {}
+    SLATE_EVENT(FOnClicked, OnPrev);
+    SLATE_EVENT(FOnClicked, OnNext);
+    SLATE_END_ARGS()
+
+    void Construct(const FArguments& InArgs)
+    {
+        Label = SNew(STextBlock)
+            .Text(FText::FromString(TEXT("Page 1/1")))
+            .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+            .ColorAndOpacity(FLinearColor(0.7f, 0.7f, 0.7f));
+        ChildSlot
+            [ SNew(SHorizontalBox)
+                + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+                    [ SNew(SButton)
+                        .OnClicked(InArgs._OnPrev)
+                        .ContentPadding(FMargin(8, 1))
+                        [ SNew(STextBlock)
+                            .Text(FText::FromString(TEXT("<")))
+                            .Font(FCoreStyle::GetDefaultFontStyle("Bold", 11))
+                            .ColorAndOpacity(FLinearColor(0.8f, 0.85f, 1.0f)) ] ]
+                + SHorizontalBox::Slot().FillWidth(1.0f).VAlign(VAlign_Center)
+                    [ SNew(SBox).HAlign(HAlign_Center)[Label.ToSharedRef()] ]
+                + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+                    [ SNew(SButton)
+                        .OnClicked(InArgs._OnNext)
+                        .ContentPadding(FMargin(8, 1))
+                        [ SNew(STextBlock)
+                            .Text(FText::FromString(TEXT(">")))
+                            .Font(FCoreStyle::GetDefaultFontStyle("Bold", 11))
+                            .ColorAndOpacity(FLinearColor(0.8f, 0.85f, 1.0f)) ] ] ];
+    }
+
+    void SetPageText(const FString& T)
+    {
+        if (Label.IsValid()) Label->SetText(FText::FromString(T));
+    }
+
+    TSharedPtr<STextBlock> Label;
+};
+
+// ====================================================================
+// SFaceRailResizer — drag handle between the rail column and the canvas
+// (Phase 4b upgrade). Drag left/right to resize the rail; width is
+// clamped to [RailWidthMin, RailWidthMax] by FPLayout::ClampRailWidth and
+// applied live via the rail SBox's WidthOverride (no tree rebuild).
+// ====================================================================
+
+class UFaceParallaxEditorWidget::SFaceRailResizer : public SLeafWidget
+{
+public:
+    SLATE_BEGIN_ARGS(SFaceRailResizer) {}
+    SLATE_END_ARGS()
+
+    UFaceParallaxEditorWidget* Owner = nullptr;
+
+    void Construct(const FArguments& InArgs) {}
+
+    virtual FVector2D ComputeDesiredSize(float) const override
+    {
+        return FVector2D(6.0f, 560.0f);
+    }
+
+    virtual int32 OnPaint(const FPaintArgs&, const FGeometry& AllottedGeometry,
+        const FSlateRect&, FSlateWindowElementList& OutDrawElements,
+        int32 LayerId, const FWidgetStyle&, bool) const override
+    {
+        const FSlateBrush* Brush = FCoreStyle::Get().GetBrush("WhiteBrush");
+        if (!Brush) return LayerId;
+        const FVector2D Sz = AllottedGeometry.GetLocalSize();
+        FSlateDrawElement::MakeBox(OutDrawElements, LayerId,
+            AllottedGeometry.ToPaintGeometry(Sz, FSlateLayoutTransform(FVector2D(0, 0))),
+            Brush, ESlateDrawEffect::None,
+            bDragging ? FLinearColor(0.4f, 0.6f, 1.0f, 0.9f) : FLinearColor(0.12f, 0.12f, 0.14f));
+        if (Sz.X > 2.0f)
+        {
+            FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 1,
+                AllottedGeometry.ToPaintGeometry(FVector2D(1.0f, Sz.Y), FSlateLayoutTransform(FVector2D((Sz.X - 1.0f) * 0.5f, 0))),
+                Brush, ESlateDrawEffect::None, FLinearColor(0.3f, 0.3f, 0.32f));
+        }
+        return LayerId + 2;
+    }
+
+    virtual FReply OnMouseButtonDown(const FGeometry&, const FPointerEvent& E) override
+    {
+        bDragging = true;
+        DragStartX = E.GetScreenSpacePosition().X;
+        DragStartWidth = Owner ? Owner->GetRailWidthPx() : 180.0f;
+        return FReply::Handled().CaptureMouse(SharedThis(this));
+    }
+
+    virtual FReply OnMouseButtonUp(const FGeometry&, const FPointerEvent& E) override
+    {
+        if (bDragging && Owner)
+            Owner->ApplyRailWidthDelta(E.GetScreenSpacePosition().X - DragStartX);
+        bDragging = false;
+        return FReply::Handled().ReleaseMouseCapture();
+    }
+
+    virtual FReply OnMouseMove(const FGeometry&, const FPointerEvent& E) override
+    {
+        if (bDragging && Owner)
+        {
+            Owner->SetRailWidthLive(DragStartWidth + (E.GetScreenSpacePosition().X - DragStartX));
+            return FReply::Handled();
+        }
+        return FReply::Unhandled();
+    }
+
+    virtual void OnMouseCaptureLost(const FCaptureLostEvent&) override
+    {
+        bDragging = false;
+    }
+
+    virtual FCursorReply OnCursorQuery(const FGeometry&, const FPointerEvent&) const override
+    {
+        return FCursorReply::Cursor(EMouseCursor::ResizeLeftRight);
+    }
+
+private:
+    bool bDragging = false;
+    float DragStartX = 0.0f;
+    float DragStartWidth = 180.0f;
 };
 
 // SFaceHotspotLayer - transparent canvas overlay (Phase 4): maps clicks to UV
@@ -532,6 +765,10 @@ public:
     {
         Regions = InRegions;
     }
+
+    // The gizmo yields to part clicks using the same live regions (the
+    // canvas layer hit-tests against these, so selection always matches).
+    const std::vector<FPLayout::FPHotspotRegion>& GetRegions() const { return Regions; }
 
     virtual FVector2D ComputeDesiredSize(float) const override
     {
@@ -564,7 +801,12 @@ public:
         const FVector2D UV = UFaceParallaxEditorWidget::GizmoPixelsToUV(Local, CanvasSize);
         const char* Name = FPLayout::FPHotspotHit(Regions, UV.X, UV.Y);
         if (!Name || !Name[0]) return FReply::Unhandled();
-        Owner->HandleHotspotClick(FString(Name));
+        // Alt+click: route straight to the import wizard for that part.
+        // Plain click: select the mapped layer (or report unmapped).
+        if (Ev.IsAltDown())
+            Owner->ImportHotspotRegion(FString(Name));
+        else
+            Owner->HandleHotspotClick(FString(Name));
         return FReply::Handled();
     }
 

@@ -152,6 +152,10 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
     BuildPanelAdvancedRail();
     BuildPanelTimeline(Root);
     BuildPanelBottomBar(Root);
+    // Phase 4b: rail chips are built after every panel builder has registered
+    // its sections; a pending cross-rail search jump is consumed last.
+    BuildRailSectionChips();
+    ConsumePendingJump();
 
     // --- Assemble main row: rail icons | rail switcher | canvas | slot props ---
     {
@@ -189,12 +193,60 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
                     .BorderBackgroundColor(FLinearColor(0.05f,0.05f,0.05f))
                     .Padding(FMargin(2,4,0,4))
                     [RailIcons]]];
+        // Rail column: persistent quick-actions strip (Phase 4b) above the
+        // rail switcher. The strip is outside the scroll viewports so it stays
+        // pinned on every rail tab; button set mirrors FPLayout::QuickActionLabels().
+        TSharedRef<SVerticalBox> RailCol = SNew(SVerticalBox);
+        {
+            TSharedRef<SHorizontalBox> QB = SNew(SHorizontalBox);
+            const std::vector<std::string>& QLabels = FPLayout::QuickActionLabels();
+            TFunction<void()> QHandlers[] = {
+                [this]() { OpenImportArtDialog(); },
+                [this]() { SyncAllLayersToAllViews(); RefreshUI(); },
+                [this]() { ApplyAutoFitToAllSlots(); RefreshUI(); },
+                [this]() { ClearAllOverrides(); RefreshUI(); },
+            };
+            for (int32 Qi = 0; Qi < (int32)QLabels.size(); ++Qi)
+            {
+                FString Label = FString(UTF8_TO_TCHAR(QLabels[Qi].c_str()));
+                const FLinearColor BtnFG = (Qi == 3) ? FLinearColor(1.0f,0.6f,0.6f) : FLinearColor(0.85f,0.85f,0.85f);
+                TSharedRef<SButton> QBt = SNew(SButton)
+                    .ButtonColorAndOpacity(FLinearColor(0.15f,0.15f,0.15f))
+                    .OnClicked_Lambda([this, Q = QHandlers[Qi]]()
+                    {
+                        Q();
+                        return FReply::Handled();
+                    })
+                    .Content()
+                    [SNew(STextBlock)
+                        .Text(FText::FromString(Label))
+                        .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+                        .ColorAndOpacity(BtnFG)];
+                QB->AddSlot().Padding(FMargin(2, 2)).AutoWidth()[QBt];
+            }
+            QB->AddSlot().FillWidth(1.0f);
+            TSharedRef<SScrollBox> QBScroll = SNew(SScrollBox).Orientation(Orient_Horizontal);
+            QBScroll->AddSlot()[QB];
+            RailCol->AddSlot().AutoHeight()
+                [SNew(SBox).HeightOverride(26)[QBScroll]];
+        }
+        RailCol->AddSlot().FillHeight(1.0f)
+            [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("NoBorder"))
+                .BorderBackgroundColor(FLinearColor(0.07f,0.07f,0.07f))
+                .Padding(FMargin(0))
+                [RailSwitcher.ToSharedRef()]];
         MainRow->AddSlot().AutoWidth().VAlign(VAlign_Fill)
-            [SNew(SBox).WidthOverride(180)
+            [SAssignNew(RailWidthBox, SBox).WidthOverride(RailWidthPx)
                 [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("NoBorder"))
-                    .BorderBackgroundColor(FLinearColor(0.07f,0.07f,0.07f))
+                    .BorderBackgroundColor(FLinearColor(0.06f,0.06f,0.07f))
                     .Padding(FMargin(0))
-                    [RailSwitcher.ToSharedRef()]]];
+                    [RailCol]]];
+        // Phase 4b: drag-resize handle between the rail column and the canvas
+        // (drag updates RailWidthPx live, clamped via FPLayout::ClampRailWidth).
+        RailResizer = SNew(SFaceRailResizer);
+        RailResizer->Owner = this;
+        MainRow->AddSlot().AutoWidth().VAlign(VAlign_Fill)
+            [RailResizer.ToSharedRef()];
         MainRow->AddSlot().FillWidth(1.0f).VAlign(VAlign_Fill)
             [CenterCol];
         MainRow->AddSlot().AutoWidth().VAlign(VAlign_Fill)

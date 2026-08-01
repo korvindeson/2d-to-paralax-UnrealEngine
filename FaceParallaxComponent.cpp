@@ -1164,6 +1164,29 @@ void UFaceParallaxComponent::UpdateMaterialParameters()
                 }
             }
 
+            // Phase 5: primary-layer 3D pin (LayerPin3D) — the whole layer's
+            // art stays attached to a projected 3D point, with optional
+            // view-angle rotation/scale exactly like a nested pin.
+            if (ActivePreset && ParamSlot.LayerPin3D.bPinned)
+            {
+                const FVector2D PinnedUV = ProjectPinToUVInternal(ParamSlot.LayerPin3D.Position3D);
+                const FVector2D Canvas = ActivePreset->CanvasSize;
+                FinalArtPos += FVector2D((PinnedUV.X - 0.5f) * Canvas.X,
+                                         (PinnedUV.Y - 0.5f) * Canvas.Y);
+                if (ParamSlot.LayerPin3D.bEnableViewAngleRotation)
+                {
+                    // YawCenter is already in scope (dynamic art offset above).
+                    const float PitchCenter = GetZoneCenterPitch(CurrentState);
+                    ParamDrivenTransform.Rotation += PinRotationFromViewAngles(
+                        CurrentYaw - YawCenter, CurrentPitch - PitchCenter, HalfZoneWidth,
+                        ParamSlot.LayerPin3D.MinRotation, ParamSlot.LayerPin3D.MaxRotation,
+                        ParamSlot.LayerPin3D.RotationSensitivity);
+                    ParamDrivenTransform.Scale *= PinScaleFromView(
+                        CurrentYaw - YawCenter, CurrentPitch - PitchCenter,
+                        ParamSlot.LayerPin3D.MinScale);
+                }
+            }
+
                 Mat->SetVectorParameterValue(ArtPositionParamName,
                     FLinearColor(FinalArtPos.X, FinalArtPos.Y, 0.0f, 0.0f));
                 Mat->SetVectorParameterValue(ArtScaleParamName,
@@ -2178,10 +2201,15 @@ FFaceArtTransform UFaceParallaxComponent::ComputeNestedEffectiveTransform(
     if (Element.Pin3D.bPinned && Element.Pin3D.bEnableViewAngleRotation)
     {
         const float YawCenter = GetZoneCenterYaw(CurrentState);
+        const float PitchCenter = GetZoneCenterPitch(CurrentState);
         const float YawDev = CurrentYaw - YawCenter;
-        Result.Rotation += PinRotationFromYawDev(YawDev, HalfZoneWidth,
+        const float PitchDev = CurrentPitch - PitchCenter;
+        // Phase 5: pitch-aware 2D rotation (byte-identical to the old
+        // yaw-only path at zero pitch) plus view-angle scale easing.
+        Result.Rotation += PinRotationFromViewAngles(YawDev, PitchDev, HalfZoneWidth,
             Element.Pin3D.MinRotation, Element.Pin3D.MaxRotation,
             Element.Pin3D.RotationSensitivity);
+        Result.Scale *= PinScaleFromView(YawDev, PitchDev, Element.Pin3D.MinScale);
     }
     return Result;
 }
@@ -2360,6 +2388,34 @@ float UFaceParallaxComponent::PinRotationFromYawDev(float YawDev, float HalfZone
     const float NormDev = FMath::Clamp(YawDev / HalfWidth, -1.0f, 1.0f);
     const float Mapped = FMath::Lerp(MinRotation, MaxRotation, 0.5f * (NormDev + 1.0f));
     return Mapped * RotationSensitivity;
+}
+
+float UFaceParallaxComponent::PinRotationFromViewAngles(float YawDev, float PitchDev,
+    float HalfZoneWidth, float MinRotation, float MaxRotation, float RotationSensitivity)
+{
+    // Wrap both axes to [-180, 180]
+    while (YawDev > 180.0f) YawDev -= 360.0f;
+    while (YawDev < -180.0f) YawDev += 360.0f;
+    while (PitchDev > 180.0f) PitchDev -= 360.0f;
+    while (PitchDev < -180.0f) PitchDev += 360.0f;
+
+    const float HalfWidth = FMath::Max(1.0f, HalfZoneWidth);
+    const float NormYaw = FMath::Clamp(YawDev / HalfWidth, -1.0f, 1.0f);
+    const float NormPitch = FMath::Clamp(PitchDev / HalfWidth, -1.0f, 1.0f);
+    // Pitch attenuates the yaw driver. At PitchDev = 0 the driver is exactly
+    // NormYaw, so the result is byte-identical to PinRotationFromYawDev;
+    // at the pitch zone edge the rotation eases to the center (MinRotation).
+    const float Driver = NormYaw * (1.0f - FMath::Abs(NormPitch));
+    const float Mapped = FMath::Lerp(MinRotation, MaxRotation, 0.5f * (Driver + 1.0f));
+    return Mapped * RotationSensitivity;
+}
+
+float UFaceParallaxComponent::PinScaleFromView(float YawDev, float PitchDev, float MinScale)
+{
+    const float YawRad = FMath::DegreesToRadians(YawDev);
+    const float PitchRad = FMath::DegreesToRadians(PitchDev);
+    const float W = 1.0f - FMath::Abs(FMath::Cos(YawRad) * FMath::Cos(PitchRad));
+    return FMath::Lerp(1.0f, MinScale, W);
 }
 
 FVector2D UFaceParallaxComponent::ProjectPinToUVAtAngles(const FVector& Pin3D, float YawDeg, float PitchDeg, const FFaceProfile3D& Profile)

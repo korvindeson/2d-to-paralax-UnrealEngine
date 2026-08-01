@@ -56,16 +56,28 @@
 #include "Blueprint/UserWidget.h"
 #include "Materials/MaterialExpressionConstant4Vector.h"
 #include "HAL/IConsoleManager.h"
+#include "Containers/Ticker.h"
+#include "Engine/Engine.h"
 
 #define LOCTEXT_NAMESPACE "FaceParallaxEditorSubsystem"
 
 static const FName FaceParallaxToolbarName = "FaceParallax.Toolbar";
 static const FName FaceParallaxEditorTabName = "FaceParallaxEditor";
 
+// Once per process: after a Live Coding patch re-initializes the subsystem the
+// tab must not be forced open again (the user may have closed it deliberately).
+static bool bFaceParallaxAutoOpenedThisProcess = false;
+static FTSTicker::FDelegateHandle AutoOpenTickerHandle;
+
 void UFaceParallaxEditorSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
     Super::Initialize(Collection);
+
+    // Apply DefaultEditor.ini overrides for Config properties (e.g. the
+    // bAutoOpenEditorOnStartup toggle) before scheduling auto-open.
+    LoadConfig();
     RegisterToolbar();
+    ScheduleAutoOpen();
 
     // Register a real console command (in addition to the UFUNCTION(Exec)) so
     // typing 'FaceParallaxOpenEditor' always dispatches. UFUNCTION(Exec) bindings
@@ -84,6 +96,16 @@ void UFaceParallaxEditorSubsystem::Initialize(FSubsystemCollectionBase& Collecti
 
 void UFaceParallaxEditorSubsystem::Deinitialize()
 {
+    if (AutoOpenTickerHandle.IsValid())
+    {
+        FTSTicker::GetCoreTicker().RemoveTicker(AutoOpenTickerHandle);
+        AutoOpenTickerHandle.Reset();
+    }
+    if (EditorLoadedHandle.IsValid())
+    {
+        FEditorDelegates::OnEditorInitialized.Remove(EditorLoadedHandle);
+        EditorLoadedHandle.Reset();
+    }
     if (bTabSpawnerRegistered)
     {
         FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(FaceParallaxEditorTabName);
@@ -109,21 +131,42 @@ void UFaceParallaxEditorSubsystem::RegisterToolbar()
 
     FToolMenuOwnerScoped OwnerScope(TEXT("FaceParallax"));
 
+    // Level editor toolbar. The section is inserted BEFORE "Play" so the button
+    // stays visible instead of being appended into the toolbar's overflow chevron.
     UToolMenu* Toolbar = ToolMenus->ExtendMenu("LevelEditor.LevelEditorToolBar");
-    if (!Toolbar) return;
+    if (Toolbar)
+    {
+        FToolMenuSection& Section = Toolbar->AddSection("FaceParallax",
+            LOCTEXT("FaceParallaxSection", "Face Parallax"),
+            FToolMenuInsert("Play", EToolMenuInsertType::Before));
 
-    FToolMenuSection& Section = Toolbar->AddSection("FaceParallax", LOCTEXT("FaceParallaxSection", "Face Parallax"));
+        FToolMenuEntry Entry = FToolMenuEntry::InitToolBarButton(
+            "OpenFaceParallaxEditor",
+            FUIAction(FExecuteAction::CreateUObject(this, &UFaceParallaxEditorSubsystem::OpenEditorWidget)),
+            LOCTEXT("FaceEditor", "Face Editor"),
+            LOCTEXT("FaceEditorTooltip", "Open Face Parallax Editor Widget"),
+            FSlateIcon()
+        );
+        Entry.SetCommandList(nullptr);
 
-    FToolMenuEntry Entry = FToolMenuEntry::InitToolBarButton(
-        "OpenFaceParallaxEditor",
-        FUIAction(FExecuteAction::CreateUObject(this, &UFaceParallaxEditorSubsystem::OpenEditorWidget)),
-        LOCTEXT("FaceEditor", "Face Editor"),
-        LOCTEXT("FaceEditorTooltip", "Open Face Parallax Editor Widget"),
-        FSlateIcon()
-    );
-    Entry.SetCommandList(nullptr);
+        Section.AddEntry(Entry);
+    }
 
-    Section.AddEntry(Entry);
+    // Window menu — guaranteed-visible path (the same menu the engine itself
+    // extends), so the editor is always one click away.
+    UToolMenu* WindowMenu = ToolMenus->ExtendMenu("LevelEditor.MainMenu.Window");
+    if (WindowMenu)
+    {
+        FToolMenuSection& WinSection = WindowMenu->AddSection("FaceParallax",
+            LOCTEXT("FaceParallaxWindowSection", "Face Parallax"));
+        WinSection.AddMenuEntry(
+            "OpenFaceParallaxEditorWindow",
+            LOCTEXT("OpenFaceParallaxEditorWindow", "Face Parallax Editor"),
+            LOCTEXT("OpenFaceParallaxEditorWindowTooltip", "Open Face Parallax Editor Widget"),
+            FSlateIcon(),
+            FUIAction(FExecuteAction::CreateUObject(this, &UFaceParallaxEditorSubsystem::OpenEditorWidget))
+        );
+    }
 
     ToolMenus->RefreshAllWidgets();
     UE_LOG(LogTemp, Log, TEXT("[FaceParallax] Toolbar registered."));
@@ -272,6 +315,40 @@ TSharedRef<SDockTab> UFaceParallaxEditorSubsystem::SpawnEditorTab(const FSpawnTa
 void UFaceParallaxEditorSubsystem::FaceParallaxOpenEditor()
 {
     OpenEditorWidget();
+}
+
+// =============================================================
+// AUTO-OPEN ON STARTUP
+// =============================================================
+
+void UFaceParallaxEditorSubsystem::ScheduleAutoOpen()
+{
+    if (!bAutoOpenEditorOnStartup) return;
+    if (IsRunningCommandlet()) return;              // headless deploy sessions
+    if (bFaceParallaxAutoOpenedThisProcess) return; // Live Coding re-init
+    if (!GEditor) return;
+    EditorLoadedHandle = FEditorDelegates::OnEditorInitialized.AddUObject(
+        this, &UFaceParallaxEditorSubsystem::AutoOpenEditorLoaded);
+}
+
+void UFaceParallaxEditorSubsystem::AutoOpenEditorLoaded(double /*Duration*/)
+{
+    bFaceParallaxAutoOpenedThisProcess = true;
+    if (EditorLoadedHandle.IsValid())
+    {
+        FEditorDelegates::OnEditorInitialized.Remove(EditorLoadedHandle);
+        EditorLoadedHandle.Reset();
+    }
+    // Defer the invoke past the editor's loading phase so the main editor frame
+    // is guaranteed to exist — TryInvokeTab before that would float the tab.
+    AutoOpenTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
+        FTickerDelegate::CreateLambda([this](float)
+        {
+            AutoOpenTickerHandle.Reset();
+            UE_LOG(LogTemp, Log, TEXT("[FaceParallax] Auto-open on startup — invoking tab"));
+            OpenEditorWidget();
+            return false;   // one-shot
+        }), 1.0f);
 }
 
 #undef LOCTEXT_NAMESPACE

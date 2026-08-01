@@ -51,13 +51,41 @@
 //                          (one-open-per-group collapsible section stack).
 //                          Dense plain stacks paint over each other in a
 //                          560px-tall viewport - the "rail explosion" defect.
+//   P17 FitNoVScroll      - UI testing procedure, step 1: a bNoVScroll
+//                          viewport is arranged so its content fits with NO
+//                          vertical scroll bar. Checkable: the summed natural
+//                          height of the viewport's non-accordion children
+//                          (accordion sections collapse to their headers) must
+//                          stay inside FixedH. The 5 rails are bNoVScroll:
+//                          fit-packed stacks, one-open accordions and carousel
+//                          pages replace the old vertical rails scroll.
+//   P18 CarouselFallback  - UI testing procedure, step 2: content that cannot
+//                          fit (dynamic row lists) must use a page-flip
+//                          carousel (bCarousel fixed-height page viewport +
+//                          bCarouselNav prev/page/next strip AFTER it) instead
+//                          of a vertical scroll. Checkable: every bCarousel
+//                          node has FixedH > 0 and a bCarouselNav sibling.
+//   P19 ScrollbarReserve  - UI testing procedure, step 3: a carousel viewport
+//                          keeps a bottom padding reserve (ScrollReserveBottom
+//                          = 8 px) so the page content never blocks the nav
+//                          buttons under it. Checkable: every bCarousel node
+//                          has PadB >= ScrollReserveBottom.
+//   P20 PageWhitespaceReview - per-tab whitespace review: fixed section pages
+//                          of a carousel must be packed so no two adjacent
+//                          pages that fit inside the page viewport stay
+//                          separate (excessive whitespace per tab). Checkable:
+//                          deterministic greedy pack (CarouselMinPages) - the
+//                          page count must equal the achievable minimum.
 //
 // Scroll-viewport model: the rails are fixed 180x560 viewports whose content
 // (wide button rows, tall section stacks) scrolls; bClipH marks the viewport
 // and exempts its whole subtree from P2/P10/P11/P12/P13 - exactly what a
-// clipped/scrollable Slate widget does visually.
+// clipped/scrollable Slate widget does visually. Vertical scroll is only
+// modelled this way as an exemption; the widget itself must not construct
+// vertical SScrollBoxes (SyntaxValidator rule 8).
 
 #include <cstddef>
+#include <cctype>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -86,6 +114,8 @@ inline constexpr double MainRowHeight       = 560.0;  // main area fixed height
 inline constexpr double RailIconsWidth      = 36.0;   // rail icon column
 inline constexpr double RailIconSize        = 30.0;   // rail icon buttons
 inline constexpr double RailWidth           = 180.0;  // rail switcher width
+inline constexpr double RailWidthMin        = 180.0;  // rail width range (Phase 4 slider)
+inline constexpr double RailWidthMax        = 360.0;  // rail width range (Phase 4 slider)
 inline constexpr double PropsWidth          = 340.0;  // slot properties pane
 inline constexpr double ThumbSize           = 72.0;   // texture thumbnails
 inline constexpr double TimelineHeight      = 90.0;   // timeline strip
@@ -96,6 +126,18 @@ inline constexpr double SectionTitlePadL    = 4.0;    // section title padding
 inline constexpr double SectionTitlePadV    = 6.0;
 inline constexpr double PropsRightGap       = 8.0;    // right edge of the window (MainRow props slot padding)
 inline constexpr double PropsScrollInsetR   = 8.0;    // gap before the vertical scrollbar inside PropScroll
+
+// UI testing procedures (fit-first / carousel fallback / padding reserve):
+// P17 FitNoVScroll: content that fits is packed with no vertical scroll bar.
+// P18 CarouselFallback: dynamic row lists flip through pages instead.
+// P19 ScrollbarReserve: a page viewport keeps ScrollReserveBottom padding
+// below its content so the nav strip (and buttons under it) are never blocked.
+inline constexpr double CarouselRowHeight     = 22.0;   // nominal row height of a carousel page
+inline constexpr int    CarouselRowsPerPage   = 8;      // rows per carousel page (layers/issues/cross-layer)
+inline constexpr double CarouselViewportH     = 184.0;  // page viewport: 8 x 22 = 176 content + 8 reserve
+inline constexpr double CarouselNavHeight     = 22.0;   // prev/page/next strip height
+inline constexpr double ScrollReserveBottom   = 8.0;    // P19: reserve between page content and nav/buttons
+inline constexpr double CarouselMergeSpacing  = 4.0;    // P20: gap between page bodies when merging adjacent pages
 
 inline constexpr double PaletteVals[] = { 0.0, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0 };
 inline constexpr double MaxMargin = 8.0;
@@ -119,7 +161,11 @@ enum class DesignRule : unsigned char {
     MinimalSpace,       // P11
     GlobalOverlap,      // P12
     WithinScreenBounds, // P13
-    DensityOverflow     // P16
+    DensityOverflow,    // P16
+    FitNoVScroll,       // P17
+    CarouselFallback,   // P18
+    ScrollbarReserve,   // P19
+    PageWhitespaceReview // P20
 };
 
 struct FPViolation {
@@ -146,8 +192,25 @@ inline const char* RuleName(DesignRule r)
         case DesignRule::GlobalOverlap:     return "GlobalOverlap";
         case DesignRule::WithinScreenBounds:return "ScreenBounds";
         case DesignRule::DensityOverflow:    return "SectionDensity";
+        case DesignRule::FitNoVScroll:       return "FitNoVScroll";
+        case DesignRule::CarouselFallback:   return "CarouselFallback";
+        case DesignRule::ScrollbarReserve:   return "ScrollbarReserve";
+        case DesignRule::PageWhitespaceReview: return "PageWhitespaceReview";
     }
     return "?";
+}
+
+// Carousel page math (P18). Empty lists still have one page.
+inline int CarouselPageCount(int N)
+{
+    return N <= 0 ? 1 : (N + CarouselRowsPerPage - 1) / CarouselRowsPerPage;
+}
+
+// Clamp a page index into [0, Pages-1]; Pages <= 0 yields 0.
+inline int ClampCarouselPage(int Page, int Pages)
+{
+    if (Pages < 1) Pages = 1;
+    return Page < 0 ? 0 : (Page >= Pages ? Pages - 1 : Page);
 }
 
 struct FPLayoutNode {
@@ -165,6 +228,9 @@ struct FPLayoutNode {
     bool bFlexH = false;   // stretches to available height
     bool bClipH = false;   // scroll-viewport: clips children (zero extent in parent metrics;
                            // subtree exempt from P2/P10/P11/P12/P13)
+    bool bNoVScroll = false; // P17: clipped viewport content fits - no vertical scroll
+    bool bCarousel = false;  // P18: fixed-height page viewport (page-flip, no vertical scroll)
+    bool bCarouselNav = false; // P18/P19: prev/page/next strip that must follow its carousel
     bool bSection = false; // P9: first child must be a title
     bool bTitle = false;
     bool bAccordion = false; // P16: one-open-per-group collapsible section
@@ -247,6 +313,9 @@ inline std::vector<FPLayoutNode> BuildSpec()
     auto Tl  = [&](int i) { b.N[(size_t)i].bTitle = true; };
     auto Sp  = [&](int i) { b.N[(size_t)i].bSpacer = true; };
     auto Clip = [&](int i) { b.N[(size_t)i].bClipH = true; };
+    auto NoV = [&](int i) { b.N[(size_t)i].bNoVScroll = true; };
+    auto Car = [&](int i) { b.N[(size_t)i].bCarousel = true; };
+    auto Nav = [&](int i) { b.N[(size_t)i].bCarouselNav = true; };
     auto Acc = [&](int i) { b.N[(size_t)i].bAccordion = true; };
     auto GP  = [&](int i, int c, int r) { FPLayoutNode& n = b.N[(size_t)i]; n.GridCol = c; n.GridRow = r; };
 
@@ -338,6 +407,7 @@ inline std::vector<FPLayoutNode> BuildSpec()
             VF(b, "RL-Layers",
                 LF(b, "RL-LayersHeader", 120, 14),
                 LF(b, "RL-LayersScroll", 0, 0),
+                LF(b, "RL-LayersNav", 120, 22),
                 LF(b, "RL-AddLayerBtn", 70, 20),
                 VF(b, "Sec-StatusDetail",
                     LF(b, "Sec-StatusDetail-Title", 120, 14),
@@ -467,11 +537,15 @@ inline std::vector<FPLayoutNode> BuildSpec()
                             LF(b, "VG-D9", 18, 18)))),
                 VF(b, "Sec-Problems",
                     LF(b, "Sec-PR-Title", 120, 14),
-                    LF(b, "Sec-PR-Body", 200, 60))),
+                    VF(b, "Sec-PR-Body",
+                        LF(b, "PB-Carousel", 0, 0),
+                        LF(b, "PB-CarouselNav", 120, 22)))),
             VF(b, "RL-Advanced",
                 VF(b, "Sec-AllLayers",
                     LF(b, "Sec-AL-Title", 120, 14),
-                    LF(b, "Sec-AL-Body", 200, 80)),
+                    VF(b, "Sec-AL-Body",
+                        LF(b, "AL-Carousel", 0, 0),
+                        LF(b, "AL-CarouselNav", 120, 22))),
                 VF(b, "Sec-ParamRef",
                     LF(b, "Sec-PRF-Title", 120, 14),
                     VF(b, "Sec-PRF-Body",
@@ -545,33 +619,29 @@ inline std::vector<FPLayoutNode> BuildSpec()
                 LF(b, "PR-AutoFit", 70, 20), LF(b, "PR-Reset", 49, 20),
                 LF(b, "PR-SyncAll", 77, 20), LF(b, "PR-SyncTexAll", 105, 20), LF(b, "PR-AFCheck", 20, 20)),
             VF(b, "PR-Scroll",
-                VF(b, "Sec-Transform",
-                    LF(b, "Sec-XF-Title", 140, 14),
-                    VF(b, "Sec-XF-Body",
-                        HF(b, "XF-PosXRow", LF(b, "XF-PosXLbl", 44, 14), LF(b, "XF-PosXEdit", 70, 20)),
-                        HF(b, "XF-PosYRow", LF(b, "XF-PosYLbl", 44, 14), LF(b, "XF-PosYEdit", 70, 20)),
-                        HF(b, "XF-ScaleXRow", LF(b, "XF-ScaleXLbl", 56, 14), LF(b, "XF-ScaleXEdit", 70, 20)),
-                        HF(b, "XF-ScaleYRow", LF(b, "XF-ScaleYLbl", 56, 14), LF(b, "XF-ScaleYEdit", 70, 20)),
-                        HF(b, "XF-RotRow", LF(b, "XF-RotLbl", 28, 14), LF(b, "XF-RotEdit", 70, 20)))),
-                VF(b, "Sec-ViewOverride",
-                    LF(b, "Sec-VO-Title", 140, 14),
-                    VF(b, "Sec-VO-Body",
-                        HF(b, "VO-Row",
-                            LF(b, "VO-Check", 20, 20), LF(b, "VO-Lbl", 96, 14),
-                            LF(b, "VO-Spacer", 0, 0), LF(b, "VO-ClearBtn", 119, 20)))),
-                VF(b, "Sec-SyncToViews",
-                    LF(b, "Sec-SY-Title", 140, 14),
-                    VF(b, "Sec-SY-Body",
-                        HF(b, "SY-SyncRow",
-                            LF(b, "SY-Lbl", 72, 14), LF(b, "SY-TexCheck", 20, 20),
-                            LF(b, "SY-TexLbl", 22, 10), LF(b, "SY-Spacer", 0, 0), LF(b, "SY-SyncBtn", 124, 20)),
-                        HF(b, "SY-BothRow",
-                            LF(b, "SY-BothBtn", 126, 20)))),
-                VF(b, "Sec-Alignment",
-                    LF(b, "Sec-AL2-Title", 140, 14),
-                    VF(b, "Sec-AL2-Body",
-                        HF(b, "AL-LinkRow",
-                            LF(b, "AL-LinkChk", 20, 20), LF(b, "AL-LinkLbl", 128, 14))))),
+                OV(b, "PR-Carousel",
+                    VF(b, "Sec-Transform",
+                        LF(b, "Sec-XF-Title", 140, 14),
+                        VF(b, "Sec-XF-Body",
+                            HF(b, "XF-PosXRow", LF(b, "XF-PosXLbl", 44, 14), LF(b, "XF-PosXEdit", 70, 20)),
+                            HF(b, "XF-PosYRow", LF(b, "XF-PosYLbl", 44, 14), LF(b, "XF-PosYEdit", 70, 20)),
+                            HF(b, "XF-ScaleXRow", LF(b, "XF-ScaleXLbl", 56, 14), LF(b, "XF-ScaleXEdit", 70, 20)),
+                            HF(b, "XF-ScaleYRow", LF(b, "XF-ScaleYLbl", 56, 14), LF(b, "XF-ScaleYEdit", 70, 20)),
+                            HF(b, "XF-RotRow", LF(b, "XF-RotLbl", 28, 14), LF(b, "XF-RotEdit", 70, 20)))),
+                    VF(b, "Sec-SyncAlign",
+                        LF(b, "Sec-SA-Title", 140, 14),
+                        VF(b, "Sec-SA-Body",
+                            HF(b, "VO-Row",
+                                LF(b, "VO-Check", 20, 20), LF(b, "VO-Lbl", 96, 14),
+                                LF(b, "VO-Spacer", 0, 0), LF(b, "VO-ClearBtn", 119, 20)),
+                            HF(b, "SY-SyncRow",
+                                LF(b, "SY-Lbl", 72, 14), LF(b, "SY-TexCheck", 20, 20),
+                                LF(b, "SY-TexLbl", 22, 10), LF(b, "SY-Spacer", 0, 0), LF(b, "SY-SyncBtn", 124, 20)),
+                            HF(b, "SY-BothRow",
+                                LF(b, "SY-BothBtn", 126, 20)),
+                            HF(b, "AL-LinkRow",
+                                LF(b, "AL-LinkChk", 20, 20), LF(b, "AL-LinkLbl", 128, 14))))),
+                LF(b, "PR-CarouselNav", 120, 22)),
             LF(b, "PR-Status", 220, 12)));
 
     // MainRow fixed height (real: SBox HeightOverride(560)); stretches to root width
@@ -599,19 +669,31 @@ inline std::vector<FPLayoutNode> BuildSpec()
         const int RLLayers = b.N[(size_t)RailSw].Children[0];
         S(RLLayers, 2);
         Clip(RLLayers);
+        NoV(RLLayers);
         b.N[(size_t)RLLayers].FixedH = MainRowHeight;
         b.N[(size_t)RLLayers].FixedW = RailWidth;
         M(b.N[(size_t)RLLayers].Children[0], 4, 4, 4, 2);
-        Fx(b.N[(size_t)RLLayers].Children[1]);
-        Clip(b.N[(size_t)RLLayers].Children[1]);
-        M(b.N[(size_t)RLLayers].Children[2], 4, 2, 4, 2);
-        SecSetup(b.N[(size_t)RLLayers].Children[3], 0);
-        M(b.N[(size_t)RLLayers].Children[3], 2, 1, 2, 1);
-        P(Bod(b.N[(size_t)RLLayers].Children[3]), SectionBorderPad, SectionBorderPad, SectionBorderPad, SectionBorderPad);
+        // P17/P18: the layer list is a paged carousel - fixed 8-row page
+        // viewport plus a prev/page/next strip, with a bottom reserve (P19).
+        {
+            const int LScroll = b.N[(size_t)RLLayers].Children[1];
+            FxW(LScroll);
+            b.N[(size_t)LScroll].FixedH = CarouselViewportH;
+            Car(LScroll);
+            P(LScroll, 0, 0, 0, ScrollReserveBottom);
+            const int LNav = b.N[(size_t)RLLayers].Children[2];
+            b.N[(size_t)LNav].FixedH = CarouselNavHeight;
+            Nav(LNav);
+        }
+        M(b.N[(size_t)RLLayers].Children[3], 4, 2, 4, 2);
+        SecSetup(b.N[(size_t)RLLayers].Children[4], 0);
+        M(b.N[(size_t)RLLayers].Children[4], 2, 1, 2, 1);
+        P(Bod(b.N[(size_t)RLLayers].Children[4]), SectionBorderPad, SectionBorderPad, SectionBorderPad, SectionBorderPad);
 
         const int RLTransform = b.N[(size_t)RailSw].Children[1];
         S(RLTransform, 2);
         Clip(RLTransform);
+        NoV(RLTransform);
         b.N[(size_t)RLTransform].FixedH = MainRowHeight;
         b.N[(size_t)RLTransform].FixedW = RailWidth;
         {
@@ -630,6 +712,7 @@ inline std::vector<FPLayoutNode> BuildSpec()
         const int RLCamera = b.N[(size_t)RailSw].Children[2];
         S(RLCamera, 2);
         Clip(RLCamera);
+        NoV(RLCamera);
         b.N[(size_t)RLCamera].FixedH = MainRowHeight;
         b.N[(size_t)RLCamera].FixedW = RailWidth;
         {
@@ -671,6 +754,7 @@ inline std::vector<FPLayoutNode> BuildSpec()
         const int RLDebug = b.N[(size_t)RailSw].Children[3];
         S(RLDebug, 2);
         Clip(RLDebug);
+        NoV(RLDebug);
         b.N[(size_t)RLDebug].FixedH = MainRowHeight;
         b.N[(size_t)RLDebug].FixedW = RailWidth;
         {
@@ -745,11 +829,23 @@ inline std::vector<FPLayoutNode> BuildSpec()
                 S(b.N[(size_t)Bod(VG)].Children[(size_t)c], 1);
             const int Prob = b.N[(size_t)RLDebug].Children[7];
             SecSetup(Prob, 0);
+            {
+                const int PBody = Bod(Prob);
+                const int PCar = b.N[(size_t)PBody].Children[0];
+                FxW(PCar);
+                b.N[(size_t)PCar].FixedH = CarouselViewportH;
+                Car(PCar);
+                P(PCar, 0, 0, 0, ScrollReserveBottom);
+                const int PNav = b.N[(size_t)PBody].Children[1];
+                b.N[(size_t)PNav].FixedH = CarouselNavHeight;
+                Nav(PNav);
+            }
         }
 
         const int RLAdvanced = b.N[(size_t)RailSw].Children[4];
         S(RLAdvanced, 2);
         Clip(RLAdvanced);
+        NoV(RLAdvanced);
         b.N[(size_t)RLAdvanced].FixedH = MainRowHeight;
         b.N[(size_t)RLAdvanced].FixedW = RailWidth;
         {
@@ -758,6 +854,17 @@ inline std::vector<FPLayoutNode> BuildSpec()
             const int AL = b.N[(size_t)RLAdvanced].Children[0];
             SecSetup(AL, 0);
             P(Bod(AL), SectionBorderPad, SectionBorderPad, SectionBorderPad, SectionBorderPad);
+            {
+                const int ABody = Bod(AL);
+                const int ACar = b.N[(size_t)ABody].Children[0];
+                FxW(ACar);
+                b.N[(size_t)ACar].FixedH = CarouselViewportH;
+                Car(ACar);
+                P(ACar, 0, 0, 0, ScrollReserveBottom);
+                const int ANav = b.N[(size_t)ABody].Children[1];
+                b.N[(size_t)ANav].FixedH = CarouselNavHeight;
+                Nav(ANav);
+            }
             const int PRF = b.N[(size_t)RLAdvanced].Children[1];
             SecSetup(PRF, 2);
             S(b.N[(size_t)Bod(PRF)].Children[0], 4);
@@ -825,15 +932,22 @@ inline std::vector<FPLayoutNode> BuildSpec()
         M(b.N[(size_t)Props].Children[4], 6, 2, 6, 2);
         {
             const int Scroll = b.N[(size_t)Props].Children[3];
-            Fx(Scroll);      // real: PropScroll FillHeight(1.0)
-            Clip(Scroll);    // real: SScrollBox clips the transform/override/sync sections
+            Fx(Scroll);      // real: the page stack fills the pane
             P(Scroll, 2, 2, PropsScrollInsetR, 2);
             S(Scroll, 2);
-            for (int c = 0; c < (int)b.N[(size_t)Scroll].Children.size(); ++c)
-            {
-                SecSetup(b.N[(size_t)Scroll].Children[(size_t)c], 2);
-                Acc(b.N[(size_t)Scroll].Children[(size_t)c]);
-            }
+            // P17/P18/P20: the right-pane sections are carousel pages (one
+            // visible at a time) inside a fixed page viewport + nav strip;
+            // pages are whitespace-reviewed so under-packed pages merge (P20).
+            const int Carousel = b.N[(size_t)Scroll].Children[0];
+            Car(Carousel);
+            b.N[(size_t)Carousel].FixedW = 300.0;
+            b.N[(size_t)Carousel].FixedH = CarouselViewportH;
+            P(Carousel, 0, 0, 0, ScrollReserveBottom);
+            const int CNav = b.N[(size_t)Scroll].Children[1];
+            b.N[(size_t)CNav].FixedH = CarouselNavHeight;
+            Nav(CNav);
+            for (int c = 0; c < (int)b.N[(size_t)Carousel].Children.size(); ++c)
+                SecSetup(b.N[(size_t)Carousel].Children[(size_t)c], 2);
         }
         {
             const int Thr = b.N[(size_t)Props].Children[1];
@@ -855,32 +969,27 @@ inline std::vector<FPLayoutNode> BuildSpec()
         }
         {
             const int Scroll = b.N[(size_t)Props].Children[3];
-            const int XF = b.N[(size_t)Scroll].Children[0];
+            const int Carousel = b.N[(size_t)Scroll].Children[0];
+            const int XF = b.N[(size_t)Carousel].Children[0];
             for (int c = 0; c < (int)b.N[(size_t)Bod(XF)].Children.size(); ++c)
             {
                 const int row = b.N[(size_t)Bod(XF)].Children[(size_t)c];
                 S(row, 4);
                 M(b.N[(size_t)row].Children[1], 4, 2, 4, 2);
             }
-            const int VO = b.N[(size_t)Scroll].Children[1];
+            const int SA = b.N[(size_t)Carousel].Children[1];
             {
-                const int VOR = b.N[(size_t)Bod(VO)].Children[0];
+                const int VOR = b.N[(size_t)Bod(SA)].Children[0];
                 S(VOR, 4);
                 Sp(b.N[(size_t)VOR].Children[2]);
-            }
-            const int SY = b.N[(size_t)Scroll].Children[2];
-            {
-                const int SR = b.N[(size_t)Bod(SY)].Children[0];
+                const int SR = b.N[(size_t)Bod(SA)].Children[1];
                 S(SR, 4);
                 M(b.N[(size_t)SR].Children[1], 8, 2, 0, 2);
                 M(b.N[(size_t)SR].Children[2], 2, 2, 2, 2);
                 Sp(b.N[(size_t)SR].Children[3]);
-                const int BR = b.N[(size_t)Bod(SY)].Children[1];
+                const int BR = b.N[(size_t)Bod(SA)].Children[2];
                 S(BR, 4);
-            }
-            const int AL2 = b.N[(size_t)Scroll].Children[3];
-            {
-                const int Link = b.N[(size_t)Bod(AL2)].Children[0];
+                const int Link = b.N[(size_t)Bod(SA)].Children[3];
                 S(Link, 4);
             }
         }
@@ -1153,6 +1262,56 @@ inline std::vector<FPRect> ResolveLayout(const std::vector<FPLayoutNode>& Nodes)
     return R;
 }
 
+// ----------------------------------------------------------------------------
+// P20 PageWhitespaceReview: per-tab whitespace review. For a carousel whose
+// pages are sections, adjacent pages that fit inside the page viewport when
+// merged (title of the first + all bodies + CarouselMergeSpacing gaps) must be
+// combined; CarouselMinPages returns the minimum achievable page count using
+// the exact same rect metrics as P17. Deterministic: pure function of the
+// resolved layout - the tests assert the count for concrete fixtures.
+// ----------------------------------------------------------------------------
+inline int CarouselMinPages(const std::vector<FPLayoutNode>& Nodes, const FPLayoutNode* car)
+{
+    const size_t n = car ? car->Children.size() : 0u;
+    if (n < 2) return (int)n;
+    const int root = FindRootIndex(Nodes);
+    if (root < 0) return (int)n;
+    std::vector<FPBox> M(Nodes.size(), FPBox{});
+    ComputeMetricsRec(Nodes, M, root);
+    const std::vector<FPRect> R = ResolveLayout(Nodes);
+    const double inner = car->FixedH - car->PadT - car->PadB;
+    const double Eps = 1e-6;
+    int pages = 0;
+    size_t p = 0;
+    while (p < n)
+    {
+        ++pages;
+        const FPLayoutNode& first = Nodes[(size_t)car->Children[p]];
+        if (!first.bSection || first.Children.size() < 2) { ++p; continue; }
+        const int ft = first.Children[0];
+        const int fb = first.Children[1];
+        const FPLayoutNode& ftN = Nodes[(size_t)ft];
+        const FPLayoutNode& fbN = Nodes[(size_t)fb];
+        double h = R[(size_t)ft].H + ftN.MarginT + ftN.MarginB
+                 + R[(size_t)fb].H + fbN.MarginT + fbN.MarginB;
+        size_t q = p + 1;
+        while (q < n)
+        {
+            const FPLayoutNode& nx = Nodes[(size_t)car->Children[q]];
+            if (!nx.bSection || nx.Children.size() < 2) break;
+            const int nb = nx.Children[1];
+            const FPLayoutNode& nbN = Nodes[(size_t)nb];
+            const double addH = R[(size_t)nb].H + nbN.MarginT + nbN.MarginB
+                              + CarouselMergeSpacing;
+            if (h + addH > inner + Eps) break;
+            h += addH;
+            ++q;
+        }
+        p = q;
+    }
+    return pages;
+}
+
 inline int CountReachable(const std::vector<FPLayoutNode>& Nodes)
 {
     const int root = FindRootIndex(Nodes);
@@ -1264,6 +1423,37 @@ inline std::vector<FPViolation> ValidateDesign(const std::vector<FPLayoutNode>& 
             if (PlainSections > 4)
                 Out.push_back({ DesignRule::DensityOverflow, n.Name,
                     "more than 4 plain sections in a clipped viewport (use accordion sections)" });
+        }
+
+        // ---- P17 FitNoVScroll: a bNoVScroll viewport must fit without a
+        // ---- vertical scroll bar. Accordion children collapse to their
+        // ---- headers (one-open-per-group bounds the open stack).
+        if (n.bNoVScroll && n.bClipH && n.FixedH > 0.0 && !isLeaf)
+        {
+            double contentH = n.PadT + n.PadB;
+            int nonAcc = 0;
+            for (int ci : n.Children)
+            {
+                const FPLayoutNode& cn = Nodes[(size_t)ci];
+                if (cn.bSpacer || cn.bAccordion) continue;
+                contentH += R[(size_t)ci].H + cn.MarginT + cn.MarginB;
+                ++nonAcc;
+            }
+            if (nonAcc > 1) contentH += n.Spacing * (nonAcc - 1);
+            if (contentH > n.FixedH + Eps)
+                Out.push_back({ DesignRule::FitNoVScroll, n.Name,
+                    "content does not fit without a vertical scroll bar" });
+        }
+
+        // ---- P20 PageWhitespaceReview: section pages of a carousel must be
+        // ---- packed so no two adjacent pages that fit together stay separate
+        // ---- (per-tab whitespace review - deterministic greedy pack).
+        if (n.bCarousel && n.Children.size() >= 2)
+        {
+            const int minPages = CarouselMinPages(Nodes, &n);
+            if (minPages < (int)n.Children.size())
+                Out.push_back({ DesignRule::PageWhitespaceReview, n.Name,
+                    "under-packed carousel pages (minimum " + std::to_string(minPages) + " page(s))" });
         }
 
         // ---- P9 SectionTitleFirst ----
@@ -1405,6 +1595,41 @@ inline std::vector<FPViolation> ValidateDesign(const std::vector<FPLayoutNode>& 
         }
         return false;
     };
+
+    // ---- P18 CarouselFallback + P19 ScrollbarReserve: every carousel page
+    // ---- viewport has a fixed height, a nav strip right after it, and a
+    // ---- bottom padding reserve so the page never blocks the nav buttons.
+    for (size_t i = 0; i < Nodes.size(); ++i)
+    {
+        const FPLayoutNode& n = Nodes[i];
+        if (!n.bCarousel) continue;
+        if (n.FixedH <= Eps)
+            Out.push_back({ DesignRule::CarouselFallback, n.Name,
+                "carousel page viewport needs a fixed height" });
+        int myIdx = -1;
+        if (Parent[i] >= 0)
+        {
+            const int pi = Parent[i];
+            for (size_t c = 0; c < Nodes[(size_t)pi].Children.size(); ++c)
+                if (Nodes[(size_t)pi].Children[c] == (int)i) { myIdx = (int)c; break; }
+        }
+        bool bNavAfter = false;
+        if (myIdx >= 0)
+        {
+            const int pi = Parent[i];
+            for (size_t c = (size_t)myIdx + 1; c < Nodes[(size_t)pi].Children.size(); ++c)
+            {
+                const int ci = Nodes[(size_t)pi].Children[c];
+                if (Nodes[(size_t)ci].bCarouselNav) { bNavAfter = true; break; }
+            }
+        }
+        if (!bNavAfter)
+            Out.push_back({ DesignRule::CarouselFallback, n.Name,
+                "carousel page viewport needs a nav strip after it" });
+        if (n.PadB < ScrollReserveBottom - Eps)
+            Out.push_back({ DesignRule::ScrollbarReserve, n.Name,
+                "carousel page viewport needs a bottom padding reserve" });
+    }
 
     // ---- P13 WithinScreenBounds: every visible box inside the root rect ----
     const FPRect& rr = R[(size_t)root];
@@ -1571,6 +1796,289 @@ inline std::vector<FPHotspotRegion> DefaultHotspotRegions()
                     HP(0.89, 0.26) } },
         { "Neck", { HP(0.42, 0.88), HP(0.58, 0.88), HP(0.70, 0.98), HP(0.30, 0.98) } }
     };
+}
+
+// ============================================================================
+// Hotspot → layer mapping (Phase 4 remediation): derives the primary layer
+// tag an anatomical region name should route to, so canvas/parts-strip picks
+// select a real layer instead of unconditionally opening the import wizard.
+// Pure C++17; driven by the preset's overridable HotspotLayerMap (the widget
+// merges: explicit map first, then this derivation). Precedence:
+//   1. Exact match (case-sensitive) — "Mouth" → "Mouth", "Brows" → "Brows".
+//   2. Singular/plural normalize: region+"s" in layers, or region minus one
+//      trailing 's' in layers — "Brow" → "Brows".
+//   3. L/R collapse: a region ending in 'L'/'R' (length >= 3) strips the
+//      suffix and re-runs the plural normalize — "EyeL"/"EyeR" → "Eyes",
+//      "BrowL"/"BrowR" → "Brows". "EyeLash" ends in 'h', never collapses.
+//   4. Prefix: the region name is a prefix of EXACTLY ONE layer tag —
+//      "Eye" → "Eyes", "Brow" → "Brows". Ambiguous prefixes match nothing.
+//   5. No match: nullptr (widget falls back to import-assignment flow).
+// ============================================================================
+inline const char* FPHotspotLayerMatch(const std::vector<std::string>& Layers, const char* RegionName)
+{
+    if (!RegionName || !RegionName[0]) return nullptr;
+    const std::string Region(RegionName);
+    if (Region.empty()) return nullptr;
+
+    // 1. Exact (case-sensitive) — full pass first so a literal layer tag
+    //    beats any derivation regardless of vector order ("Eye" > "Eyes").
+    for (const std::string& L : Layers)
+        if (L == Region) return L.c_str();
+
+    // 2. Singular/plural normalize.
+    for (const std::string& L : Layers)
+    {
+        if (Region.size() + 1 == L.size() && L.compare(0, Region.size(), Region) == 0)
+            return L.c_str();   // region + 's' == layer ("Brow" -> "Brows")
+        if (Region.size() == L.size() + 1 &&
+            Region.compare(0, L.size(), L) == 0 && Region.back() == 's')
+            return L.c_str();   // region minus trailing 's' == layer
+    }
+
+    // 3. L/R collapse: strip the directional suffix, then re-run 1+2 on the base.
+    if (Region.size() >= 3)
+    {
+        const char Last = Region.back();
+        if (Last == 'L' || Last == 'R')
+        {
+            const std::string Base = Region.substr(0, Region.size() - 1);
+            for (const std::string& L : Layers)
+                if (L == Base) return L.c_str();   // exact base wins over plural
+            for (const std::string& L : Layers)
+                if (Base.size() + 1 == L.size() && L.compare(0, Base.size(), Base) == 0)
+                    return L.c_str();   // base + 's' == layer ("EyeL" -> "Eyes")
+        }
+    }
+
+    // 4. Prefix: the region name is a prefix of EXACTLY ONE layer tag.
+    const char* BestPrefix = nullptr;
+    for (const std::string& L : Layers)
+    {
+        if (L.size() > Region.size() && L.compare(0, Region.size(), Region) == 0)
+        {
+            if (BestPrefix) return nullptr;   // ambiguous -> none
+            BestPrefix = L.c_str();
+        }
+    }
+
+    // 5. No match.
+    return BestPrefix;
+}
+
+// ============================================================================
+// Hotspot transform mirror (Phase 2): reproduces the master material's UV
+// chain exactly as built by deploy.py:
+//   TexCoord → Subtract(Pivot) → Add(ArtPos) → Multiply(ArtScale)
+//            → Add(Pivot) → Add(ParallaxOffset) → Rotate(ArtRot) → UVs
+// with ParallaxOffset = 0 in the tool and the Rotator node's built-in
+// CenterX/CenterY = 0.5 (rotation around the UV center, clockwise for a
+// positive angle in degrees, per the official Rotator docs). The widget
+// transforms each hotspot region's outline by its mapped layer's effective
+// transform so the overlay hugs the rendered art; the math suite pins this
+// mirror against the graph structure.
+// ============================================================================
+inline FPHotspotPoint FPHotspotTransformPoint(FPHotspotPoint P,
+    double PosX, double PosY, double ScaleX, double ScaleY, double RotDeg,
+    double PivotX = 0.5, double PivotY = 0.5,
+    double RotCenterX = 0.5, double RotCenterY = 0.5)
+{
+    double X = P.X, Y = P.Y;
+    X = (X - PivotX + PosX) * ScaleX + PivotX;
+    Y = (Y - PivotY + PosY) * ScaleY + PivotY;
+    if (RotDeg != 0.0)
+    {
+        const double A = RotDeg * 3.14159265358979323846 / 180.0;
+        const double C = std::cos(A), S = std::sin(A);
+        const double RX = X - RotCenterX, RY = Y - RotCenterY;
+        X = RotCenterX + RX * C - RY * S;   // clockwise (y-down UV space)
+        Y = RotCenterY + RX * S + RY * C;
+    }
+    return { X, Y };
+}
+
+inline FPHotspotRegion FPHotspotTransformRegion(const FPHotspotRegion& R,
+    double PosX, double PosY, double ScaleX, double ScaleY, double RotDeg,
+    double PivotX = 0.5, double PivotY = 0.5)
+{
+    FPHotspotRegion Out(R.Name);
+    for (const FPHotspotPoint& P : R.Outer)
+        Out.Outer.push_back(FPHotspotTransformPoint(P, PosX, PosY, ScaleX, ScaleY, RotDeg, PivotX, PivotY));
+    for (const std::vector<FPHotspotPoint>& H : R.Holes)
+    {
+        std::vector<FPHotspotPoint> HOut;
+        for (const FPHotspotPoint& P : H)
+            HOut.push_back(FPHotspotTransformPoint(P, PosX, PosY, ScaleX, ScaleY, RotDeg, PivotX, PivotY));
+        Out.Holes.push_back(std::move(HOut));
+    }
+    return Out;
+}
+
+// ============================================================================
+// Pin drift mirror (Phase 3): the editor's sync-drift indicator counts how
+// many of the OTHER view states carry a canonical transform that differs
+// from the active view's for the selected layer. Pure C++17 mirror of
+// RefreshSyncDriftIndicator so the math is pinned by the test suite.
+// ============================================================================
+struct FPMirrorTransform
+{
+    double PosX = 0, PosY = 0, ScaleX = 1, ScaleY = 1, Rot = 0;
+};
+
+inline bool FPMirrorTransformEqual(const FPMirrorTransform& A, const FPMirrorTransform& B)
+{
+    // Exact equality — mirrors the widget's FVector2D != comparison.
+    return A.PosX == B.PosX && A.PosY == B.PosY
+        && A.ScaleX == B.ScaleX && A.ScaleY == B.ScaleY && A.Rot == B.Rot;
+}
+
+// Drift count: views (excluding ActiveIndex) whose transform differs from
+// the active view's. Out-of-range ActiveIndex -> 0 (widget guards too).
+inline int FPPinDriftCount(const std::vector<FPMirrorTransform>& Views, int ActiveIndex)
+{
+    if (Views.empty() || ActiveIndex < 0 || ActiveIndex >= (int)Views.size()) return 0;
+    int Drifted = 0;
+    for (size_t i = 0; i < Views.size(); ++i)
+        if ((int)i != ActiveIndex && !FPMirrorTransformEqual(Views[i], Views[ActiveIndex]))
+            ++Drifted;
+    return Drifted;
+}
+
+// ============================================================================
+// Rail width clamp mirror (Phase 4): the Debug rail's "Rail Width" slider
+// lives in [RailWidthMin, RailWidthMax] with RailWidth as the default.
+// Mirrors the widget's FMath::Clamp + NaN guard so the range is pinned by
+// the test suite.
+// ============================================================================
+inline double ClampRailWidth(double W)
+{
+    if (W != W) return RailWidth;                     // NaN -> default
+    if (W < RailWidthMin) return RailWidthMin;
+    if (W > RailWidthMax) return RailWidthMax;
+    return W;
+}
+
+// ============================================================================
+// Accessibility mirrors (Phase 4b): the UI remediation recommendations.
+// Every helper below is pure C++17 and mirrored 1:1 by the widget code:
+//   - RailSectionTitles()   - canonical per-rail section title registry that
+//                             drives the rail chips + cross-rail search jump.
+//                             The widget registers the same titles in the same
+//                             order (Panels.cpp RegisterRailSection call sites).
+//   - FindRailSectionByTitle() - case-insensitive substring search across the
+//                             registry in rail order; first match wins.
+//                             Mirrors UFaceParallaxEditorWidget::OnRailSearchCommitted.
+//   - ConfigSummary()       - "K of 8 on" summary line for the collapsed
+//                             Config disclosure (Mirrors RefreshConfigCheckboxes).
+//   - VisemeSummary()       - "N viseme rows" summary for the collapsed Viseme
+//                             grid disclosure (Mirrors RebuildVisemeGrid).
+//   - RailWidthAfterDrag()  - drag-resize math: start width + pixel delta,
+//                             rounded and clamped (Mirrors SFaceRailResizer).
+//   - QuickActionLabels()   - persistent quick-actions bar button set shown
+//                             above the rail switcher on every rail tab.
+// ============================================================================
+inline const std::vector<std::vector<std::string>>& RailSectionTitles()
+{
+    static const std::vector<std::vector<std::string>> Titles = {
+        /* rail 0 Layers */ { "Layers", "Status Detail" },
+        /* rail 1 Transform */ { "Quick Actions", "Cross-View Transform" },
+        /* rail 2 Camera */   { "Camera Follow", "Camera", "Blend Preview" },
+        /* rail 3 Debug */    { "Outline -> Depth", "Import", "Config",
+                                "Edge Analysis", "Depth Debug",
+                                "Hull Review (click thumb = jump)",
+                                "Viseme Frames (click filled cell = play)",
+                                "Problems (click row = jump)" },
+        /* rail 4 Advanced */ { "All Layers (current state)", "Param Reference",
+                                "Param Bindings (state + layer)",
+                                "Nested Art / Pins" }
+    };
+    return Titles;
+}
+
+inline int FindRailSectionByTitle(const std::string& Query, int& OutRail, int& OutIdx)
+{
+    if (Query.empty()) return -1;             // widget guards empty queries too
+    const std::vector<std::vector<std::string>>& Titles = RailSectionTitles();
+    std::string Q = Query;
+    for (size_t i = 0; i < Q.size(); ++i)
+        Q[i] = (char)std::tolower((unsigned char)Q[i]);
+    for (size_t Ri = 0; Ri < Titles.size(); ++Ri)
+    {
+        for (size_t Si = 0; Si < Titles[Ri].size(); ++Si)
+        {
+            std::string T = Titles[Ri][Si];
+            for (size_t c = 0; c < T.size(); ++c)
+                T[c] = (char)std::tolower((unsigned char)T[c]);
+            if (T.find(Q) != std::string::npos)
+            {
+                OutRail = (int)Ri;
+                OutIdx = (int)Si;
+                return 0;
+            }
+        }
+    }
+    return -1;
+}
+
+inline std::string ConfigSummary(int NumEnabled)
+{
+    return std::string(std::to_string(NumEnabled)) + " of 8 on";
+}
+
+inline std::string VisemeSummary(int NumRows)
+{
+    if (NumRows <= 0) return "No viseme frames";
+    return std::string(std::to_string(NumRows)) + " viseme rows";
+}
+
+inline double RailWidthAfterDrag(double StartWidth, double DeltaPx)
+{
+    return ClampRailWidth(std::round(StartWidth + DeltaPx));
+}
+
+inline const std::vector<std::string>& QuickActionLabels()
+{
+    static const std::vector<std::string> Labels = {
+        "Import Art...", "Sync All -> All", "Auto-Fit All", "Clear All Overrides"
+    };
+    return Labels;
+}
+
+// ============================================================================
+// Preview mode mirrors (Phase 4b): the tool's two preview modes over the same
+// four live animation systems (blink / expression / viseme / orbit).
+//   - Cycle Preview (Phase 2) sequences them ONE AT A TIME, 2s per phase,
+//     in the pinned order below (mirror of StartCyclePreview/NativeTick).
+//   - Live Preview (Phase 4b) enables ALL FOUR AT ONCE — the assembled
+//     result check — with a 2.5s viseme re-trigger cadence and an 8s orbit
+//     sweep period (mirror of StartLivePreview/NativeTick).
+// ============================================================================
+inline const std::vector<std::string>& PreviewSystems()
+{
+    static const std::vector<std::string> S = { "blink", "expression", "viseme", "orbit" };
+    return S;
+}
+
+inline double PreviewCyclePhaseDuration() { return 2.0; }
+
+inline double LivePreviewVisemeCadence() { return 2.5; }
+
+inline double LivePreviewOrbitPeriod() { return 8.0; }
+
+// Mode -> per-system enable flags. "cycle" at phase P is one-hot (only the
+// P-th system runs); "live" enables every system simultaneously.
+inline std::vector<bool> PreviewModeSystemFlags(const std::string& Mode, int Phase = 0)
+{
+    const int N = (int)PreviewSystems().size();
+    std::vector<bool> F((size_t)N, false);
+    if (Mode == "live")
+    {
+        for (int i = 0; i < N; ++i) F[(size_t)i] = true;
+    }
+    else if (Phase >= 0 && Phase < N)
+    {
+        F[(size_t)Phase] = true;
+    }
+    return F;
 }
 
 } // namespace FPLayout

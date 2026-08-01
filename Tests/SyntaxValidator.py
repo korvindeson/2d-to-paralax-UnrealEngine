@@ -66,6 +66,31 @@ class SyntaxValidator:
         #    CheckAddress). The hotspot polygon close-loop hit this in
         #    DrawLoop and crashed the editor during WBP thumbnail render.
         self._check_self_add(fp, text)
+        # 8. UI testing procedures (P17/P18/P19): no VERTICAL scroll boxes in
+        #    the editor widget. Content that fits is packed without a scroll
+        #    bar; dynamic row lists flip through carousel pages; the 8px
+        #    reserve (ScrollReserveBottom) keeps pages clear of the buttons
+        #    under them. Horizontal scroll boxes are fine (wide button rows).
+        if fp.name in ('FaceParallaxEditorWidgetUI.cpp', 'FaceParallaxEditorWidgetPanels.cpp',
+                       'FaceParallaxEditorWidgetInteractions.cpp'):
+            self._check_no_vertical_scroll(fp, text)
+
+    def _check_no_vertical_scroll(self, fp: Path, text: str):
+        # An SScrollBox without an explicit horizontal orientation scrolls
+        # vertically (SScrollBox defaults to vertical).
+        for m in re.finditer(r'SNew\s*\(\s*SScrollBox\s*\)', text):
+            start = m.start()
+            pre = text[m.end():]
+            cut = pre.find('[')
+            if cut >= 0:
+                pre = pre[:cut]
+            om = re.search(r'\.Orientation\s*\(\s*Orient_Horizontal\s*\)', pre)
+            if om:
+                continue
+            line = text.count('\n', 0, start) + 1
+            self._error(fp, f"line {line}: vertical SScrollBox (P17: pack "
+                             f"content to fit; P18: carousel pages; P19: 8px "
+                             f"reserve - never a vertical scroll bar)")
 
     def _check_self_add(self, fp: Path, text: str):
         for m in re.finditer(r'\b(\w+)\s*(?:\.|->)\s*(?:Add|AddLast|Emplace)\s*\(\s*(\w+)\s*\[', text):

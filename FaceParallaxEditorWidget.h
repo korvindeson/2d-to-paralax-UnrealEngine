@@ -10,6 +10,7 @@
 #include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Input/SEditableTextBox.h"
 #include "Widgets/Input/SSearchBox.h"
+#include "Widgets/Input/SSpinBox.h"
 #include "Widgets/Input/SComboBox.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Layout/SBox.h"
@@ -17,6 +18,7 @@
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SGridPanel.h"
 #include "Widgets/Layout/SWidgetSwitcher.h"
+#include "Widgets/Layout/SWrapBox.h"
 #include "Widgets/SBoxPanel.h"
 #include "FaceParallaxTypes.h"
 #include "FaceParallaxEditorWidget.generated.h"
@@ -24,6 +26,17 @@
 class AFaceParallaxPreviewActor;
 class UFaceParallaxPreset;
 class UFaceParallaxComponent;
+
+// Pin marker painted by the canvas gizmo (Phase 3): one per nested element
+// of the selected layer. Color coding: pinned+rotation = cyan, pinned only
+// = amber, unpinned+jiggle = purple ring, unpinned plain = red ring.
+struct FFacePinMarker
+{
+    FVector2D UV = FVector2D::ZeroVector;
+    bool bPinned = false;
+    bool bRotation = false;
+    bool bJiggle = false;
+};
 
 UCLASS(BlueprintType, Blueprintable)
 class UFaceParallaxEditorWidget : public UUserWidget
@@ -858,6 +871,18 @@ public:
     void SetRenderTarget(class UTextureRenderTarget2D* RT);
 
     void RefreshCanvasPreview();
+    void RefreshHotspotRegions();      // per-view region outlines (Phase 2): layer transforms applied
+
+    // ===== CYCLE PREVIEW (Phase 2) =====
+    void StartCyclePreview();          // blink 2s -> expression 2s -> viseme 2s -> orbit sweep 2s
+    void StopCyclePreview();
+
+    // ===== LIVE PREVIEW (Phase 4b) =====
+    // Combined preview: blink + expression + viseme + orbit run TOGETHER so
+    // the assembled result can be checked in one go (cycle mode runs the same
+    // four systems sequentially, one at a time).
+    void StartLivePreview();
+    void StopLivePreview();
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Editor|UI",
         meta = (DisplayName = "Preview Render Target"))
@@ -927,7 +952,12 @@ public:
 
     // ===== PHASE C: IMPORT =====
     void OpenImportFolderWizard(const FString& PreselectPart = FString());
-    void HandleHotspotClick(const FString& RegionName);   // Phase 4: canvas part pick
+    void HandleHotspotClick(const FString& RegionName);   // canvas/parts-strip pick: select mapped layer + open import wizard
+    void ImportHotspotRegion(const FString& RegionName);  // Alt+click path: open the import wizard preselected on that part
+    void RebuildPartsStrip();                             // 13 anatomical chips under the canvas
+    void OpenHotspotRemapMenu(const FString& RegionName, const FPointerEvent& Ev); // right-click: map region -> layer
+    void RemapHotspotLayer(const FString& RegionName, FName LayerTag);             // writes preset HotspotLayerMap
+    FName ResolveHotspotLayer(const FString& RegionName) const; // explicit map first, then derived match
     void RefreshSyncDriftIndicator();
     double LastSyncTimestamp = 0.0;
     int32 LastSyncedViewCount = 0;
@@ -939,6 +969,7 @@ public:
     void RebuildHistogramBars();
     void RefreshHullThumbnails();
     void RefreshPinControls();
+    void GetLayerPinMarkers(TArray<FFacePinMarker>& Out);   // Phase 3: all nested-element markers for the gizmo
     static void BuildLumaHistogram(const TArray<float>& Luma, int32 Grid, TArray<float>& OutBins);
     static float EdgeDensity(const TArray<float>& Luma, int32 Grid, float Threshold);
 
@@ -952,6 +983,18 @@ public:
     static void AppendSortedUnique(TArray<FString>& Out, const FString& Line);
     static bool VisemeFramesMismatch(int32 A, int32 B);
     static float PinSliderNorm(float Value, float Min, float Max);
+
+protected:
+    // Cycle Preview state machine: drives blink/expression/viseme/orbit
+    // phases from widget tick while the tool tab is visible.
+    virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
+    bool bCyclePreviewActive = false;
+    int32 CyclePhase = -1;
+    float CyclePhaseTime = 0.0f;
+    // Live Preview state: all four systems concurrent (Phase 4b).
+    bool bLivePreviewActive = false;
+    float LivePreviewTime = 0.0f;
+    float CaptureCooldown = 0.0f;      // throttle for periodic scene-capture refresh (NativeTick)
 
 private:
     EFaceAngleState ActiveViewState = EFaceAngleState::Front;
@@ -1001,12 +1044,32 @@ private:
     TSharedPtr<STextBlock> TextStatusDetail;
     TSharedPtr<STextBlock> TextLayerName;
     TSharedPtr<SVerticalBox> LayerPanelBox;
+    // Carousel state (P17/P18): dynamic row lists flip through fixed-height
+    // pages; the page index is clamped by each refresh on the real page count.
+    int32 LayerPageIndex = 0;
+    int32 PropsPageIndex = 0;
+    int32 IssuesPageIndex = 0;
+    int32 CrossLayerPageIndex = 0;
+    TSharedPtr<STextBlock> LayerPageLabel;
+    TSharedPtr<STextBlock> PropsPageLabel;
+    TSharedPtr<STextBlock> IssuesPageLabel;
+    TSharedPtr<STextBlock> CrossLayerPageLabel;
+    TSharedPtr<SVerticalBox> PropsPageBox;
+    TArray<TSharedRef<SWidget>> PropsPages;         // right-pane carousel pages (P18)
+    void ShowPropsPage(int32 Page);                 // P18: flips the right-pane page
     TSharedPtr<SVerticalBox> TimelineBox;
     TSharedPtr<SVerticalBox> VisemeGridBox;
     TSharedPtr<SVerticalBox> NestedOutlinerBox;
     TSharedPtr<SVerticalBox> ParamTableBox;
     TSharedPtr<SVerticalBox> ProblemsPanelBox;
-    TSharedPtr<SScrollBox> LayerScrollBox;
+    TSharedPtr<SSearchBox> ProblemsSearchBox;       // Phase 4: filter issues by text
+    TSharedPtr<STextBlock> TextProblemsSummary;     // Phase 4: issues summary line
+    FString ProblemsFilter;                         // Phase 4: active search filter
+    FString ProblemsSummaryText;                    // Phase 4: accordion header summary
+    FLinearColor ProblemsSummaryColor = FLinearColor(0.6f, 0.6f, 0.6f);
+    void RefreshProblemsSummary();                  // Phase 4: sets Problems section header text
+    float RailWidthPx = 180.0f;                     // Phase 4: rail width slider (180-360)
+    TSharedPtr<SSpinBox<float>> RailWidthSpin;      // Phase 4: rail width control
     TSharedPtr<SScrollBox> TimelineScrollBox;
     TSharedPtr<SComboBox<TWeakObjectPtr<AFaceParallaxPreviewActor>>> ActorSelector;
     TSharedPtr<STextBlock> TextFrameCounts;
@@ -1094,11 +1157,17 @@ private:
     class SFaceLayerGizmo;
     TSharedPtr<SFaceLayerGizmo> GizmoWidget;        // canvas transform gizmo (Phase B)
     class SFaceAccordion;
-    TSharedPtr<SFaceAccordion> PropsAccordion;      // right pane: 4 collapsible sections (P16)
     TSharedPtr<SFaceAccordion> DebugAccordion;      // Debug rail: 8 collapsible sections (P16)
     TSharedPtr<SFaceAccordion> AdvancedAccordion;   // Advanced rail: 4 collapsible sections (P16)
+    class SFaceDisclosure;
+    TSharedPtr<SFaceDisclosure> ConfigDisclosure;   // Config checks progressive disclosure (Phase 4b)
+    TSharedPtr<SFaceDisclosure> VisemeDisclosure;   // Viseme grid progressive disclosure (Phase 4b)
+    class SFaceRailResizer;
+    TSharedPtr<SFaceRailResizer> RailResizer;       // drag-resize handle rail/canvas (Phase 4b)
     class SFaceHotspotLayer;
     TSharedPtr<SFaceHotspotLayer> HotspotLayer;     // canvas overlay: spatial part pick (Phase 4)
+    class SFaceCarouselNav;                         // P18: prev/page/next strip under a carousel viewport
+    TSharedPtr<SWrapBox> PartsStrip;                // canvas strip: 13 anatomical part chips (Phase 1)
     bool bStatePickMode = false;                    // state-strip pick mode: tab clicks toggle sync destinations
     int32 DisplayMode = 0;                          // 0 Textured 1 Depth 2 Wireframe 3 Split
     TArray<TSharedPtr<SImage>> ViewTabDots;         // per-state status dots in view strip
@@ -1111,6 +1180,8 @@ private:
     TArray<TSharedPtr<FString>> CopyFromOptions;    // Phase B: copy-from dropdown options
     TSharedPtr<FString> CopyFromSelection;          // Phase B: selected source view
     TSharedPtr<STextBlock> TextSyncDrift;           // Phase C: last-synced indicator
+    bool bShowPins = false;                         // Phase 3: paint all nested-element pin markers on the gizmo
+    TSharedPtr<SCheckBox> CheckShowPins;            // Phase 3: Show Pins toggle on the canvas mode row
 
     // ===== PHASE D: DEBUG VIEW =====
     TSharedPtr<SVerticalBox> HistogramBox;          // 16 luminance bars
@@ -1167,7 +1238,6 @@ private:
 
     // ===== CROSS-LAYER OVERLAY =====
     TSharedPtr<SVerticalBox> CrossLayerBox;
-    TSharedPtr<SScrollBox> CrossLayerScroll;
     TSharedPtr<STextBlock> TextCrossLayer;
 
     // ===== REENTRANCY GUARD =====
@@ -1186,6 +1256,36 @@ private:
     TSharedPtr<SSearchBox> SearchBox;
     FString SearchFilter;
     TMap<TWeakPtr<SWidget>, FString> SectionSectionTitles;
+
+    // ===== PHASE 4b: RAIL ACCESSIBILITY (chips / jump / search / resizer) =====
+    struct FFaceRailSection
+    {
+        FString Title;
+        TSharedRef<SWidget> Target;                 // header widget to scroll into view
+        TSharedPtr<SFaceAccordion> Accordion;       // set for accordion sections (expand first)
+        int32 AccordionIdx = -1;
+        FFaceRailSection(const FString& InTitle, TSharedRef<SWidget> InTarget)
+            : Title(InTitle), Target(InTarget) {}
+    };
+    TArray<TArray<FFaceRailSection>> RailSections;  // per-rail registry (5 rails)
+    TArray<TSharedPtr<SHorizontalBox>> RailChipsRows; // per-rail chip rows (jump chips)
+    int32 ActiveChipRail = -1;                      // last jumped chip highlight
+    int32 ActiveChipIdx = -1;
+    int32 PendingJumpRail = -1;                     // jump queued across a rail switch
+    FString PendingJumpTitle;
+    TSharedPtr<SBox> RailWidthBox;                  // rail SBox (live resize target)
+
+    void RegisterRailSection(int32 RailIdx, const FString& Title, TSharedRef<SWidget> Target,
+        const TSharedPtr<SFaceAccordion>& Accordion = TSharedPtr<SFaceAccordion>(), int32 AccordionIdx = -1);
+    void RegisterAccordionSections(int32 RailIdx, const TSharedPtr<SFaceAccordion>& Accordion);
+    void BuildRailSectionChips();
+    void JumpToRailSection(int32 RailIdx, int32 SectionIdx);
+    void ConsumePendingJump();
+    void OnRailSearchCommitted(const FString& Query);
+    void UpdateDisclosureSummaries();
+    float GetRailWidthPx() const;
+    void SetRailWidthLive(float W);
+    void ApplyRailWidthDelta(float DeltaPx);
 
     // ===== PARAM REFERENCE =====
     TSharedPtr<STextBlock> TextParamRefResults;
@@ -1234,6 +1334,4 @@ private:
     void BuildPanelAdvancedRail();
     void BuildPanelTimeline(const TSharedRef<SVerticalBox>& Root);
     void BuildPanelBottomBar(const TSharedRef<SVerticalBox>& Root);
-
-    TSharedPtr<SScrollBox> PropScroll;
 };

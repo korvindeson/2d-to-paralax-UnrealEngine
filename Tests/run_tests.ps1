@@ -40,6 +40,187 @@ if (-not $EngineBatchDir) {
     }
 }
 
+# 1. Scaffold check: the sample project stub (game module, plugin descriptor,
+# build rules) is regenerated from embedded templates whenever it is missing,
+# so the toolchain is self-sufficient - the stub is repo contract, not ad hoc
+# files forced into SAMPLES. Regeneration only happens when files are missing;
+# existing files are never overwritten.
+$scaffoldProjRoot = Join-Path $root "SAMPLES\MyProject"
+$scaffoldPlugin = Join-Path $scaffoldProjRoot "Plugins\FaceParallax"
+$scaffoldGameSrc = Join-Path $scaffoldProjRoot "Source\MyProject"
+
+$scaffoldTemplates = @{
+    (Join-Path $scaffoldGameSrc "MyProject.Target.cs") = @'
+using UnrealBuildTool;
+using System.Collections.Generic;
+
+public class MyProjectTarget : TargetRules
+{
+	public MyProjectTarget(TargetInfo Target) : base(Target)
+	{
+		Type = TargetType.Game;
+		DefaultBuildSettings = BuildSettingsVersion.V7;
+		IncludeOrderVersion = EngineIncludeOrderVersion.Unreal5_8;
+		ExtraModuleNames.Add("MyProject");
+	}
+}
+'@
+    (Join-Path $scaffoldGameSrc "MyProjectEditor.Target.cs") = @'
+using UnrealBuildTool;
+using System.Collections.Generic;
+
+public class MyProjectEditorTarget : TargetRules
+{
+	public MyProjectEditorTarget(TargetInfo Target) : base(Target)
+	{
+		Type = TargetType.Editor;
+		DefaultBuildSettings = BuildSettingsVersion.V7;
+		IncludeOrderVersion = EngineIncludeOrderVersion.Unreal5_8;
+		ExtraModuleNames.Add("MyProject");
+	}
+}
+'@
+    (Join-Path $scaffoldGameSrc "MyProject.Build.cs") = @'
+using UnrealBuildTool;
+
+public class MyProject : ModuleRules
+{
+	public MyProject(ReadOnlyTargetRules Target) : base(Target)
+	{
+		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
+		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore" });
+	}
+}
+'@
+    (Join-Path $scaffoldGameSrc "MyProject.cpp") = @'
+#include "Modules/ModuleManager.h"
+IMPLEMENT_PRIMARY_GAME_MODULE(FDefaultModuleImpl, MyProject, "MyProject");
+'@
+    (Join-Path $scaffoldPlugin "FaceParallax.uplugin") = @'
+{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "Face Parallax",
+	"Description": "Face parallax face-layer system - runtime component, preset, preview actor and docked-tab editor.",
+	"Category": "Rendering",
+	"CanContainContent": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "FaceParallax",
+			"Type": "Runtime",
+			"LoadingPhase": "PostDefault"
+		},
+		{
+			"Name": "FaceParallaxEditor",
+			"Type": "Editor",
+			"LoadingPhase": "PostDefault"
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "EditorScriptingUtilities",
+			"Enabled": true,
+			"TargetAllowList": [ "Editor" ]
+		},
+		{
+			"Name": "ProceduralMeshComponent",
+			"Enabled": true
+		}
+	]
+}
+'@
+    (Join-Path $scaffoldPlugin "Source\FaceParallax\FaceParallax.Build.cs") = @'
+using UnrealBuildTool;
+
+public class FaceParallax : ModuleRules
+{
+	public FaceParallax(ReadOnlyTargetRules Target) : base(Target)
+	{
+		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
+		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "ProceduralMeshComponent" });
+	}
+}
+'@
+    (Join-Path $scaffoldPlugin "Source\FaceParallaxEditor\FaceParallaxEditor.Build.cs") = @'
+using UnrealBuildTool;
+
+public class FaceParallaxEditor : ModuleRules
+{
+	public FaceParallaxEditor(ReadOnlyTargetRules Target) : base(Target)
+	{
+		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
+		PrivateDependencyModuleNames.AddRange(new string[] {
+			"Core", "CoreUObject", "Engine", "InputCore",
+			"UnrealEd", "Slate", "SlateCore", "UMG", "UMGEditor",
+			"ToolMenus", "LevelEditor", "ContentBrowser", "AssetTools", "AssetRegistry",
+			"EditorScriptingUtilities", "EditorSubsystem", "WorkspaceMenuStructure",
+			"FaceParallax", "ProceduralMeshComponent"
+		});
+	}
+}
+'@
+}
+
+$scaffoldMissing = @()
+foreach ($f in $scaffoldTemplates.Keys) {
+    $needsWrite = -not (Test-Path -LiteralPath $f)
+    if (-not $needsWrite) {
+        $existingContent = (Get-Content -LiteralPath $f -Raw).TrimEnd("`r", "`n")
+        $tplContent = ([string]$scaffoldTemplates[$f]).TrimEnd("`r", "`n")
+        if ($existingContent -ne $tplContent) { $needsWrite = $true }
+    }
+    if ($needsWrite) { $scaffoldMissing += $f }
+}
+# The four plugin source dirs must exist for the sync step to copy into.
+$scaffoldDirs = @(
+    (Join-Path $scaffoldPlugin "Source\FaceParallax\Public"),
+    (Join-Path $scaffoldPlugin "Source\FaceParallax\Private"),
+    (Join-Path $scaffoldPlugin "Source\FaceParallaxEditor\Public"),
+    (Join-Path $scaffoldPlugin "Source\FaceParallaxEditor\Private")
+)
+foreach ($d in $scaffoldDirs) {
+    if (-not (Test-Path -LiteralPath $d)) {
+        New-Item -ItemType Directory -Path $d -Force | Out-Null
+        Write-Host "  Recreated dir $d"
+    }
+}
+if ($scaffoldMissing.Count -gt 0) {
+    Write-Host "--- SAMPLES Scaffold ---" -ForegroundColor Yellow
+    Write-Host "  Regenerating missing sample-project stub:" -ForegroundColor Cyan
+    foreach ($f in $scaffoldMissing) {
+        $dir = Split-Path -Parent $f
+        if (-not (Test-Path -LiteralPath $dir)) {
+            New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        }
+        Set-Content -LiteralPath $f -Value $scaffoldTemplates[$f] -Encoding UTF8
+        Write-Host "  Recreated $f"
+    }
+    # Enable the plugin in the project descriptor (idempotent).
+    $upPath = Join-Path $scaffoldProjRoot "MyProject.uproject"
+    if (Test-Path -LiteralPath $upPath) {
+        try {
+            $uproj = Get-Content -LiteralPath $upPath -Raw | ConvertFrom-Json
+            $known = @($uproj.Plugins | ForEach-Object { $_.Name })
+            if ($known -notcontains "FaceParallax") {
+                $entry = [pscustomobject]@{ Name = "FaceParallax"; Enabled = $true }
+                if (-not $uproj.Plugins) { $uproj.Plugins = @() }
+                $uproj.Plugins += $entry
+                $uproj | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $upPath -Encoding UTF8
+                Write-Host "  Enabled FaceParallax plugin in MyProject.uproject"
+            }
+        } catch {
+            Write-Host "[FAIL] Could not update MyProject.uproject: $_" -ForegroundColor Red
+            $failed = $true
+        }
+    } else {
+        Write-Host "[FAIL] MyProject.uproject missing at $upPath" -ForegroundColor Red
+        $failed = $true
+    }
+    Write-Host ""
+}
+
 # 1a. Sync SAMPLES before UE build (required for compilation fidelity)
 $doSync = $SyncSamples -or $IncludeUEBuild
 if ($doSync) {
@@ -89,7 +270,11 @@ if ($doSync) {
         }
         Write-Host "SAMPLES SYNC COMPLETED" -ForegroundColor Green
     } else {
-        Write-Host "Plugin source dirs not found, skipping" -ForegroundColor DarkYellow
+        Write-Host "[FAIL] Plugin source dirs missing in SAMPLES - project scaffolding is incomplete:" -ForegroundColor Red
+        Write-Host "       $runtimePub" -ForegroundColor Red
+        Write-Host "       $editorPrv" -ForegroundColor Red
+        Write-Host "       Recreate the project stub (Source\MyProject\*.cs, Plugins\FaceParallax\*.uplugin + Build.cs)" -ForegroundColor Red
+        $failed = $true
     }
     Write-Host ""
 }

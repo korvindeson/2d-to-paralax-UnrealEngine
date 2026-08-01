@@ -491,7 +491,8 @@ void UFaceParallaxPreset::BatchSetTexturesAllLayers(EFaceAngleState State, const
     }
 }
 
-void UFaceParallaxPreset::SyncLayerNestedToAllViews(FName LayerTag, FName ElementName, const FFaceNestedArt& Element)
+void UFaceParallaxPreset::SyncLayerNestedToAllViews(FName LayerTag, FName ElementName,
+    const FFaceNestedArt& Element, bool bSyncPins)
 {
     FFaceViewStateLayerSet* FrontSet = ViewAssignments.Find(EFaceAngleState::Front);
     if (!FrontSet || !FrontSet->Layers.Contains(LayerTag))
@@ -517,13 +518,24 @@ void UFaceParallaxPreset::SyncLayerNestedToAllViews(FName LayerTag, FName Elemen
             }
         }
 
+        FFaceNestedArt Copied = Element;
+        // Phase 5: without pin sync, each view keeps its own pin (the source
+        // element's art/jiggle/pivot still propagate); new elements get a
+        // fresh unpinned pin so the source pin never leaks across views.
+        if (!bSyncPins)
+        {
+            Copied.Pin3D = (FoundIndex >= 0)
+                ? Slot->NestedElements[FoundIndex].Pin3D
+                : FFacePin3D();
+        }
+
         if (FoundIndex >= 0)
         {
-            Slot->NestedElements[FoundIndex] = Element;
+            Slot->NestedElements[FoundIndex] = Copied;
         }
         else
         {
-            Slot->NestedElements.Add(Element);
+            Slot->NestedElements.Add(Copied);
         }
     }
 }

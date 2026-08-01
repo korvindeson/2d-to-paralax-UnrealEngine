@@ -6264,7 +6264,7 @@ void TestPhaseHUIDesign() {
 
     // Positive contract: the real manifest must be clean.
     const std::vector<FPLayout::FPLayoutNode> Spec = FPLayout::BuildSpec();
-    TEST("Phase H: manifest builds (424 nodes)", Spec.size() == 424u);
+    TEST("Phase H: manifest builds (425 nodes)", Spec.size() == 425u);
     TEST("Phase H: every node reachable from root", FPLayout::CountReachable(Spec) == (int)Spec.size());
     const int RootIdx = FPLayout::FindRootIndex(Spec);
     TEST("Phase H: single root is the last node", RootIdx == (int)Spec.size() - 1);
@@ -6272,7 +6272,7 @@ void TestPhaseHUIDesign() {
     TEST("Phase H: root rect matches design (1001x858)",
         Rects[(size_t)RootIdx].W == 1001.0 && Rects[(size_t)RootIdx].H == 858.0);
     const std::vector<FPLayout::FPViolation> V = FPLayout::ValidateDesign(Spec);
-    TEST("Phase H: zero design violations (P1..P13)", V.empty());
+    TEST("Phase H: zero design violations (P1..P19)", V.empty());
 
     // Scroll-viewport contract: the 5 rails are fixed 180x560 clipped viewports,
     // so their content can never overlap other panels or leave the screen.
@@ -6479,11 +6479,12 @@ void TestPhaseHUIDesign() {
             !Violates(B.N, FPLayout::DesignRule::DensityOverflow));
     }
     {
-        // Real manifest: the dense rails must be accordion-marked.
+        // Real manifest: the dense rails must be accordion-marked. The props
+        // sections were converted to carousel pages (P18) - one visible at a
+        // time - so they no longer need accordion collapse.
         const char* DebugSections[] = { "Sec-Import", "Sec-Config", "Sec-EdgeAnalysis",
             "Sec-OutlineDepth", "Sec-DepthDebug", "Sec-HullReview", "Sec-VisemeGrid", "Sec-Problems" };
         const char* AdvancedSections[] = { "Sec-AllLayers", "Sec-ParamRef", "Sec-ParamTable", "Sec-NestedPins" };
-        const char* PropsSections[] = { "Sec-Transform", "Sec-ViewOverride", "Sec-SyncToViews", "Sec-Alignment" };
         bool bAccordionOk = true;
         auto CheckAcc = [&](const char* nm)
         {
@@ -6494,8 +6495,7 @@ void TestPhaseHUIDesign() {
         };
         for (const char* nm : DebugSections) CheckAcc(nm);
         for (const char* nm : AdvancedSections) CheckAcc(nm);
-        for (const char* nm : PropsSections) CheckAcc(nm);
-        TEST("Phase H: Debug/Advanced/Props sections are accordions (P16)", bAccordionOk);
+        TEST("Phase H: Debug/Advanced sections are accordions (P16)", bAccordionOk);
     }
     {
         // State-strip pick button replaces the old props-pane sync picker row.
@@ -6564,6 +6564,270 @@ void TestPhaseHUIDesign() {
                 }
         }
         TEST("Phase H: viewport sections auto-stack without overlap", bStacked);
+    }
+}
+
+// --- Phase I: UI testing procedures (fit-first / carousel / reserve) ---
+// Mirrors the three-step procedure: (1) pack content to fit without a
+// vertical scroll bar (P17), (2) page-flip carousel for dynamic row lists
+// (P18), (3) keep a bottom padding reserve so pages never block buttons
+// (P19).
+void TestPhaseIUITesting() {
+    printf("\n=== PhaseIUITesting ===\n");
+
+    // --- Procedure constants (mirrored from the widget) ---
+    TEST("UI: CarouselRowsPerPage=8", FPLayout::CarouselRowsPerPage == 8);
+    TEST("UI: CarouselRowHeight=22", FPLayout::CarouselRowHeight == 22.0);
+    TEST("UI: CarouselViewportH=184 (176 content + 8 reserve)",
+        FPLayout::CarouselViewportH == 184.0);
+    TEST("UI: CarouselNavHeight=22", FPLayout::CarouselNavHeight == 22.0);
+    TEST("UI: ScrollReserveBottom=8", FPLayout::ScrollReserveBottom == 8.0);
+
+    // --- Step 2 page math ---
+    TEST("UI: page count 0 rows = 1 page", FPLayout::CarouselPageCount(0) == 1);
+    TEST("UI: page count 1 row = 1 page", FPLayout::CarouselPageCount(1) == 1);
+    TEST("UI: page count 8 rows = 1 page", FPLayout::CarouselPageCount(8) == 1);
+    TEST("UI: page count 9 rows = 2 pages", FPLayout::CarouselPageCount(9) == 2);
+    TEST("UI: page count 40 rows = 5 pages", FPLayout::CarouselPageCount(40) == 5);
+    TEST("UI: page clamp negative -> 0", FPLayout::ClampCarouselPage(-1, 3) == 0);
+    TEST("UI: page clamp beyond end -> last", FPLayout::ClampCarouselPage(5, 3) == 2);
+    TEST("UI: page clamp single page -> 0", FPLayout::ClampCarouselPage(2, 1) == 0);
+
+    // Page slice bounds: page p shows rows [p*8, min((p+1)*8, N)).
+    {
+        const int N = 40, P = 4;
+        const int Start = P * FPLayout::CarouselRowsPerPage;
+        const int End = std::min(Start + FPLayout::CarouselRowsPerPage, N);
+        TEST("UI: page 4 of 40 rows spans 32..39", Start == 32 && End == 40);
+    }
+    {
+        const int N = 17, P = 1;
+        const int Start = P * FPLayout::CarouselRowsPerPage;
+        const int End = std::min(Start + FPLayout::CarouselRowsPerPage, N);
+        TEST("UI: last page of 17 rows spans 8..15", Start == 8 && End == 16);
+    }
+
+    // --- Step 1 fit-first: the real rails pack without vertical scroll ---
+    const std::vector<FPLayout::FPLayoutNode> Spec = FPLayout::BuildSpec();
+    TEST("UI: manifest builds (425 nodes)", Spec.size() == 425u);
+    {
+        const char* RailNames[5] = { "RL-Layers", "RL-Transform", "RL-Camera", "RL-Debug", "RL-Advanced" };
+        bool bNoV = true;
+        for (const char* nm : RailNames)
+        {
+            const FPLayout::FPLayoutNode* found = nullptr;
+            for (const FPLayout::FPLayoutNode& n : Spec)
+                if (std::string(n.Name) == nm) { found = &n; break; }
+            if (!found || !found->bNoVScroll) bNoV = false;
+        }
+        TEST("UI: all 5 rails are fit-first (no vertical scroll)", bNoV);
+    }
+    const std::vector<FPLayout::FPViolation> V = FPLayout::ValidateDesign(Spec);
+    {
+        bool bP17 = true, bP18 = true, bP19 = true;
+        for (const FPLayout::FPViolation& v : V)
+        {
+            if (v.Rule == FPLayout::DesignRule::FitNoVScroll) bP17 = false;
+            if (v.Rule == FPLayout::DesignRule::CarouselFallback) bP18 = false;
+            if (v.Rule == FPLayout::DesignRule::ScrollbarReserve) bP19 = false;
+        }
+        TEST("UI: rails fit without a vertical scroll bar (P17)", bP17);
+        TEST("UI: every carousel has its nav strip (P18)", bP18);
+        TEST("UI: every carousel keeps the 8px reserve (P19)", bP19);
+    }
+
+    // --- Step 2 carousels in the manifest ---
+    auto Find = [&](const char* name) -> const FPLayout::FPLayoutNode* {
+        for (const FPLayout::FPLayoutNode& n : Spec)
+            if (std::string(n.Name) == name) return &n;
+        return nullptr;
+    };
+    {
+        const FPLayout::FPLayoutNode* L = Find("RL-LayersScroll");
+        const FPLayout::FPLayoutNode* PB = Find("PB-Carousel");
+        const FPLayout::FPLayoutNode* AL = Find("AL-Carousel");
+        const FPLayout::FPLayoutNode* PR = Find("PR-Carousel");
+        bool bCar = L && L->bCarousel && L->FixedH == FPLayout::CarouselViewportH
+                 && PB && PB->bCarousel && PB->FixedH == FPLayout::CarouselViewportH
+                 && AL && AL->bCarousel && AL->FixedH == FPLayout::CarouselViewportH
+                 && PR && PR->bCarousel && PR->FixedH == FPLayout::CarouselViewportH;
+        TEST("UI: layers/problems/cross-layer/props are carousels (P18)", bCar);
+    }
+    {
+        const FPLayout::FPLayoutNode* LN = Find("RL-LayersNav");
+        const FPLayout::FPLayoutNode* PN = Find("PB-CarouselNav");
+        const FPLayout::FPLayoutNode* AN = Find("AL-CarouselNav");
+        const FPLayout::FPLayoutNode* PRN = Find("PR-CarouselNav");
+        bool bNav = LN && LN->bCarouselNav && PN && PN->bCarouselNav
+                 && AN && AN->bCarouselNav && PRN && PRN->bCarouselNav;
+        TEST("UI: every carousel has a nav strip (P18)", bNav);
+    }
+    {
+        const FPLayout::FPLayoutNode* PR = Find("PR-Carousel");
+        TEST("UI: props carousel pages one-visible-at-a-time (P18)",
+            PR && PR->Kind == FPLayout::ContainerKind::Overlay && PR->Children.size() == 2);
+    }
+    {
+        // P20: per-tab whitespace review - under-packed carousel pages must
+        // be combined into the minimum achievable page count. The props
+        // carousel packs View Override + Sync to Views + Alignment into one
+        // page (together they fit the 176px page viewport); Transform stays
+        // alone (it cannot merge with anything).
+        const FPLayout::FPLayoutNode* PR = Find("PR-Carousel");
+        TEST("UI: props carousel minimum page pack = 2 (P20)",
+            PR && FPLayout::CarouselMinPages(Spec, PR) == 2);
+        TEST("UI: props carousel fully packed - no whitespace flags (P20)",
+            PR && FPLayout::CarouselMinPages(Spec, PR) == (int)PR->Children.size());
+    }
+    {
+        // Reserve: 176px of page content + 8px reserve inside 184.
+        TEST("UI: page content height = rows x row height",
+            FPLayout::CarouselViewportH - FPLayout::ScrollReserveBottom
+                == FPLayout::CarouselRowsPerPage * FPLayout::CarouselRowHeight);
+    }
+    {
+        // P15 preserved: PR-Scroll still leaves the scrollbar gap.
+        const FPLayout::FPLayoutNode* Scroll = Find("PR-Scroll");
+        TEST("UI: props pane keeps the right inset (P15)",
+            Scroll && Scroll->PadR >= FPLayout::PropsScrollInsetR - 0.001);
+    }
+
+    // --- Negative controls ---
+    auto Violates = [](const std::vector<FPLayout::FPLayoutNode>& nodes, FPLayout::DesignRule rule) {
+        for (const FPLayout::FPViolation& v : FPLayout::ValidateDesign(nodes))
+            if (v.Rule == rule) return true;
+        return false;
+    };
+    {
+        // P17: a fit-first viewport whose plain children overflow must fire.
+        FPLayout::Builder B;
+        const int Root = FPLayout::VF(B, "Root",
+            FPLayout::VF(B, "Viewport",
+                FPLayout::LF(B, "A", 40, 200),
+                FPLayout::LF(B, "B", 40, 200),
+                FPLayout::LF(B, "C", 40, 200)));
+        B.N[(size_t)B.N[(size_t)Root].Children[0]].bClipH = true;
+        B.N[(size_t)B.N[(size_t)Root].Children[0]].bNoVScroll = true;
+        B.N[(size_t)B.N[(size_t)Root].Children[0]].FixedW = 180.0;
+        B.N[(size_t)B.N[(size_t)Root].Children[0]].FixedH = 560.0;
+        B.N[(size_t)B.N[(size_t)Root].Children[0]].Spacing = 2.0;
+        TEST("UI: overflow fires FitNoVScroll (P17)", Violates(B.N, FPLayout::DesignRule::FitNoVScroll));
+    }
+    {
+        // P17 exemption: accordion children collapse, so a tall accordion
+        // stack stays bounded in a fit-first viewport.
+        FPLayout::Builder B;
+        const int Root = FPLayout::VF(B, "Root",
+            FPLayout::VF(B, "Viewport",
+                FPLayout::VF(B, "S1", FPLayout::LF(B, "T1", 20, 10), FPLayout::LF(B, "B1", 20, 500)),
+                FPLayout::VF(B, "S2", FPLayout::LF(B, "T2", 20, 10), FPLayout::LF(B, "B2", 20, 500))));
+        B.N[(size_t)B.N[(size_t)Root].Children[0]].bClipH = true;
+        B.N[(size_t)B.N[(size_t)Root].Children[0]].bNoVScroll = true;
+        B.N[(size_t)B.N[(size_t)Root].Children[0]].FixedW = 180.0;
+        B.N[(size_t)B.N[(size_t)Root].Children[0]].FixedH = 560.0;
+        for (int s = 0; s < 2; ++s)
+        {
+            const int Sec = B.N[(size_t)B.N[(size_t)Root].Children[0]].Children[(size_t)s];
+            B.N[(size_t)Sec].bAccordion = true;
+        }
+        TEST("UI: accordion stacks exempt from FitNoVScroll (P17)",
+            !Violates(B.N, FPLayout::DesignRule::FitNoVScroll));
+    }
+    {
+        // P18: a carousel without a nav strip must fire.
+        FPLayout::Builder B;
+        const int Root = FPLayout::VF(B, "Root",
+            FPLayout::VF(B, "Carousel", FPLayout::LF(B, "Page0", 20, 20)));
+        B.N[(size_t)B.N[(size_t)Root].Children[0]].bCarousel = true;
+        B.N[(size_t)B.N[(size_t)Root].Children[0]].FixedH = FPLayout::CarouselViewportH;
+        B.N[(size_t)B.N[(size_t)Root].Children[0]].PadB = FPLayout::ScrollReserveBottom;
+        TEST("UI: nav-less carousel fires CarouselFallback (P18)",
+            Violates(B.N, FPLayout::DesignRule::CarouselFallback));
+    }
+    {
+        // P18: the nav strip must sit AFTER the page viewport.
+        FPLayout::Builder B;
+        const int Root = FPLayout::VF(B, "Root",
+            FPLayout::LF(B, "Nav", 20, 20),
+            FPLayout::VF(B, "Carousel", FPLayout::LF(B, "Page0", 20, 20)));
+        B.N[(size_t)B.N[(size_t)Root].Children[0]].bCarouselNav = true;
+        B.N[(size_t)B.N[(size_t)Root].Children[1]].bCarousel = true;
+        B.N[(size_t)B.N[(size_t)Root].Children[1]].FixedH = FPLayout::CarouselViewportH;
+        B.N[(size_t)B.N[(size_t)Root].Children[1]].PadB = FPLayout::ScrollReserveBottom;
+        TEST("UI: nav before viewport fires CarouselFallback (P18)",
+            Violates(B.N, FPLayout::DesignRule::CarouselFallback));
+    }
+    {
+        // P18 positive: viewport + nav after it is fine.
+        FPLayout::Builder B;
+        const int Root = FPLayout::VF(B, "Root",
+            FPLayout::VF(B, "Carousel", FPLayout::LF(B, "Page0", 20, 20)),
+            FPLayout::LF(B, "Nav", 20, 20));
+        B.N[(size_t)B.N[(size_t)Root].Children[0]].bCarousel = true;
+        B.N[(size_t)B.N[(size_t)Root].Children[0]].FixedH = FPLayout::CarouselViewportH;
+        B.N[(size_t)B.N[(size_t)Root].Children[0]].PadB = FPLayout::ScrollReserveBottom;
+        B.N[(size_t)B.N[(size_t)Root].Children[1]].bCarouselNav = true;
+        TEST("UI: carousel + nav after passes P18",
+            !Violates(B.N, FPLayout::DesignRule::CarouselFallback));
+    }
+    {
+        // P19: a carousel without the 8px bottom reserve must fire.
+        FPLayout::Builder B;
+        const int Root = FPLayout::VF(B, "Root",
+            FPLayout::VF(B, "Carousel", FPLayout::LF(B, "Page0", 20, 20)),
+            FPLayout::LF(B, "Nav", 20, 20));
+        B.N[(size_t)B.N[(size_t)Root].Children[0]].bCarousel = true;
+        B.N[(size_t)B.N[(size_t)Root].Children[0]].FixedH = FPLayout::CarouselViewportH;
+        B.N[(size_t)B.N[(size_t)Root].Children[1]].bCarouselNav = true;
+        TEST("UI: reserve-less carousel fires ScrollbarReserve (P19)",
+            Violates(B.N, FPLayout::DesignRule::ScrollbarReserve));
+    }
+    {
+        // P20 negative: two section pages that together fit the page viewport
+        // must merge - staying separate is under-packed whitespace.
+        FPLayout::Builder B;
+        const int Root = FPLayout::VF(B, "Root",
+            FPLayout::VF(B, "Carousel",
+                FPLayout::VF(B, "S1", FPLayout::LF(B, "T1", 20, 10), FPLayout::LF(B, "B1", 20, 40)),
+                FPLayout::VF(B, "S2", FPLayout::LF(B, "T2", 20, 10), FPLayout::LF(B, "B2", 20, 40))));
+        const int Car = B.N[(size_t)Root].Children[0];
+        B.N[(size_t)Car].bCarousel = true;
+        B.N[(size_t)Car].FixedH = FPLayout::CarouselViewportH;
+        B.N[(size_t)Car].PadB = FPLayout::ScrollReserveBottom;
+        for (int s = 0; s < 2; ++s)
+        {
+            const int Sec = B.N[(size_t)Car].Children[(size_t)s];
+            B.N[(size_t)Sec].bSection = true;
+            B.N[(size_t)B.N[(size_t)Sec].Children[0]].bTitle = true;
+        }
+        const FPLayout::FPLayoutNode& CarN = B.N[(size_t)Car];
+        TEST("UI: two fit-in-one pages pack to 1 (P20)",
+            FPLayout::CarouselMinPages(B.N, &CarN) == 1);
+        TEST("UI: under-packed pages fire PageWhitespaceReview (P20)",
+            Violates(B.N, FPLayout::DesignRule::PageWhitespaceReview));
+    }
+    {
+        // P20 positive: pages that do NOT fit one viewport stay separate.
+        FPLayout::Builder B;
+        const int Root = FPLayout::VF(B, "Root",
+            FPLayout::VF(B, "Carousel",
+                FPLayout::VF(B, "S1", FPLayout::LF(B, "T1", 20, 10), FPLayout::LF(B, "B1", 20, 120)),
+                FPLayout::VF(B, "S2", FPLayout::LF(B, "T2", 20, 10), FPLayout::LF(B, "B2", 20, 120))));
+        const int Car = B.N[(size_t)Root].Children[0];
+        B.N[(size_t)Car].bCarousel = true;
+        B.N[(size_t)Car].FixedH = FPLayout::CarouselViewportH;
+        B.N[(size_t)Car].PadB = FPLayout::ScrollReserveBottom;
+        for (int s = 0; s < 2; ++s)
+        {
+            const int Sec = B.N[(size_t)Car].Children[(size_t)s];
+            B.N[(size_t)Sec].bSection = true;
+            B.N[(size_t)B.N[(size_t)Sec].Children[0]].bTitle = true;
+        }
+        const FPLayout::FPLayoutNode& CarN = B.N[(size_t)Car];
+        TEST("UI: full pages stay separate - no whitespace flag (P20)",
+            FPLayout::CarouselMinPages(B.N, &CarN) == 2);
+        TEST("UI: full pages pass PageWhitespaceReview (P20)",
+            !Violates(B.N, FPLayout::DesignRule::PageWhitespaceReview));
     }
 }
 
@@ -6665,6 +6929,463 @@ void TestHotspotRegions() {
     TEST("Template: brow hits BrowL", std::string(FPLayout::FPHotspotHit(Def, 0.26, 0.14)) == "BrowL");
     TEST("Template: forehead misses", FPLayout::FPHotspotHit(Def, 0.5, 0.14) == nullptr);
     TEST("Template: corner misses", FPLayout::FPHotspotHit(Def, 0.01, 0.01) == nullptr);
+}
+
+// --- Audit edges: opposite-direction + degenerate hotspot hits ---
+void TestHotspotHitIndexEdges() {
+    printf("\n=== HotspotHitIndexEdges ===\n");
+    using R = FPLayout::FPHotspotRegion;
+    using V = std::vector<FPLayout::FPHotspotPoint>;
+
+    const std::vector<R> Def = FPLayout::DefaultHotspotRegions();
+
+    TEST("Empty region list -> -1", FPLayout::FPHotspotHitIndex({}, 0.5, 0.5) == -1);
+    TEST("Negative X never hits", FPLayout::FPHotspotHitIndex(Def, -0.5, 0.5) == -1);
+    TEST("Negative Y never hits", FPLayout::FPHotspotHitIndex(Def, 0.5, -0.5) == -1);
+    TEST("Oversized X misses", FPLayout::FPHotspotHitIndex(Def, 1.5, 0.5) == -1);
+    TEST("Oversized Y misses", FPLayout::FPHotspotHitIndex(Def, 0.5, 1.5) == -1);
+
+    const V Sq = { FPLayout::HP(0,0), FPLayout::HP(1,0), FPLayout::HP(1,1), FPLayout::HP(0,1) };
+    const std::vector<R> SqList = { R{"Sq", Sq} };
+    TEST("Just outside left edge misses", FPLayout::FPHotspotHitIndex(SqList, -1e-6, 0.5) == -1);
+    TEST("Just outside right edge misses", FPLayout::FPHotspotHitIndex(SqList, 1.0 + 1e-6, 0.5) == -1);
+    TEST("Just outside top edge misses", FPLayout::FPHotspotHitIndex(SqList, 0.5, 1.0 + 1e-6) == -1);
+    TEST("Edge midpoints count as inside", FPLayout::FPHotspotHitIndex(SqList, 0.0, 0.5) == 0
+        && FPLayout::FPHotspotHitIndex(SqList, 1.0, 0.5) == 0
+        && FPLayout::FPHotspotHitIndex(SqList, 0.5, 1.0) == 0);
+}
+
+// --- Phase 1: hotspot region -> primary layer derivation ---
+void TestHotspotLayerMapping() {
+    printf("\n=== HotspotLayerMapping ===\n");
+    using S = std::vector<std::string>;
+    using M = const char* (*)(const std::vector<std::string>&, const char*);
+    const M Match = &FPLayout::FPHotspotLayerMatch;
+    const S Defaults = { "Eyes", "Brows", "Mouth", "Hair" };
+    const auto Is = [](const char* P, const char* Want) -> bool
+    {
+        if (!Want) return P == nullptr;
+        return P && std::string(P) == Want;
+    };
+
+    // Empty inputs.
+    TEST("Empty region matches nothing", Is(Match(Defaults, ""), nullptr));
+    TEST("Null region matches nothing", Is(Match(Defaults, nullptr), nullptr));
+    TEST("Empty layer list matches nothing", Is(Match(S{}, "Nose"), nullptr));
+
+    // Exact (case-sensitive).
+    TEST("Exact: Mouth", Is(Match(Defaults, "Mouth"), "Mouth"));
+    TEST("Exact: plural layer", Is(Match(Defaults, "Brows"), "Brows"));
+    TEST("Exact is case-sensitive: upper", Is(Match(Defaults, "MOUTH"), nullptr));
+    TEST("Exact is case-sensitive: lower", Is(Match(Defaults, "mouth"), nullptr));
+
+    // Singular/plural normalize.
+    TEST("Singular +s -> layer", Is(Match(Defaults, "Brow"), "Brows"));
+    TEST("Singular +s -> layer (Eye)", Is(Match(Defaults, "Eye"), "Eyes"));
+    TEST("Plural -s -> layer", Is(Match(Defaults, "Hairs"), "Hair"));
+    TEST("Plural -s requires trailing s (Hair)", Is(Match(Defaults, "Hairs"), "Hair"));
+
+    // L/R collapse.
+    TEST("Collapse EyeL -> Eyes", Is(Match(Defaults, "EyeL"), "Eyes"));
+    TEST("Collapse EyeR -> Eyes", Is(Match(Defaults, "EyeR"), "Eyes"));
+    TEST("Collapse BrowL -> Brows", Is(Match(Defaults, "BrowL"), "Brows"));
+    TEST("Collapse BrowR -> Brows", Is(Match(Defaults, "BrowR"), "Brows"));
+    TEST("Collapse returns pointer into layer list", Match(Defaults, "EyeL") == Defaults[0].c_str());
+    TEST("Collapse: EyeLash never collapses", Is(Match(Defaults, "EyeLash"), nullptr));
+    TEST("Collapse: short names never collapse", Is(Match(Defaults, "R"), nullptr));
+    TEST("Exact: Hair (lowercase trailing r untouched)", Is(Match(Defaults, "Hair"), "Hair"));
+
+    // Collapse when the base exists exactly.
+    const S WithBase = { "Eyes", "Eye" };
+    TEST("Collapse prefers exact base layer", Is(Match(WithBase, "EyeL"), "Eye"));
+
+    // Exact wins over every derivation.
+    const S Dual = { "Eye", "Eyes" };
+    TEST("Exact beats singular normalize", Is(Match(Dual, "Eye"), "Eye"));
+    TEST("Exact beats collapse", Is(Match(WithBase, "Eye"), "Eye"));
+
+    // Prefix (unique only).
+    TEST("Prefix: unique Ey -> Eyes", Is(Match(Defaults, "Ey"), "Eyes"));
+    TEST("Prefix: unique Br -> Brows", Is(Match(Defaults, "Br"), "Brows"));
+    const S Ambiguous = { "Eyebrow", "Eyelid" };
+    TEST("Prefix: ambiguous matches nothing", Is(Match(Ambiguous, "Eye"), nullptr));
+    const S AmbigDefaults = { "Brows", "Bottom" };
+    TEST("Prefix: ambiguous B matches nothing", Is(Match(AmbigDefaults, "B"), nullptr));
+
+    // Misshapen / garbage inputs.
+    TEST("Underscore region matches nothing", Is(Match(Defaults, "Eye_L"), nullptr));
+    TEST("Whitespace region matches nothing", Is(Match(Defaults, " EyeL"), nullptr));
+    TEST("Trailing dot matches nothing", Is(Match(Defaults, "Mouth."), nullptr));
+    TEST("Random string matches nothing", Is(Match(Defaults, "Zygoma"), nullptr));
+
+    // The 13 default regions against the 4 default primary layers.
+    const std::vector<FPLayout::FPHotspotRegion> Def = FPLayout::DefaultHotspotRegions();
+    int nMapped = 0, nUnmapped = 0;
+    for (const FPLayout::FPHotspotRegion& R : Def)
+    {
+        const std::string S(R.Name ? R.Name : "");
+        const char* P = Match(Defaults, S.c_str());
+        if (P) ++nMapped; else ++nUnmapped;
+    }
+    TEST("Default template: all 13 regions are routed", nMapped + nUnmapped == 13);
+    TEST("Default template: BrowL/BrowR/EyeL/EyeR/Mouth map (5)", nMapped == 5);
+    TEST("Default template: unmapped parts stay unmapped (8)", nUnmapped == 8);
+    TEST("Default template: Nose stays unmapped", Is(Match(Defaults, "Nose"), nullptr));
+    TEST("Default template: CheekL stays unmapped", Is(Match(Defaults, "CheekL"), nullptr));
+    TEST("Default template: Teeth stays unmapped", Is(Match(Defaults, "Teeth"), nullptr));
+    TEST("Default template: EarR stays unmapped", Is(Match(Defaults, "EarR"), nullptr));
+    TEST("Default template: Neck stays unmapped", Is(Match(Defaults, "Neck"), nullptr));
+    TEST("Default template: Mouth maps to itself", Is(Match(Defaults, "Mouth"), "Mouth"));
+    TEST("Default template: Eyes maps from both directions",
+        Is(Match(Defaults, "EyeL"), "Eyes") && Is(Match(Defaults, "EyeR"), "Eyes"));
+}
+
+// --- Phase 2: hotspot transform mirror (master-material UV chain) ---
+void TestTransformHotspotRegion() {
+    printf("\n=== TransformHotspotRegion ===\n");
+    using P = FPLayout::FPHotspotPoint;
+    const auto H = [](double X, double Y) -> P { return FPLayout::HP(X, Y); };
+    const auto TP = [](P Pt, double Px, double Py, double Sx, double Sy, double R) -> P
+    { return FPLayout::FPHotspotTransformPoint(Pt, Px, Py, Sx, Sy, R); };
+    const auto Near = [](P A, P B) -> bool
+    { return std::abs(A.X - B.X) < 1e-9 && std::abs(A.Y - B.Y) < 1e-9; };
+    const P Q = H(0.2, 0.3);
+
+    // Identity: no pos/scale/rotation -> point unchanged.
+    TEST("Identity leaves point unchanged", Near(TP(Q, 0, 0, 1, 1, 0), Q));
+    TEST("Identity at 360-degree rotation", Near(TP(Q, 0, 0, 1, 1, 360), Q));
+
+    // Translation: (uv - Pivot + Pos) * 1 + Pivot == uv + Pos.
+    TEST("Translation adds Pos", Near(TP(Q, 0.1, -0.05, 1, 1, 0), H(0.3, 0.25)));
+    TEST("Translation is pivot-independent", Near(TP(H(0.5, 0.5), 0.1, 0.2, 1, 1, 0), H(0.6, 0.7)));
+
+    // Scale about pivot: (uv - Pivot) * Scale + Pivot.
+    TEST("Scale doubles around pivot", Near(TP(H(0.2, 0.3), 0, 0, 2, 2, 0), H(-0.1, 0.1)));
+    TEST("Pivot point stays fixed under scale", Near(TP(H(0.5, 0.5), 0, 0, 3, 3, 0), H(0.5, 0.5)));
+    TEST("Scale is per-axis", Near(TP(H(0.5, 0.25), 0, 0, 2, 1, 0), H(0.5, 0.25)));
+
+    // Order: translation BEFORE scale (material chain Subtract->Add->Multiply).
+    // (0.5-0.5+0.1)*2+0.5 == 0.7; scale-first would give 0.6.
+    TEST("Translate before scale order", Near(TP(H(0.5, 0.5), 0.1, 0, 2, 2, 0), H(0.7, 0.5)));
+    TEST("Pivot maps to Pos*Scale + Pivot", Near(TP(H(0.5, 0.5), 0.1, 0.2, 2, 2, 0), H(0.7, 0.9)));
+
+    // Rotation about the fixed UV center (0.5, 0.5), clockwise, degrees.
+    TEST("Rot 90: right of center swings down (clockwise)", Near(TP(H(0.75, 0.5), 0, 0, 1, 1, 90), H(0.5, 0.75)));
+    TEST("Rot 180 flips about center", Near(TP(H(0.75, 0.5), 0, 0, 1, 1, 180), H(0.25, 0.5)));
+    TEST("Rot -90 swings up (counterclockwise)", Near(TP(H(0.75, 0.5), 0, 0, 1, 1, -90), H(0.5, 0.25)));
+    TEST("Center point invariant under rotation", Near(TP(H(0.5, 0.5), 0, 0, 1, 1, 37), H(0.5, 0.5)));
+    TEST("Rot 45 moves corner toward edge", Near(TP(H(0.75, 0.5), 0, 0, 1, 1, 45),
+        H(0.5 + 0.25 * 0.70710678118, 0.5 + 0.25 * 0.70710678118)));
+
+    // Rotation center is fixed at (0.5,0.5) independent of the pivot.
+    TEST("Rot center ignores pivot", Near(FPLayout::FPHotspotTransformPoint(H(0.6, 0.5), 0, 0, 1, 1, 90, 0.25, 0.25), H(0.5, 0.6)));
+
+    // Region-level: outer + holes transform, name preserved.
+    using R = FPLayout::FPHotspotRegion;
+    const R Mouth = FPLayout::DefaultHotspotRegions()[7];   // Mouth with hole
+    TEST("Template region 7 is Mouth", Mouth.Name && std::string(Mouth.Name) == "Mouth");
+    const R Moved = FPLayout::FPHotspotTransformRegion(Mouth, 0.1, 0, 1, 1, 0);
+    TEST("Region name preserved", Moved.Name == Mouth.Name);
+    TEST("Outer loop transforms", Near(Moved.Outer[0], H(Mouth.Outer[0].X + 0.1, Mouth.Outer[0].Y)));
+    TEST("Hole transforms too", Near(Moved.Holes[0][0], H(Mouth.Holes[0][0].X + 0.1, Mouth.Holes[0][0].Y)));
+    TEST("Region count preserved", Moved.Outer.size() == Mouth.Outer.size() && Moved.Holes.size() == Mouth.Holes.size());
+
+    // Full template sweep with a typical two-layer mapping: EyeL/EyeR share
+    // the Eyes transform, BrowL/BrowR share the Brows transform, everything
+    // else stays default. Deterministic + names intact.
+    const std::vector<R> Def = FPLayout::DefaultHotspotRegions();
+    std::vector<R> Painted = Def;
+    for (R& Rg : Painted)
+    {
+        if (!Rg.Name) continue;
+        const std::string N(Rg.Name);
+        if (N == "EyeL" || N == "EyeR")
+            Rg = FPLayout::FPHotspotTransformRegion(Rg, 0.02, -0.03, 0.98, 1.02, 2.0);
+        else if (N == "BrowL" || N == "BrowR")
+            Rg = FPLayout::FPHotspotTransformRegion(Rg, -0.01, 0.04, 1.01, 0.97, -1.5);
+    }
+    TEST("Sweep: 13 regions survive", Painted.size() == 13u);
+    bool bNames = true;
+    for (size_t i = 0; i < Def.size(); ++i)
+        if (Painted[i].Name != Def[i].Name) bNames = false;
+    TEST("Sweep: names preserved in order", bNames);
+    TEST("Sweep: unmapped Mouth stays default", Near(Painted[7].Outer[0], Def[7].Outer[0]));
+    const R EyesT = Painted[2];   // EyeL
+    TEST("Sweep: EyeL moved by Eyes transform",
+        Near(EyesT.Outer[0], TP(Def[2].Outer[0], 0.02, -0.03, 0.98, 1.02, 2.0)));
+    TEST("Sweep: EyeR shares the Eyes transform (mirror symmetry preserved)",
+        Near(Painted[3].Outer[0], TP(Def[3].Outer[0], 0.02, -0.03, 0.98, 1.02, 2.0)));
+    TEST("Sweep: BrowL moved by Brows transform",
+        Near(Painted[0].Outer[0], TP(Def[0].Outer[0], -0.01, 0.04, 1.01, 0.97, -1.5)));
+    TEST("Sweep: BrowR shares the Brows transform",
+        Near(Painted[1].Outer[0], TP(Def[1].Outer[0], -0.01, 0.04, 1.01, 0.97, -1.5)));
+
+    // Hit-testing still works on transformed regions (outline follows art).
+    const R MovedBig = FPLayout::FPHotspotTransformRegion(Def[0], 0.3, 0, 1, 1, 0);   // BrowL +0.3 x
+    const std::vector<R> MovedList = { MovedBig };
+    TEST("Transformed region hit-tests at new location",
+        FPLayout::FPHotspotHit(MovedList, Def[0].Outer[0].X + 0.3, Def[0].Outer[0].Y) != nullptr);
+    TEST("Transformed region misses old location",
+        FPLayout::FPHotspotHit(MovedList, Def[0].Outer[0].X, Def[0].Outer[0].Y) == nullptr);
+}
+
+// --- Phase 3 pin drift mirror: FPMirrorTransform / FPPinDriftCount ---
+// Mirrors RefreshSyncDriftIndicator (exact-equality semantics like FVector2D).
+void TestPinDriftMirror() {
+    printf("\n=== Pin Drift Mirror ===\n");
+
+    using FP = FPLayout::FPMirrorTransform;
+    using FPLayout::FPPinDriftCount;
+
+    // Empty / degenerate inputs are safe.
+    const std::vector<FP> Empty;
+    TEST("Empty view list -> 0", FPPinDriftCount(Empty, 0) == 0);
+    const std::vector<FP> One = { FP() };
+    TEST("Single view list -> 0", FPPinDriftCount(One, 0) == 0);
+    TEST("OOB active (negative) -> 0", FPPinDriftCount(One, -1) == 0);
+    TEST("OOB active (past end) -> 0", FPPinDriftCount(One, 5) == 0);
+
+    // All synced -> 0.
+    std::vector<FP> Views(10);
+    TEST("All synced -> 0", FPPinDriftCount(Views, 0) == 0);
+
+    // One drifted field each.
+    Views[3].PosX = 0.5;
+    TEST("Position-X drift -> 1", FPPinDriftCount(Views, 0) == 1);
+    Views[3] = FP(); Views[3].PosY = -0.25;
+    TEST("Position-Y drift -> 1", FPPinDriftCount(Views, 0) == 1);
+    Views[3] = FP(); Views[3].ScaleX = 1.1;
+    TEST("Scale-X drift -> 1", FPPinDriftCount(Views, 0) == 1);
+    Views[3] = FP(); Views[3].ScaleY = 0.9;
+    TEST("Scale-Y drift -> 1", FPPinDriftCount(Views, 0) == 1);
+    Views[3] = FP(); Views[3].Rot = 45.0;
+    TEST("Rotation-only drift -> 1", FPPinDriftCount(Views, 0) == 1);
+
+    // Exact floating-point semantics: views sharing the active view's exact
+    // double are synced (even a value like 0.30000000000000004); any
+    // ULP-level difference counts as drifted. The active view is the
+    // reference (widget: GetSlot(ActiveViewState) compared via FVector2D !=).
+    const double Weird = 0.30000000000000004;
+    for (size_t i = 0; i < Views.size(); ++i) Views[i].Rot = Weird;
+    TEST("All views share active's exact double -> 0",
+        FPPinDriftCount(Views, 0) == 0);
+    Views[3].Rot = 0.3000000000000001;
+    TEST("ULP-level rotation difference counts as drifted",
+        FPPinDriftCount(Views, 0) == 1);
+
+    // Mass drift + active exclusion.
+    Views[3] = FP();
+    Views[0] = FP();
+    for (size_t i = 1; i < Views.size(); ++i) Views[i].PosY = 0.1;
+    TEST("All 9 others drifted -> 9", FPPinDriftCount(Views, 0) == 9);
+    for (size_t i = 0; i < Views.size(); ++i) Views[i] = FP();
+    Views[0].PosX = 1.0;
+    TEST("Active slot is reference; its own diff is never drift",
+        FPPinDriftCount(Views, 0) == 9);
+    for (size_t i = 0; i < Views.size(); ++i) Views[i] = FP();
+    TEST("Active at last index skips itself", FPPinDriftCount(Views, 9) == 0);
+    Views[1].PosX = 1.0;
+    TEST("Drift counted when active is last", FPPinDriftCount(Views, 9) == 1);
+    Views[4].PosX = 2.0;
+    TEST("Two drifted -> 2", FPPinDriftCount(Views, 9) == 2);
+}
+
+// --- Phase 4 mirrors: rail width range + problems panel search/summary ---
+void TestPhase4Mirrors() {
+    printf("\n=== Phase 4 Mirrors ===\n");
+
+    // ---- Rail width range (RailWidthMin/Max + ClampRailWidth) ----
+    TEST("Rail width min = 180", FPLayout::RailWidthMin == 180.0);
+    TEST("Rail width max = 360", FPLayout::RailWidthMax == 360.0);
+    TEST("Default rail width stays 180", FPLayout::RailWidth == 180.0);
+    TEST("Clamp: default passes through", FPLayout::ClampRailWidth(180.0) == 180.0);
+    TEST("Clamp: below min -> min", FPLayout::ClampRailWidth(100.0) == 180.0);
+    TEST("Clamp: above max -> max", FPLayout::ClampRailWidth(500.0) == 360.0);
+    TEST("Clamp: mid range kept", FPLayout::ClampRailWidth(240.0) == 240.0);
+    TEST("Clamp: max boundary kept", FPLayout::ClampRailWidth(360.0) == 360.0);
+    TEST("Clamp: NaN -> default 180", FPLayout::ClampRailWidth(std::nan("")) == 180.0);
+    TEST("Clamp: negative -> min", FPLayout::ClampRailWidth(-50.0) == 180.0);
+
+    // ---- Problems search filter (mirror: case-insensitive substring match) ----
+    // Widget: rows kept when filter is empty or row text (lowercased) contains
+    // the lowercased filter; count = matches.
+    struct FProbRow { bool bError; std::string Text; };
+    auto FilterRows = [](const std::vector<FProbRow>& All, const std::string& Filter,
+                         std::vector<const FProbRow*>& Out)
+    {
+        Out.clear();
+        std::string F;
+        for (char C : Filter) F += (char)std::tolower((unsigned char)C);
+        for (const FProbRow& P : All)
+        {
+            if (!F.empty())
+            {
+                std::string T;
+                for (char C : P.Text) T += (char)std::tolower((unsigned char)C);
+                if (T.find(F) == std::string::npos) continue;
+            }
+            Out.push_back(&P);
+        }
+    };
+    const std::vector<FProbRow> Rows = {
+        { true,  "Front / Eyes: missing albedo" },
+        { true,  "Front / Eyes: missing normal" },
+        { false, "3/4R: viseme 2 frame count mismatch (4 vs 6)" },
+        { false, "Back: blink frame count mismatch (3 vs 5)" },
+    };
+    std::vector<const FProbRow*> Out;
+    FilterRows(Rows, "", Out);
+    TEST("Search: empty filter keeps all", Out.size() == 4);
+    FilterRows(Rows, "missing", Out);
+    TEST("Search: 'missing' matches 2", Out.size() == 2);
+    TEST("Search: match order preserved", Out[0]->Text.find("albedo") != std::string::npos);
+    FilterRows(Rows, "MISSING", Out);
+    TEST("Search: case-insensitive", Out.size() == 2);
+    FilterRows(Rows, "viseme", Out);
+    TEST("Search: 'viseme' matches 1", Out.size() == 1 && Out[0]->bError == false);
+    FilterRows(Rows, "zzz", Out);
+    TEST("Search: no match -> 0", Out.empty());
+    FilterRows(Rows, "back", Out);
+    TEST("Search: 'back' matches 1 (not '3/4R' viseme text)",
+        Out.size() == 1 && Out[0]->Text.find("blink") != std::string::npos);
+
+    // ---- Problems summary line (mirror of the issues section header) ----
+    // Widget: "<N> issues (<E> errors, <W> warnings)" plain;
+    // "<N> issues (<E> errors) - <M> match \"<filter>\"" when filtering.
+    auto Summary = [](int N, int E, int M, const std::string& F) -> std::string
+    {
+        std::string S = std::to_string(N) + " issues (" + std::to_string(E) + " errors";
+        if (!F.empty())
+            S += ") - " + std::to_string(M) + " match \"" + F + "\"";
+        else
+            S += ", " + std::to_string(N - E) + " warnings)";
+        return S;
+    };
+    TEST("Summary: plain format", Summary(4, 2, 0, "") == "4 issues (2 errors, 2 warnings)");
+    TEST("Summary: filtered format", Summary(4, 2, 2, "missing")
+        == "4 issues (2 errors) - 2 match \"missing\"");
+    TEST("Summary: zero issues", Summary(0, 0, 0, "") == "0 issues (0 errors, 0 warnings)");
+
+    // ---- Accordion one-open-per-group mirror (SFaceAccordion header swap) ----
+    // Widget: clicking the open section collapses all; clicking another
+    // expands only that one (Open[i] = (bIsOpen ? false : (i == Idx))).
+    std::vector<bool> Open(3, false);
+    Open[0] = true;
+    auto Click = [&](int Idx)
+    {
+        const bool bIsOpen = Open[(size_t)Idx];
+        for (size_t i = 0; i < Open.size(); ++i) Open[i] = (bIsOpen ? false : (i == (size_t)Idx));
+    };
+    Click(0);
+    TEST("Accordion: clicking open section collapses all",
+        !Open[0] && !Open[1] && !Open[2]);
+    Click(1);
+    TEST("Accordion: clicking closed section opens only it",
+        !Open[0] && Open[1] && !Open[2]);
+    Click(2);
+    TEST("Accordion: swap keeps one open", !Open[0] && !Open[1] && Open[2]);
+}
+
+// --- Phase 5 mirrors: 2D pitch-aware pin rotation/scale + pin sync semantics ---
+// (Float mirrors of UFaceParallaxComponent::PinRotationFromViewAngles /
+// PinScaleFromView, which are FMath-based; 1D yaw-only mirror used for the
+// byte-identical-at-pitch-0 contract.)
+static float M1DPinRotationFromYawDev(float YawDev, float HZW, float MinR, float MaxR, float Sens)
+{
+    while (YawDev > 180.0f) YawDev -= 360.0f;
+    while (YawDev < -180.0f) YawDev += 360.0f;
+    const float HW = std::fmax(1.0f, HZW);
+    const float ND = std::clamp(YawDev / HW, -1.0f, 1.0f);
+    const float Mapped = MinR + (MaxR - MinR) * (0.5f * (ND + 1.0f));
+    return Mapped * Sens;
+}
+
+static float M2DPinRotationFromViewAngles(float YawDev, float PitchDev, float HZW,
+    float MinR, float MaxR, float Sens)
+{
+    while (YawDev > 180.0f) YawDev -= 360.0f;
+    while (YawDev < -180.0f) YawDev += 360.0f;
+    while (PitchDev > 180.0f) PitchDev -= 360.0f;
+    while (PitchDev < -180.0f) PitchDev += 360.0f;
+    const float HW = std::fmax(1.0f, HZW);
+    const float NY = std::clamp(YawDev / HW, -1.0f, 1.0f);
+    const float NP = std::clamp(PitchDev / HW, -1.0f, 1.0f);
+    const float Driver = NY * (1.0f - std::fabs(NP));
+    const float Mapped = MinR + (MaxR - MinR) * (0.5f * (Driver + 1.0f));
+    return Mapped * Sens;
+}
+
+static float M2DPinScaleFromView(float YawDev, float PitchDev, float MinScale)
+{
+    const float PI = 3.14159265f;
+    const float W = 1.0f - std::fabs(std::cos(YawDev * PI / 180.0f)
+                                   * std::cos(PitchDev * PI / 180.0f));
+    return 1.0f + (MinScale - 1.0f) * W;
+}
+
+void TestPrimaryLayerPin() {
+    printf("\n=== Primary Layer Pin (Phase 5) ===\n");
+
+    const auto Approx = [](float A, float B) -> bool { return std::fabs(A - B) < 1e-4f; };
+
+    // ---- PinRotationFromViewAngles: byte-identical to PinRotationFromYawDev at pitch 0 ----
+    const float HZW = 22.5f, MinR = -30.0f, MaxR = 30.0f, Sens = 1.0f;
+    bool bIdentical = true;
+    for (float Yaw = -180.0f; Yaw <= 180.0f && bIdentical; Yaw += 7.5f)
+    {
+        if (M2DPinRotationFromViewAngles(Yaw, 0.0f, HZW, MinR, MaxR, Sens)
+            != M1DPinRotationFromYawDev(Yaw, HZW, MinR, MaxR, Sens))
+            bIdentical = false;
+    }
+    TEST("Pitch=0: byte-identical to PinRotationFromYawDev across yaw sweep", bIdentical);
+    TEST("Pitch=0: sensitivity scales", M2DPinRotationFromViewAngles(45.0f, 0.0f, HZW, MinR, MaxR, 2.0f)
+        == 2.0f * M2DPinRotationFromViewAngles(45.0f, 0.0f, HZW, MinR, MaxR, 1.0f));
+
+    // ---- Pitch attenuation ----
+    TEST("Pitch at zone edge -> center rotation (0)",
+        M2DPinRotationFromViewAngles(45.0f, HZW, HZW, MinR, MaxR, 1.0f) == 0.0f);
+    TEST("Pitch beyond zone edge clamps to center",
+        M2DPinRotationFromViewAngles(45.0f, 90.0f, HZW, MinR, MaxR, 1.0f) == 0.0f);
+    TEST("Negative pitch attenuates symmetrically",
+        M2DPinRotationFromViewAngles(45.0f, -HZW, HZW, MinR, MaxR, 1.0f) == 0.0f);
+    TEST("Half pitch moves rotation halfway to center",
+        M2DPinRotationFromViewAngles(45.0f, HZW * 0.5f, HZW, MinR, MaxR, 1.0f)
+        == M2DPinRotationFromViewAngles(0.0f, 0.0f, HZW, MinR, MaxR, 1.0f)
+           + 0.5f * (M2DPinRotationFromViewAngles(45.0f, 0.0f, HZW, MinR, MaxR, 1.0f)
+                   - M2DPinRotationFromViewAngles(0.0f, 0.0f, HZW, MinR, MaxR, 1.0f)));
+    TEST("Wrap: yaw 200 == -160",
+        M2DPinRotationFromViewAngles(200.0f, 0.0f, HZW, MinR, MaxR, 1.0f)
+        == M2DPinRotationFromViewAngles(-160.0f, 0.0f, HZW, MinR, MaxR, 1.0f));
+    TEST("Wrap: pitch 190 == -170",
+        M2DPinRotationFromViewAngles(0.0f, 190.0f, HZW, MinR, MaxR, 1.0f)
+        == M2DPinRotationFromViewAngles(0.0f, -170.0f, HZW, MinR, MaxR, 1.0f));
+
+    // ---- PinScaleFromView ----
+    TEST("Scale: zone center -> 1.0", M2DPinScaleFromView(0.0f, 0.0f, 0.5f) == 1.0f);
+    TEST("Scale: 90deg yaw -> MinScale", Approx(M2DPinScaleFromView(90.0f, 0.0f, 0.5f), 0.5f));
+    TEST("Scale: 90deg pitch -> MinScale", Approx(M2DPinScaleFromView(0.0f, 90.0f, 0.5f), 0.5f));
+    TEST("Scale: 45/45 combined -> midpoint", Approx(M2DPinScaleFromView(45.0f, 45.0f, 0.5f), 0.75f));
+    TEST("Scale: MinScale=1 is identity", M2DPinScaleFromView(90.0f, 45.0f, 1.0f) == 1.0f);
+    TEST("Scale: mirrored axes commute",
+        M2DPinScaleFromView(30.0f, 60.0f, 0.5f) == M2DPinScaleFromView(60.0f, 30.0f, 0.5f));
+    TEST("Scale: 180deg yaw -> 1.0", Approx(M2DPinScaleFromView(180.0f, 0.0f, 0.5f), 1.0f));
+
+    // ---- SyncLayerNestedToAllViews bSyncPins semantics ----
+    struct MPin { bool bPinned = false; float MinScale = 0.5f; };
+    struct MEl { float ArtX = 0.0f; MPin Pin; };
+    const MEl Source = { 12.0f, { true, 0.9f } };
+    const MPin DefaultPin;
+    MEl Target = { 3.0f, { true, 0.3f } };
+    MEl Copied = Source;
+    Copied.Pin = Target.Pin;                       // bSyncPins=false: preserve target pin
+    TEST("bSyncPins=false keeps target pin", Copied.Pin.bPinned == true && Copied.Pin.MinScale == 0.3f);
+    TEST("bSyncPins=false still copies art", Copied.ArtX == 12.0f);
+    Copied = Source;                                // bSyncPins=true: pin propagates
+    TEST("bSyncPins=true propagates source pin", Copied.Pin.bPinned && Copied.Pin.MinScale == 0.9f);
+    Copied = Source;
+    Copied.Pin = DefaultPin;                        // new element + no pin sync -> unpinned
+    TEST("bSyncPins=false new element gets unpinned pin",
+        !Copied.Pin.bPinned && Copied.Pin.MinScale == 0.5f);
 }
 
 // --- Pin View-Angle Rotation Tests (mirrors UFaceParallaxComponent::PinRotationFromYawDev) ---
@@ -7070,6 +7791,136 @@ void TestPinDataSurvivesSync() {
     printf("  [Pin Data Survives Sync: 7 tests]\n");
 }
 
+// --- Phase 4b: UI accessibility remediation mirrors ---
+// Mirrors the five implemented pieces: below-section progressive disclosure
+// (Config + Viseme summaries), the persistent quick-actions bar, the
+// cross-rail section search jump, drag-resize rail width, and the pinned
+// per-rail jump chips. All pure helpers live in FPLayout (manifest header)
+// and are consumed by the widget 1:1.
+void TestAccessibilityMirrors() {
+    printf("\n=== Accessibility Mirrors (Phase 4b) ===\n");
+
+    // ---- Rail section registry (chips + search jump source of truth) ----
+    const std::vector<std::vector<std::string>>& Titles = FPLayout::RailSectionTitles();
+    TEST("Registry: 5 rails", Titles.size() == 5);
+    TEST("Registry: rail 0 Layers + Status Detail", Titles[0].size() == 2
+        && Titles[0][0] == "Layers" && Titles[0][1] == "Status Detail");
+    TEST("Registry: rail 1 Transform 2 sections", Titles[1].size() == 2
+        && Titles[1][0] == "Quick Actions" && Titles[1][1] == "Cross-View Transform");
+    TEST("Registry: rail 2 Camera 3 sections", Titles[2].size() == 3
+        && Titles[2][0] == "Camera Follow" && Titles[2][1] == "Camera"
+        && Titles[2][2] == "Blend Preview");
+    TEST("Registry: rail 3 Debug 8 sections", Titles[3].size() == 8
+        && Titles[3][0] == "Outline -> Depth" && Titles[3][1] == "Import"
+        && Titles[3][2] == "Config" && Titles[3][3] == "Edge Analysis"
+        && Titles[3][4] == "Depth Debug" && Titles[3][5] == "Hull Review (click thumb = jump)"
+        && Titles[3][6] == "Viseme Frames (click filled cell = play)"
+        && Titles[3][7] == "Problems (click row = jump)");
+    TEST("Registry: rail 4 Advanced 4 sections", Titles[4].size() == 4
+        && Titles[4][0] == "All Layers (current state)" && Titles[4][1] == "Param Reference"
+        && Titles[4][2] == "Param Bindings (state + layer)" && Titles[4][3] == "Nested Art / Pins");
+
+    // ---- Cross-rail search jump (mirror of OnRailSearchCommitted) ----
+    int OutRail = -1, OutIdx = -1;
+    TEST("Search: 'config' -> Debug/Config",
+        FPLayout::FindRailSectionByTitle("config", OutRail, OutIdx) == 0
+        && OutRail == 3 && OutIdx == 2);
+    TEST("Search: 'CONFIG' case-insensitive",
+        FPLayout::FindRailSectionByTitle("CONFIG", OutRail, OutIdx) == 0
+        && OutRail == 3 && OutIdx == 2);
+    TEST("Search: 'viseme' -> Debug/Viseme",
+        FPLayout::FindRailSectionByTitle("viseme", OutRail, OutIdx) == 0
+        && OutRail == 3 && OutIdx == 6);
+    TEST("Search: 'quick' -> Transform/Quick Actions",
+        FPLayout::FindRailSectionByTitle("quick", OutRail, OutIdx) == 0
+        && OutRail == 1 && OutIdx == 0);
+    TEST("Search: 'camera' first match is rail 2",
+        FPLayout::FindRailSectionByTitle("camera", OutRail, OutIdx) == 0
+        && OutRail == 2 && OutIdx == 0);
+    TEST("Search: 'blend' -> rail 2 idx 2",
+        FPLayout::FindRailSectionByTitle("blend", OutRail, OutIdx) == 0
+        && OutRail == 2 && OutIdx == 2);
+    TEST("Search: 'status' -> rail 0 Status Detail",
+        FPLayout::FindRailSectionByTitle("status", OutRail, OutIdx) == 0
+        && OutRail == 0 && OutIdx == 1);
+    TEST("Search: 'problem' -> rail 3 Problems",
+        FPLayout::FindRailSectionByTitle("problem", OutRail, OutIdx) == 0
+        && OutRail == 3 && OutIdx == 7);
+    TEST("Search: 'xyzzy' no match -> -1",
+        FPLayout::FindRailSectionByTitle("xyzzy", OutRail, OutIdx) == -1);
+    TEST("Search: empty query -> no match",
+        FPLayout::FindRailSectionByTitle("", OutRail, OutIdx) == -1);
+
+    // ---- Config disclosure summary ("K of 8 on") ----
+    TEST("Config summary: 3 of 8", FPLayout::ConfigSummary(3) == "3 of 8 on");
+    TEST("Config summary: 0 of 8", FPLayout::ConfigSummary(0) == "0 of 8 on");
+    TEST("Config summary: 8 of 8", FPLayout::ConfigSummary(8) == "8 of 8 on");
+
+    // ---- Viseme disclosure summary ("N viseme rows") ----
+    TEST("Viseme summary: 5 rows", FPLayout::VisemeSummary(5) == "5 viseme rows");
+    TEST("Viseme summary: 0 rows -> No viseme frames",
+        FPLayout::VisemeSummary(0) == "No viseme frames");
+
+    // ---- Drag-resize rail width (mirror of SFaceRailResizer + SetRailWidthLive) ----
+    TEST("Drag: +50 from 180 -> 230", FPLayout::RailWidthAfterDrag(180.0, 50.0) == 230.0);
+    TEST("Drag: -100 from 230 -> clamp 180", FPLayout::RailWidthAfterDrag(230.0, -100.0) == 180.0);
+    TEST("Drag: +200 from 300 -> clamp 360", FPLayout::RailWidthAfterDrag(300.0, 200.0) == 360.0);
+    TEST("Drag: 0 delta keeps width", FPLayout::RailWidthAfterDrag(240.0, 0.0) == 240.0);
+    TEST("Drag: fractional delta rounds", FPLayout::RailWidthAfterDrag(180.0, 49.4) == 229.0);
+    TEST("Drag: -1 from min -> clamp 180", FPLayout::RailWidthAfterDrag(180.0, -1.0) == 180.0);
+    TEST("Drag: exact max via round kept", FPLayout::RailWidthAfterDrag(180.0, 180.0) == 360.0);
+    TEST("Drag: +1 past max clamps 360", FPLayout::RailWidthAfterDrag(360.0, 1.0) == 360.0);
+    TEST("Drag: NaN delta -> default 180", FPLayout::RailWidthAfterDrag(300.0, std::nan("")) == 180.0);
+    TEST("Drag: huge negative clamps min", FPLayout::RailWidthAfterDrag(200.0, -1000.0) == 180.0);
+    TEST("Drag: negative fraction rounds", FPLayout::RailWidthAfterDrag(200.0, -0.6) == 199.0);
+    TEST("Drag: half delta rounds up", FPLayout::RailWidthAfterDrag(180.0, 49.5) == 230.0);
+
+    // ---- Persistent quick-actions bar button set (rail-independent) ----
+    const std::vector<std::string>& QL = FPLayout::QuickActionLabels();
+    TEST("Quick bar: exactly 4 actions", QL.size() == 4);
+    TEST("Quick bar: Import Art... first", QL[0] == "Import Art...");
+    TEST("Quick bar: Sync All -> All", QL[1] == "Sync All -> All");
+    TEST("Quick bar: Auto-Fit All", QL[2] == "Auto-Fit All");
+    TEST("Quick bar: Clear All Overrides last", QL[3] == "Clear All Overrides");
+
+    printf("  [Accessibility Mirrors: 38 tests]\n");
+}
+
+// --- Phase 4b: preview mode mirrors ---
+// Cycle Preview runs the four live systems one at a time (2s each); Live
+// Preview runs blink + expression + viseme + orbit all at once. Pins the
+// system registry, the cycle order/duration, and the live cadence/period.
+void TestPreviewModesMirror() {
+    printf("\n=== Preview Modes Mirror (Phase 4b) ===\n");
+
+    const std::vector<std::string>& Sys = FPLayout::PreviewSystems();
+    TEST("Systems: exactly 4 live systems", Sys.size() == 4);
+    TEST("Systems: blink first", Sys[0] == "blink");
+    TEST("Systems: expression second", Sys[1] == "expression");
+    TEST("Systems: viseme third", Sys[2] == "viseme");
+    TEST("Systems: orbit last", Sys[3] == "orbit");
+
+    TEST("Cycle: 2s phase duration", FPLayout::PreviewCyclePhaseDuration() == 2.0);
+    TEST("Cycle: phase count matches systems",
+        (int)FPLayout::PreviewSystems().size() == 4);
+
+    const std::vector<bool> F0 = FPLayout::PreviewModeSystemFlags("cycle", 0);
+    const std::vector<bool> F3 = FPLayout::PreviewModeSystemFlags("cycle", 3);
+    TEST("Cycle phase 0: blink only", F0[0] && !F0[1] && !F0[2] && !F0[3]);
+    TEST("Cycle phase 3: orbit only", !F3[0] && !F3[1] && !F3[2] && F3[3]);
+    const std::vector<bool> Fbad = FPLayout::PreviewModeSystemFlags("cycle", 9);
+    TEST("Cycle out-of-range phase: nothing enabled",
+        !Fbad[0] && !Fbad[1] && !Fbad[2] && !Fbad[3]);
+
+    const std::vector<bool> Live = FPLayout::PreviewModeSystemFlags("live");
+    TEST("Live: all four systems enabled together",
+        Live[0] && Live[1] && Live[2] && Live[3]);
+    TEST("Live: viseme re-trigger cadence 2.5s", FPLayout::LivePreviewVisemeCadence() == 2.5);
+    TEST("Live: orbit sweep period 8s", FPLayout::LivePreviewOrbitPeriod() == 8.0);
+
+    printf("  [Preview Modes Mirror: 13 tests]\n");
+}
+
 int main() {
     printf("===== Face Parallax Math Tests =====\n\n");
 
@@ -7142,10 +7993,20 @@ int main() {
     TestPhaseEFMirrors();
     TestPhaseGWidgetMirrors();
     TestPhaseHUIDesign();
+    TestPhaseIUITesting();
     TestHotspotRegions();
+    TestHotspotHitIndexEdges();
+    TestHotspotLayerMapping();
+    TestTransformHotspotRegion();
+    TestPinDriftMirror();
+    TestPhase4Mirrors();
+    TestPrimaryLayerPin();
     TestPinRotation();
     TestNestedEffectiveTransform();
     TestPinDataSurvivesSync();
+
+    TestAccessibilityMirrors();
+    TestPreviewModesMirror();
 
     printf("\n===== Results: %d/%d passed (%d failed) =====\n",
         g_passed, g_total, g_total - g_passed);

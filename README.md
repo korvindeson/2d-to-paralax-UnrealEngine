@@ -50,9 +50,9 @@ The system renders a 2D character face that responds to camera angle — switchi
 | `FaceParallaxEditorWidgetPanels.cpp` | Widget panels + diagnostics | `RefreshUI()` and all `Refresh*`/`Rebuild*` panel methods, zone diagram, status matrix, cross-layer/tag/material cross-refs, outline→depth bake, snapshot, diagnostics |
 | `FaceParallaxEditorWidgetShared.h` | Widget shared internals | Anonymous-namespace helpers (channel/view-state suffix parsing, `FPresetTransactionScope`, `AccentBlue`, `MakeLbl`/`MakeBtn`) + the `SFaceLayerGizmo` nested class, shared by all widget translation units |
 | `FaceParallaxLayoutSpec.h` | UI design contract (Phase H) | Pure C++17 layout manifest + metrics/placement solver + P1–P15 design-principle validator over the widget tree. Self-checked in `RebuildWidget` and fully covered by `TestPhaseHUIDesign`. |
-| `FaceParallaxEditorSubsystem.h/.cpp` | Editor subsystem | Registers the toolbar button + `FaceParallaxOpenEditor` console command and hosts the widget in a docked nomad tab. Asset deployment is handled entirely by `deploy.py` (repo root) |
+| `FaceParallaxEditorSubsystem.h/.cpp` | Editor subsystem | Registers the **Face Editor** toolbar button + **Window → Face Parallax Editor** menu entry, the `FaceParallaxOpenEditor` console command, and auto-open on editor startup (`bAutoOpenEditorOnStartup`, default ON); hosts the widget in a docked nomad tab. Asset deployment is handled entirely by `deploy.py` (repo root) |
 | `FaceParallaxModule.cpp` | Module entry | `IMPLEMENT_MODULE(FDefaultModuleImpl, FaceParallax)` — required for the runtime DLL to register |
-| `Tests/ParallaxMathTests.cpp` | Math tests | Standalone C++17 (no UE dep) — 1082 tests covering state machine, transforms, blink/expression/viseme, swoosh, parameters, nested art + jiggle, 3D pin projection + view-angle rotation, batch ops, zone multipliers, per-view visual hull, Phase H layout-design contract |
+| `Tests/ParallaxMathTests.cpp` | Math tests | Standalone C++17 (no UE dep) — 1360 tests covering state machine, transforms, blink/expression/viseme, swoosh, parameters, nested art + jiggle, 3D pin projection + view-angle rotation, batch ops, zone multipliers, per-view visual hull, Phase H layout-design contract |
 | `Tests/SyntaxValidator.py` | Syntax validator | Brace/macro balance, include guards — enforces clean parsing on all source files |
 | `Tests/run_tests.ps1` | Test runner | Root→SAMPLES sync + Python syntax validator + C++ math tests + optional UE build test |
 | `Tests/ue_build_test.ps1` | UE build test | Compiles SAMPLES project with `Build.bat`, verifies DLL output |
@@ -261,13 +261,15 @@ Preset → {
 | `GetAllLayerTags(State)` | List all layer tags for a state |
 | `GetNestedElement` / `SetNestedElement` / `AddNestedElement` / `RemoveNestedElement` | Nested art access |
 | `PinRotationFromYawDev(YawDev, HalfZoneWidth, MinRot, MaxRot, Sens)` | Static view-angle→rotation mapping (wrap, normalize, lerp, sensitivity) — unit-mirrored |
+| `PinRotationFromViewAngles(YawDev, PitchDev, HalfZoneWidth, MinRot, MaxRot, Sens)` | Phase 5 pitch-aware variant — byte-identical to the yaw-only mapping at `PitchDev = 0`, eases to center rotation at the pitch zone edge (unit-mirrored by `TestPrimaryLayerPin`) |
+| `PinScaleFromView(YawDev, PitchDev, MinScale)` | Phase 5 view-angle scale: `Lerp(1, MinScale, 1 − \|Cos(Yaw)·Cos(Pitch)\|)` (unit-mirrored) |
 | `ProjectPinToUV(Pin3D, ViewState)` / `ProjectPinToUVForState(Pin3D, ViewState)` | Project a 3D pin to UV using the zone-center camera angle of a view state |
 | `GetNestedPin3D` / `SetNestedPin3D` | Pin projection access |
 | `GetSwooshArt` / `SetSwooshArt` / `HasSwooshArt` / `ClearSwooshArt` | Swoosh art access |
 | `GetParamBindings` / `SetParamBindings` | Parameter binding access |
 | `GetAltTextures` / `SetAltTextures` | Alt texture set access |
 | `BatchSetTextures` / `BatchSetTexturesAllLayers` | Batch texture assignment |
-| `DuplicateState` / `ClearAllTextures` / `SyncLayerNestedToAllViews` | Batch operations |
+| `DuplicateState` / `ClearAllTextures` / `SyncLayerNestedToAllViews(Layer, Elem, El, bSyncPins=true)` | Batch operations; `bSyncPins=false` propagates art/jiggle/pivot but keeps each view's own pin (new elements get a fresh unpinned pin) |
 | `SetNestedAltTextures` | Alt textures for nested elements |
 
 ---
@@ -312,11 +314,14 @@ Attach child art pieces to existing layers with independent transforms, spring-d
 |---|---|
 | `bPinned` | Enables 3D pin projection: the element's pivot is the projected UV of `Position3D` (face-local `-1..1` per axis) at the live camera angle, so the element stays attached to its 3D point as the head turns |
 | `Position3D` | Face-local pin position (X left/right, Y up/down, Z toward the nose) |
-| `bEnableViewAngleRotation` | Enables rotation driven by view angle |
+| `bEnableViewAngleRotation` | Enables rotation + scale driven by view angle |
 | `MinRotation` / `MaxRotation` | Rotation sweep in degrees (defaults ±30) |
 | `RotationSensitivity` | Multiplier on the mapped rotation |
+| `MinScale` | View-angle scale floor (default 0.5): at the zone center scale = 1; at 90° deviation it eases to `MinScale` |
 
 **Rotation math:** `PinRotationFromYawDev` (static, unit-tested) wraps the yaw deviation from the rendered state's zone center to `[-180,180]`, normalizes it by `HalfZoneWidth` (clamped to `[-1,1]`), lerps `MinRotation → MaxRotation` across that range, and multiplies by `RotationSensitivity`. The result is added to the element's rotation in `ComputeNestedEffectiveTransform` — which rotates *around the pin*, because a pinned element's effective pivot is the projected pin UV. Example: symmetric `Min=-30 / Max=30` gives 0° at the view center and ±30° at the zone edge. Symmetric min/max make the eyebrow stay level at the front view and tilt as the head turns toward the profile.
+
+**Pitch-aware variant (Phase 5):** `PinRotationFromViewAngles(YawDev, PitchDev, ...)` drives the same mapping with the driver `NormYaw × (1 − |NormPitch|)` — pitch deviation eases the rotation to the center value at the pitch zone edge, and at `PitchDev = 0` the result is **byte-identical** to `PinRotationFromYawDev` (regression-mirrored by `TestPrimaryLayerPin`). `PinScaleFromView(YawDev, PitchDev, MinScale)` computes `Lerp(1, MinScale, 1 − |Cos(Yaw)·Cos(Pitch)|)`; both are applied to nested pins and to the whole layer via `FFaceArtSlot::LayerPin3D` (a pin on the layer slot itself: the primary art follows a projected 3D point, with optional view-angle rotation/scale).
 
 **Authoring:** `SetNestedPinFromUV` converts a click position into `Position3D` (Back-view clicks mirror the X axis so round-trips stay consistent); `ProjectPinToUVForState`/`ProjectPinToUV` project using the state's zone-center camera angle.
 
@@ -414,6 +419,9 @@ The `UUserWidget` subclass constructs its entire UI via `RebuildWidget()` — no
 - **Pin controls (advanced)** — element `<` `>` stepper (no more hardcoded element 0), live Pinned checkbox, Pin X/Y/Z sliders with numeric readouts, plus view-angle rotation controls: "Rotate w/ view angle" checkbox and Min Rot / Max Rot / Sens sliders; all refreshed by `RefreshPinControls()`
 - **Param bindings table (Phase E)** — `RebuildParamTable` shows every binding of the active state/layer: editable param name, target cycle button (PosX→PosY→SclX→SclY→Rot→Blend), Invert checkbox, and X remove; the Add row above appends new bindings via `SetParamBindings`
 - **Problems panel (Phase F)** — `RebuildProblemsPanel` validates all 10 states × every layer for missing albedo/normal/depth and warns on blink-frame and viseme-frame count mismatches across layers; issues are deduplicated (sorted-unique), color-coded (red error / amber warning), and clicking a row jumps to that state
+- **Problems panel upgrades (Phase 4)** — the panel now has a quick-actions bar (rail jump chips + Import + Clear Stale), a Layout Group section that live-runs the manifest's `ValidateDesign(BuildSpec())` and lists any P1–P16 violations (green "Design contract OK" when clean), a rail-width control (`RailWidthPx`, 180–360 px via `FPLayout::ClampRailWidth`, default 180 — rebuilds the layout), an issue search box that filters rows live with a match count in the summary, and a summary line on the Problems accordion header (`SFaceAccordion::SetSectionSummary`)
+- **Show Pins (Phase 3)** — the canvas mode row's "Pins" checkbox paints every nested-element marker on the gizmo color-coded: amber = static pin, cyan = rotation pin, purple = jiggle element, red ring = plain pivot anchor (unpinned); the selected pin handle stays amber as before
+- **Sync drift indicator (Phase C)** — `RefreshSyncDriftIndicator` compares the active state's canonical transform against the other 9; shows "Synced" or "Drifted: n/9" (exact-equality semantics mirrored by `FPPinDriftCount`/`TestPinDriftMirror`); now wired into the Transform rail's Quick Actions section and refreshed from `RefreshUI()`
 - **Alignment tools (Phase B)** — canvas gizmo (`SFaceLayerGizmo`, drag body=move / corner=scale / top handle=rotate), onion-skin ghost of the adjacent state with opacity slider, and Cross-View Transform copy-from combo + Link checkbox that broadcasts edits to all states (`ApplyCanonicalTransformWithLink`)
 - **Thumbnail status matrix** — 10-state × N-layer grid of aspect-correct albedo thumbnails (pixel size + click-to-jump tooltip) replacing the old 22×20 ✓/× grid
 - **Camera follows view** — view-strip clicks and matrix jumps snap orbit yaw/pitch to the state's zone center when `bCameraFollowsView` is enabled (default)
@@ -424,7 +432,18 @@ The `UUserWidget` subclass constructs its entire UI via `RebuildWidget()` — no
 - **Outline view management** — per-state checkboxes bound to the component's `OutlineViewStates` (All/None shortcuts); depth grid resolution is user-editable (8–256)
 - **Outline → depth with scope + confirm** — "Generate Depth from Outlines" is arm/confirm-guarded (first click arms, second click commits; Detect Profile runs the combined flow unarmed) and offers a bake scope (Front only / 8 h-states / all 10). Each target view receives its own per-view visual-hull map computed in that view's camera frame instead of a verbatim copy of the front map, and the bake only touches the depth channel of the target states' layers
 - **Toolbar search** — the filter box moved to the toolbar so it applies across all 6 property panels (right pane + 5 rails)
+- **Rail accessibility (Phase 4b)** — the big-scroll remediation follow-up, all mirrored by `TestAccessibilityMirrors` (`FPLayout::RailSectionTitles` / `FindRailSectionByTitle` / `ConfigSummary` / `VisemeSummary` / `RailWidthAfterDrag` / `QuickActionLabels`):
+  - **Progressive disclosure below section level** — the Debug rail's 8-checkbox Config section and the Viseme Frames grid each collapse into a one-line summary ("K of 8 on" / "N viseme rows") behind a clickable `SFaceDisclosure` header; summaries update live from `RefreshConfigCheckboxes` / `RebuildVisemeGrid`
+  - **Persistent quick-actions bar** — Import Art…, Sync All→All, Auto-Fit All, Clear All Overrides sit in a pinned strip above the rail switcher, visible on every rail tab (button set mirrors `FPLayout::QuickActionLabels()`)
+  - **Cross-rail search jump** — pressing Enter in the toolbar search runs `OnRailSearchCommitted`, finds the first section title containing the query across all 5 rails, switches rail, expands the accordion section, and scrolls it into view (`SScrollBox::ScrollDescendantIntoView`); a "no match" status message is shown otherwise
+  - **Drag-resize rail** — `SFaceRailResizer` handle between the rail column and canvas: drag updates `RailWidthPx` live (clamped to `FPLayout::ClampRailWidth` 180–360 via `SetRailWidthLive`, no rebuild during the drag; commit rebuilds so the Debug rail-width spinbox stays in sync)
+  - **Section-jump chips + scroll indicator** — every rail has a pinned chip row above its scroll viewport (`BuildRailSectionChips`): one chip per registered section (`RegisterRailSection` / `RegisterAccordionSections`), click to jump (cross-rail jumps rebuild + auto-expand + scroll), the last-jumped chip highlights; the registry is the single source of truth for chips and search
 - **Live numeric camera readouts** — Yaw/Pitch/Dist values shown next to the sliders and updated on refresh
+- **Spatial part picking (Phase 1/2/4)** — the preview canvas carries a hotspot overlay (`SFaceHotspotLayer`) with 13 anatomical UV regions (brow/eye/nose/cheek/mouth/teeth/chin/ear/neck) plus a matching parts-strip of chips under the canvas:
+  - **Select vs import are separate actions** — a plain click resolves the region to a layer (`ResolveHotspotLayer`: the preset's persisted `HotspotLayerMap` first, then `FPLayout::FPHotspotLayerMatch` exact → plural → L/R-collapse → prefix derivation, so the default Eyes/Brows/Mouth/Hair layer set resolves EyeL→Eyes, BrowR→Brows, Mouth→Mouth out of the box) and selects it, jumping to the Transform rail with tweak controls open; Alt+click (or an unmapped region) routes to the Import Folder Wizard preselected on that part instead; right-click on a chip opens the in-tool region→layer remap menu (persisted in the preset, "Auto (derived)" resets)
+  - **Per-view bounds from stored transforms** — `RefreshHotspotRegions` transforms each mapped region's outline by its layer's effective transform for the active view state (`FPHotspotTransformRegion` mirrors the master material's UV chain: pivot subtract → art position → scale → pivot add → rotate), so outlines hug the art's real position/scale on Profile/Back/¾/Top/Bottom instead of a fixed front template; unmapped regions keep the template pose
+  - **Cycle Preview (Phase 2)** — 8-second tour sequencing the live systems one at a time: blink 2s → expression 2s → viseme 2s → orbit sweep 2s
+  - **Live Preview (Phase 4b)** — the assembled-result check: blink + Smile expression + re-triggered viseme (2.5s cadence) + continuous orbit sweep (8s period) all run TOGETHER; the two modes are mutually exclusive (starting one stops the other). Both mode machines are mirrored by `TestPreviewModesMirror` (`FPLayout::PreviewSystems` / `PreviewCyclePhaseDuration` / `LivePreviewVisemeCadence` / `LivePreviewOrbitPeriod` / `PreviewModeSystemFlags`)
 - **Restore Snapshot** — renamed from the misleading "Undo" and given an explanatory tooltip; Clear State/Clear All require a confirming second click; "Log: ON/OFF" collapses the diagnostic log
 
 **Function categories:** Preset, ViewState, Transform, ViewOverride (+ mode toggle), Textures, Import, Camera (+ follow/snap), DebugOverlays, Outline→Depth, Status, DynamicArt, TextureAndTransformParams, Blink, Expression, Viseme, Parameter, ParamBinding, Swoosh, UI, NestedArt, Targets.
@@ -467,6 +486,18 @@ The `UUserWidget` subclass constructs its entire UI via `RebuildWidget()` — no
 | `FrameFillRatio(Occupied)` / `ClampGridCols(MaxFrames)` / `AppendSortedUnique(Out, Line)` / `VisemeFramesMismatch(A, B)` | Static pure helpers for the timeline/problems systems (unit-mirrored) |
 | `RefreshPinControls()` | Refreshes pin slider values, readouts, and Pinned/rotation checkbox state from the selected nested element |
 | `SetNestedPinFromUV(State, LayerTag, Index, FromViewState, UV)` | Converts a canvas click to `Position3D` (Back-view clicks mirror the X axis) |
+| `RegisterRailSection(RailIdx, Title, Target, Accordion?, AccordionIdx?)` | Registers a rail section for chips + search jump; accordion sections pass the accordion + index so jumps auto-expand |
+| `RegisterAccordionSections(RailIdx, Accordion)` | Bulk-registers every accordion section in visual order (Debug 8, Advanced 4) |
+| `JumpToRailSection(RailIdx, SectionIdx)` | Switches rail if needed (pending jump consumed at rebuild end), expands the section, scrolls its header into view, highlights its chip |
+| `OnRailSearchCommitted(Query)` | Enter-in-search handler: `FPLayout::FindRailSectionByTitle` across all rails → jump or status message |
+| `UpdateDisclosureSummaries()` | Refreshes the Config disclosure "K of 8 on" summary from component/local toggle state |
+| `GetRailWidthPx()` / `SetRailWidthLive(W)` / `ApplyRailWidthDelta(Delta)` | Rail width accessor, live clamped resize (width box only), and drag commit (clamp + rebuild) |
+| `HandleHotspotClick(RegionName)` | Canvas/parts-strip pick: resolves the region to a layer, selects it, opens the Transform rail, and opens the Import Folder Wizard preselected on that part |
+| `ImportHotspotRegion(RegionName)` | Alt+click path: opens the Import Folder Wizard preselected on that part |
+| `ResolveHotspotLayer(RegionName)` / `RemapHotspotLayer(RegionName, Tag)` | Explicit `HotspotLayerMap` first, then `FPHotspotLayerMatch` derivation; persists explicit region→layer mappings |
+| `OpenHotspotRemapMenu(RegionName, Ev)` | Right-click chip context menu: "Auto (derived)" reset + one entry per layer tag |
+| `StartCyclePreview()` / `StopCyclePreview()` | Sequential 8s tour: blink → expression → viseme → orbit sweep (2s each) |
+| `StartLivePreview()` / `StopLivePreview()` | Combined preview: blink + expression + viseme + orbit running together (mutually exclusive with Cycle Preview) |
 
 ---
 
@@ -566,14 +597,15 @@ Nested art elements from the Front state spawn as child quads (tag `{LayerTag}_{
 
 ### Step 4: Import and Assign Art Textures
 
-With the widget open (type `FaceParallaxOpenEditor` in the console, or click the **Face Editor** toolbar button — it opens as a dockable tab in the main editor window):
+With the widget open (**it auto-opens as a dockable tab when the editor starts**, or open it manually: **Window → Face Parallax Editor** menu entry, the **Face Editor** toolbar button, or type `FaceParallaxOpenEditor` in the console):
 
 > **Note:** the preview camera frames the mannequin's head (where the face layers live), and unassigned layers render as white patches until you assign art textures — the character itself stays a default mannequin until you import art and assign it via the widget.
 
 **Troubleshooting the editor widget:**
 
 - **Widget target properties (`PreviewActor`, `ActivePreset`) are `Transient`** — they are runtime bindings and are never serialized into the widget asset. This prevents `Illegal TEXT reference ... Import failed` warnings and the PreviewActor "resets to none" issue.
-- **The widget must open as a docked tab** inside the main editor window. If you get a separate floating window, the old C++ module is still loaded (Live Coding patches do not survive editor restarts — restart the editor and run `deploy.py` again in the new session). Verify the build with the log markers: `[FaceParallax] EditorSubsystem initialized - DOCKED-TAB BUILD v3 (marker 0xV3)` and `[FaceParallax] OpenEditorWidget — invoking nomad tab 'FaceParallaxEditor'`. Every button click logs `[FaceParallaxWidget] CLICK '...'`, and every widget rebuild logs `[FaceParallaxWidget] REBUILD DOCKED-TAB v3`.
+- **The widget must open as a docked tab** inside the main editor window. If you get a separate floating window, the old C++ module is still loaded (Live Coding patches do not survive editor restarts — restart the editor and run `deploy.py` again in the new session). Verify the build with the log markers: `[FaceParallax] EditorSubsystem initialized - DOCKED-TAB BUILD v3 (marker 0xV3)`, `[FaceParallax] Auto-open on startup — invoking tab` (startup auto-open) and `[FaceParallax] OpenEditorWidget — invoking nomad tab 'FaceParallaxEditor'`. Every button click logs `[FaceParallaxWidget] CLICK '...'`, and every widget rebuild logs `[FaceParallaxWidget] REBUILD DOCKED-TAB v3`.
+- **Auto-open on startup** — the subsystem opens the docked tab once per editor session (default ON). To disable, add to `Config/DefaultEditor.ini`: `[/Script/FaceParallaxEditor.FaceParallaxEditorSubsystem]` with `bAutoOpenEditorOnStartup=false`. The tab is only auto-opened once per process, so a Live Coding re-init never force-reopens a tab you closed.
 - **`FaceParallaxOpenEditor` is a registered console command** (not just a `UFUNCTION(Exec)`) — the subsystem registers it with `IConsoleManager` at initialization, so it dispatches even if Live Coding has left the exec binding stale. If typing it still does nothing, restart the editor and run `deploy.py` again — the command is only registered by the freshly built module.
 
 1. **Select a View State** — click one of the 10 state buttons (Front, 3/4R, ProR, etc.)

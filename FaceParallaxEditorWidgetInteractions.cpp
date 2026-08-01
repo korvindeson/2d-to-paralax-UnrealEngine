@@ -30,6 +30,9 @@
 #include "Widgets/Input/SMultiLineEditableTextBox.h"
 #include "UObject/ObjectSaveContext.h"
 #include "Rendering/DrawElements.h"
+#include "Framework/Application/SlateApplication.h"
+#include "Framework/Application/MenuStack.h"
+#include "Framework/MultiBox/MultiBoxBuilder.h"
 
 
 // ====================================================================
@@ -46,26 +49,233 @@ void UFaceParallaxEditorWidget::SetSelectedLayer(const FString& LayerName)
     }
 }
 
-// Phase 4: a canvas hotspot region was clicked. Select the matching layer
-// (if the preset has one) and open the Import Folder Wizard preselected on
-// that part, so unassigned regions flow straight into assignment.
+// Phase 4/1: a canvas hotspot region (or parts-strip chip) was clicked.
+// Resolve the region to a primary layer via the preset's explicit
+// HotspotLayerMap first, then FPLayout::FPHotspotLayerMatch derivation,
+// select that layer, and open the Import Folder Wizard preselected on the
+// part — one click goes from "zone" straight to assigning art to it.
 void UFaceParallaxEditorWidget::HandleHotspotClick(const FString& RegionName)
 {
     if (RegionName.IsEmpty()) return;
-    if (ActivePreset)
+    const FName LayerTag = ResolveHotspotLayer(RegionName);
+    if (LayerTag.IsValid())
     {
-        for (const FName& L : ActivePreset->GetAllLayerTags(ActiveViewState))
-        {
-            if (L.ToString() == RegionName)
-            {
-                SetSelectedLayer(RegionName);
-                break;
-            }
-        }
+        SetSelectedLayer(LayerTag.ToString());
+        if (RailSwitcher.IsValid()) RailSwitcher->SetActiveWidgetIndex(1);   // Transform rail
+        SetStatus(FString::Printf(TEXT("Hotspot '%s' -> layer '%s' — import art for this zone"),
+            *RegionName, *LayerTag.ToString()), AccentBlue());
+    }
+    else
+    {
+        SetStatus(FString::Printf(
+            TEXT("Hotspot '%s' is unmapped — right-click the chip to map it to a layer"),
+            *RegionName), AccentBlue());
     }
     OpenImportFolderWizard(RegionName);
-    SetStatus(FString::Printf(TEXT("Hotspot '%s': selected, Import Art opened for assignment"),
-        *RegionName), AccentBlue());
+}
+
+// Alt+click on a hotspot or parts chip: open the Import Folder Wizard
+// preselected on that part, so unassigned regions flow into assignment.
+void UFaceParallaxEditorWidget::ImportHotspotRegion(const FString& RegionName)
+{
+    if (RegionName.IsEmpty()) return;
+    OpenImportFolderWizard(RegionName);
+    SetStatus(FString::Printf(TEXT("Import Art opened for hotspot '%s'"), *RegionName), AccentBlue());
+}
+
+// Cycle Preview (Phase 2): a scripted 8-second tour of the live animation
+// systems — blink 2s, expression 2s, viseme 2s, orbit sweep 2s. All systems
+// are already concurrent on the preview actor (Component.cpp), this just
+// sequences them from the tool tab via NativeTick.
+void UFaceParallaxEditorWidget::StartCyclePreview()
+{
+    if (bCyclePreviewActive) return;
+    if (bLivePreviewActive) StopLivePreview();
+    bCyclePreviewActive = true;
+    CyclePhase = 0;
+    CyclePhaseTime = 0.0f;
+    SetBlinkingEnabled(true);
+    SetExpressionByName(FName(TEXT("Neutral")));
+    SetVisemeEnabled(false);
+    SetOrbitYaw(0.0f);
+    SetStatus(TEXT("Cycle Preview: blink -> expression -> viseme -> orbit sweep"), AccentBlue());
+}
+
+void UFaceParallaxEditorWidget::StopCyclePreview()
+{
+    bCyclePreviewActive = false;
+    CyclePhase = -1;
+    CyclePhaseTime = 0.0f;
+    SetBlinkingEnabled(false);
+    SetExpressionByName(FName(TEXT("Neutral")));
+    SetVisemeEnabled(false);
+    SetOrbitYaw(0.0f);
+}
+
+// Live Preview (Phase 4b): blink + expression + viseme + orbit all run at
+// the same time so the assembled result can be checked in one go, unlike
+// Cycle Preview which sequences the same four systems one at a time.
+void UFaceParallaxEditorWidget::StartLivePreview()
+{
+    if (bLivePreviewActive) return;
+    if (bCyclePreviewActive) StopCyclePreview();
+    bLivePreviewActive = true;
+    LivePreviewTime = 0.0f;
+    SetBlinkingEnabled(true);
+    SetExpressionByName(FName(TEXT("Smile")));
+    SetVisemeEnabled(true);
+    PlayVisemeByName(FName(TEXT("Ah")));
+    SetOrbitYaw(0.0f);
+    SetStatus(TEXT("Live Preview: blink + smile + viseme + orbit sweep together"), AccentBlue());
+}
+
+void UFaceParallaxEditorWidget::StopLivePreview()
+{
+    bLivePreviewActive = false;
+    LivePreviewTime = 0.0f;
+    SetBlinkingEnabled(false);
+    SetExpressionByName(FName(TEXT("Neutral")));
+    SetVisemeEnabled(false);
+    SetOrbitYaw(0.0f);
+}
+
+void UFaceParallaxEditorWidget::NativeTick(const FGeometry&, float InDeltaTime)
+{
+    // Live canvas: no setter re-arms the scene capture, so poll it here —
+    // the render target re-captures at ~30Hz, keeping the canvas in sync
+    // with texture/transform/orbit/view-state edits (imports, sliders, etc.).
+    if (PreviewActor.IsValid())
+    {
+        CaptureCooldown -= InDeltaTime;
+        if (CaptureCooldown <= 0.0f)
+        {
+            PreviewActor->RequestCapture();
+            CaptureCooldown = 0.033f;
+        }
+    }
+    if (bLivePreviewActive)
+    {
+        // Combined mode: blink keeps looping on the component, the Smile
+        // expression stays applied, the "Ah" viseme re-triggers on a speech
+        // cadence, and the orbit sweeps continuously (-45..+45 over 8s).
+        SetOrbitYaw(45.0f * FMath::Sin(LivePreviewTime * 2.0f * PI / 8.0f));
+        LivePreviewTime += InDeltaTime;
+        if (LivePreviewTime >= 2.5f)
+        {
+            LivePreviewTime = 0.0f;
+            PlayVisemeByName(FName(TEXT("Ah")));
+        }
+        return;
+    }
+    if (!bCyclePreviewActive) return;
+    constexpr float PhaseDuration = 2.0f;
+    const int32 Phase = CyclePhase;
+
+    // Orbit phase sweeps yaw continuously (-45..+45) across its 2 seconds.
+    if (Phase == 3)
+        SetOrbitYaw(45.0f * FMath::Sin(CyclePhaseTime * 2.0f * PI / PhaseDuration));
+
+    CyclePhaseTime += InDeltaTime;
+    if (CyclePhaseTime < PhaseDuration) return;
+
+    CyclePhaseTime = 0.0f;
+    ++CyclePhase;
+    switch (Phase)
+    {
+    case 0:   // blink done -> expression
+        SetBlinkingEnabled(false);
+        SetExpressionByName(FName(TEXT("Smile")));
+        break;
+    case 1:   // expression done -> viseme
+        SetExpressionByName(FName(TEXT("Neutral")));
+        PlayVisemeByName(FName(TEXT("Ah")));
+        SetVisemeEnabled(true);
+        break;
+    case 2:   // viseme done -> orbit sweep
+        SetVisemeEnabled(false);
+        SetOrbitYaw(0.0f);
+        break;
+    case 3:   // orbit done -> reset everything
+    default:
+        StopCyclePreview();
+        SetStatus(TEXT("Cycle Preview complete"), AccentBlue());
+        break;
+    }
+}
+
+// Explicit map first (persisted in the preset), then derived match against
+// the union of all view layer tags; None when neither yields a layer.
+FName UFaceParallaxEditorWidget::ResolveHotspotLayer(const FString& RegionName) const
+{
+    if (!ActivePreset) return FName();
+    if (const FName* Mapped = ActivePreset->HotspotLayerMap.Find(RegionName))
+    {
+        if (Mapped->IsValid()) return *Mapped;
+    }
+    std::vector<std::string> TagStrings;
+    for (const FName& Tag : GetUILayerTags())
+        TagStrings.emplace_back(TCHAR_TO_UTF8(*Tag.ToString()));
+    const char* Derived = FPLayout::FPHotspotLayerMatch(TagStrings, TCHAR_TO_UTF8(*RegionName));
+    return Derived ? FName(UTF8_TO_TCHAR(Derived)) : FName();
+}
+
+// Persist an explicit region -> layer mapping (or clear when LayerTag is
+// None), then refresh the strip so chip colors/labels update.
+void UFaceParallaxEditorWidget::RemapHotspotLayer(const FString& RegionName, FName LayerTag)
+{
+    if (RegionName.IsEmpty()) return;
+    if (!ActivePreset) return;
+    if (LayerTag.IsValid())
+        ActivePreset->HotspotLayerMap.Add(RegionName, LayerTag);
+    else
+        ActivePreset->HotspotLayerMap.Remove(RegionName);
+    ActivePreset->MarkPackageDirty();
+    RebuildPartsStrip();
+    SetStatus(FString::Printf(TEXT("Hotspot '%s' -> %s"), *RegionName,
+        LayerTag.IsValid() ? *LayerTag.ToString() : TEXT("derived (default)")), AccentBlue());
+}
+
+// Right-click remap menu for a parts-strip chip: one entry per primary layer
+// plus an "auto (derived)" reset entry. Pushed as a Slate context menu.
+void UFaceParallaxEditorWidget::OpenHotspotRemapMenu(const FString& RegionName, const FPointerEvent& Ev)
+{
+    if (!ActivePreset || !PartsStrip.IsValid()) return;
+    FMenuBuilder Menu(true, nullptr);
+    Menu.BeginSection("HotspotRemap",
+        FText::FromString(FString::Printf(TEXT("Map '%s' to layer"), *RegionName)));
+    const FName Current = ResolveHotspotLayer(RegionName);
+    Menu.AddMenuEntry(FText::FromString(TEXT("Auto (derived)")),
+        FText::FromString(TEXT("Use the automatic exact/plural/L-R/prefix derivation")),
+        FSlateIcon(),
+        FUIAction(FExecuteAction::CreateLambda([this, RegionName]()
+        {
+            RemapHotspotLayer(RegionName, FName());
+        }),
+        FCanExecuteAction(),
+        FIsActionChecked::CreateLambda([this, RegionName]()
+        {
+            return !ActivePreset->HotspotLayerMap.Contains(RegionName);
+        })));
+    Menu.AddMenuSeparator();
+    for (const FName& Tag : GetUILayerTags())
+    {
+        if (Tag.ToString() == RegionName) continue;   // already exact by name
+        Menu.AddMenuEntry(FText::FromName(Tag),
+            FText::GetEmpty(), FSlateIcon(),
+            FUIAction(FExecuteAction::CreateLambda([this, RegionName, Tag]()
+            {
+                RemapHotspotLayer(RegionName, Tag);
+            }),
+            FCanExecuteAction(),
+            FIsActionChecked::CreateLambda([this, RegionName, Tag]()
+            {
+                return ActivePreset->HotspotLayerMap.FindRef(RegionName) == Tag;
+            })));
+    }
+    Menu.EndSection();
+    FSlateApplication::Get().PushMenu(PartsStrip.ToSharedRef(), FWidgetPath(),
+        Menu.MakeWidget(), Ev.GetScreenSpacePosition(),
+        FPopupTransitionEffect(FPopupTransitionEffect::ContextMenu));
 }
 
 // ====================================================================
@@ -75,6 +285,151 @@ void UFaceParallaxEditorWidget::HandleHotspotClick(const FString& RegionName)
 void UFaceParallaxEditorWidget::SetActiveRailIndex(int32 Index)
 {
     ActiveRailIndex = FMath::Clamp(Index, 0, 4);
+    RebuildWidget();
+}
+
+// ====================================================================
+// PHASE 4b: RAIL ACCESSIBILITY (chips / jump / search / resizer)
+// Mirrors: FPLayout::RailSectionTitles / FindRailSectionByTitle /
+// ConfigSummary / VisemeSummary / RailWidthAfterDrag / QuickActionLabels
+// (Tests/ParallaxMathTests.cpp::TestAccessibilityMirrors).
+// ====================================================================
+
+void UFaceParallaxEditorWidget::RegisterRailSection(int32 RailIdx, const FString& Title,
+    TSharedRef<SWidget> Target, const TSharedPtr<SFaceAccordion>& Accordion, int32 AccordionIdx)
+{
+    if (!RailSections.IsValidIndex(RailIdx)) return;
+    FFaceRailSection Sec(Title, Target);
+    Sec.Accordion = Accordion;
+    Sec.AccordionIdx = AccordionIdx;
+    RailSections[RailIdx].Add(MoveTemp(Sec));
+}
+
+void UFaceParallaxEditorWidget::RegisterAccordionSections(int32 RailIdx, const TSharedPtr<SFaceAccordion>& Accordion)
+{
+    if (!Accordion.IsValid()) return;
+    for (int32 i = 0; i < Accordion->NumSections(); ++i)
+        RegisterRailSection(RailIdx, Accordion->SectionTitle(i),
+            Accordion->GetSectionHeader(i), Accordion, i);
+}
+
+void UFaceParallaxEditorWidget::BuildRailSectionChips()
+{
+    for (int32 Ri = 0; Ri < 5 && Ri < RailChipsRows.Num() && Ri < RailSections.Num(); ++Ri)
+    {
+        RailChipsRows[Ri]->ClearChildren();
+        for (int32 Si = 0; Si < RailSections[Ri].Num(); ++Si)
+        {
+            const FString Title = RailSections[Ri][Si].Title;
+            const bool bActive = (ActiveChipRail == Ri && ActiveChipIdx == Si);
+            TSharedRef<SButton> Chip = SNew(SButton)
+                .ButtonColorAndOpacity(bActive ? AccentBlue() : FLinearColor(0.1f, 0.1f, 0.12f))
+                .OnClicked_Lambda([this, Ri, Si]()
+                {
+                    JumpToRailSection(Ri, Si);
+                    return FReply::Handled();
+                })
+                .Content()
+                [SNew(STextBlock)
+                    .Text(FText::FromString(Title))
+                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 7))
+                    .ColorAndOpacity(FLinearColor(0.75f, 0.75f, 0.8f))];
+            Chip->SetToolTipText(FText::FromString(TEXT("Jump to section: ") + Title));
+            RailChipsRows[Ri]->AddSlot().AutoWidth().Padding(FMargin(2, 2, 0, 2))[Chip];
+        }
+    }
+}
+
+void UFaceParallaxEditorWidget::JumpToRailSection(int32 RailIdx, int32 SectionIdx)
+{
+    if (!RailSections.IsValidIndex(RailIdx) || !RailSections[RailIdx].IsValidIndex(SectionIdx))
+        return;
+    ActiveChipRail = RailIdx;
+    ActiveChipIdx = SectionIdx;
+    if (RailIdx != ActiveRailIndex)
+    {
+        // Rail switch rebuilds the tree; queue the jump for the rebuild end.
+        PendingJumpRail = RailIdx;
+        PendingJumpTitle = RailSections[RailIdx][SectionIdx].Title;
+        SetActiveRailIndex(RailIdx);
+        return;
+    }
+    const FFaceRailSection& Sec = RailSections[RailIdx][SectionIdx];
+    if (Sec.Accordion.IsValid() && Sec.AccordionIdx >= 0)
+        Sec.Accordion->SetExpanded(Sec.AccordionIdx, true);
+    // No rail scrolling (P17 fit-first): every section is reachable without
+    // a vertical scroll bar, so the jump only opens the accordion section.
+    BuildRailSectionChips();
+}
+
+void UFaceParallaxEditorWidget::ConsumePendingJump()
+{
+    if (PendingJumpRail < 0) return;
+    const int32 Ri = PendingJumpRail;
+    const FString Title = PendingJumpTitle;
+    PendingJumpRail = -1;
+    PendingJumpTitle.Empty();
+    if (!RailSections.IsValidIndex(Ri)) return;
+    for (int32 Si = 0; Si < RailSections[Ri].Num(); ++Si)
+    {
+        if (RailSections[Ri][Si].Title == Title)
+        {
+            JumpToRailSection(Ri, Si);
+            return;
+        }
+    }
+}
+
+void UFaceParallaxEditorWidget::OnRailSearchCommitted(const FString& Query)
+{
+    if (Query.IsEmpty()) return;
+    int32 OutRail = -1;
+    int32 OutIdx = -1;
+    const std::string Q(TCHAR_TO_UTF8(*Query));
+    if (FPLayout::FindRailSectionByTitle(Q, OutRail, OutIdx) == 0)
+    {
+        JumpToRailSection(OutRail, OutIdx);
+        return;
+    }
+    if (TextStatus.IsValid())
+        TextStatus->SetText(FText::FromString(
+            FString::Printf(TEXT("No section matches '%s'"), *Query)));
+}
+
+void UFaceParallaxEditorWidget::UpdateDisclosureSummaries()
+{
+    if (!ConfigDisclosure.IsValid()) return;
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    int32 NumOn = 0;
+    if (Comp)
+    {
+        if (Comp->GetBlinkingEnabled()) ++NumOn;
+        if (Comp->GetSwooshEnabled()) ++NumOn;
+        if (Comp->GetNestedArtEnabled()) ++NumOn;
+        if (Comp->GetParamsEnabled()) ++NumOn;
+    }
+    if (bLocalShowTextures) ++NumOn;
+    if (bLocalShowDepthMesh) ++NumOn;
+    if (bLocalShowWireframe) ++NumOn;
+    if (bLocalColorByDepth) ++NumOn;
+    ConfigDisclosure->SetSummary(FString(UTF8_TO_TCHAR(FPLayout::ConfigSummary(NumOn).c_str())));
+}
+
+float UFaceParallaxEditorWidget::GetRailWidthPx() const
+{
+    return RailWidthPx;
+}
+
+void UFaceParallaxEditorWidget::SetRailWidthLive(float W)
+{
+    RailWidthPx = (float)FPLayout::ClampRailWidth((double)W);
+    if (RailWidthBox.IsValid())
+        RailWidthBox->SetWidthOverride(RailWidthPx);
+}
+
+void UFaceParallaxEditorWidget::ApplyRailWidthDelta(float DeltaPx)
+{
+    SetRailWidthLive(RailWidthPx + DeltaPx);
     RebuildWidget();
 }
 
@@ -508,10 +863,8 @@ void UFaceParallaxEditorWidget::OpenImportFolderWizard(const FString& PreselectP
             .Font(FCoreStyle::GetDefaultFontStyle("Bold", 9))
             .ColorAndOpacity(FLinearColor(0.8f,0.8f,0.9f))];
     TSharedRef<SVerticalBox> PreviewRows = SNew(SVerticalBox);
-    TSharedRef<SScrollBox> PreviewScroll = SNew(SScrollBox).Orientation(Orient_Vertical);
-    PreviewScroll->AddSlot()[PreviewRows];
     PreviewBox->AddSlot().AutoHeight().Padding(FMargin(8,2,8,0))
-        [SNew(SBox).HeightOverride(210)[PreviewScroll]];
+        [SNew(SBox).HeightOverride(240)[PreviewRows]];
     RootV->AddSlot().AutoHeight()[PreviewBox];
 
     CB->RebuildPreview = [W, PreviewRows]()
@@ -644,6 +997,11 @@ void UFaceParallaxEditorWidget::OpenImportFolderWizard(const FString& PreselectP
                 SetStatus(FString::Printf(TEXT("Wizard: imported %d, assigned %d for part '%s'"),
                     Imported.Num(), Assigned, *W->Parts[W->SelectedPart]),
                     FLinearColor(0.3f, 1.0f, 0.3f));
+                if (PreviewActor.IsValid() && PreviewActor->FaceParallax)
+                {
+                    PreviewActor->FaceParallax->ApplyCurrentStateTextures();
+                    PreviewActor->RequestCapture();
+                }
                 RefreshTextureThumbs();
                 RefreshUI();
                 Window->RequestDestroyWindow();
@@ -1048,6 +1406,8 @@ void UFaceParallaxEditorWidget::RebuildVisemeGrid()
 {
     if (!VisemeGridBox.IsValid()) return;
     VisemeGridBox->ClearChildren();
+    if (VisemeDisclosure.IsValid())
+        VisemeDisclosure->SetSummary(FString(UTF8_TO_TCHAR(FPLayout::VisemeSummary(0).c_str())));
     UFaceParallaxComponent* Comp = GetParallaxComponent();
     if (!Comp || !SelectedLayerName.IsValid())
     {
@@ -1122,6 +1482,8 @@ void UFaceParallaxEditorWidget::RebuildVisemeGrid()
     {
         VisemeGridBox->AddSlot().AutoHeight()
             [MakeLbl(TEXT("No viseme frames assigned for this layer/state."), 8, FLinearColor(0.5f,0.5f,0.5f))];
+        if (VisemeDisclosure.IsValid())
+            VisemeDisclosure->SetSummary(FString(UTF8_TO_TCHAR(FPLayout::VisemeSummary(0).c_str())));
         return;
     }
     const int32 Cols = ClampGridCols(MaxFrames);
@@ -1162,6 +1524,13 @@ void UFaceParallaxEditorWidget::RebuildVisemeGrid()
             [MakeLbl(FString::Printf(TEXT("%.0f%%"), FrameFillRatio(Row.Occupied) * 100.0f),
                 7, FLinearColor(0.5f,0.7f,0.5f))];
         VisemeGridBox->AddSlot().AutoHeight()[R];
+    }
+    if (VisemeDisclosure.IsValid())
+    {
+        int32 NumRows = 0;
+        for (const FVisemeRow& VR : Rows)
+            if (VR.Occupied.Num() > 0) ++NumRows;
+        VisemeDisclosure->SetSummary(FString(UTF8_TO_TCHAR(FPLayout::VisemeSummary(NumRows).c_str())));
     }
 }
 
@@ -1351,11 +1720,116 @@ void UFaceParallaxEditorWidget::RebuildProblemsPanel()
 {
     if (!ProblemsPanelBox.IsValid()) return;
     ProblemsPanelBox->ClearChildren();
+
+    // ---- Phase 4: quick-actions bar (rail jump chips + tools) ----
+    {
+        TSharedRef<SHorizontalBox> QaRow = SNew(SHorizontalBox);
+        static const TCHAR* ChipNames[5] = { TEXT("Layers"), TEXT("Transform"), TEXT("Camera"), TEXT("Debug"), TEXT("Adv") };
+        for (int32 r = 0; r < 5; ++r)
+        {
+            const int32 Ri = r;
+            QaRow->AddSlot().Padding(FMargin(0, 2)).AutoWidth()
+                [MakeBtn(ChipNames[r], [this, Ri]()
+                {
+                    SetActiveRailIndex(Ri);
+                }, ActiveRailIndex == Ri ? AccentBlue() : FLinearColor(0.12f, 0.12f, 0.14f))];
+        }
+        QaRow->AddSlot().Padding(FMargin(4, 2)).AutoWidth()
+            [MakeBtn(TEXT("Import"), [this]() { OpenImportFolderWizard(TEXT("")); })];
+        QaRow->AddSlot().Padding(FMargin(4, 2)).AutoWidth()
+            [MakeBtn(TEXT("Clear Stale"), [this]() { ClearStaleTargets(); RefreshUI(); }, FLinearColor(1.0f, 0.7f, 0.5f))];
+        QaRow->AddSlot().Padding(FMargin(4, 2)).FillWidth(1.0f);
+        ProblemsPanelBox->AddSlot().AutoHeight()
+            [MakeSectionBox(TEXT("Quick Actions"), QaRow)];
+    }
+
+    // ---- Phase 4: layout group (ValidateDesign rows from the manifest) ----
+    {
+        TSharedRef<SVerticalBox> LgBox = SNew(SVerticalBox);
+        const std::vector<FPLayout::FPLayoutNode> Spec = FPLayout::BuildSpec();
+        const std::vector<FPLayout::FPViolation> V = FPLayout::ValidateDesign(Spec);
+        if (V.empty())
+        {
+            LgBox->AddSlot().AutoHeight().Padding(FMargin(0, 2))
+                [MakeLbl(TEXT("Design contract OK (P1..P16, 0 violations)"), 8, FLinearColor(0.5f, 1.0f, 0.5f))];
+        }
+        else
+        {
+            for (const FPLayout::FPViolation& Vi : V)
+            {
+                TSharedRef<SHorizontalBox> R = SNew(SHorizontalBox);
+                R->AddSlot().Padding(FMargin(0, 1)).AutoWidth()
+                    [SNew(SBox).WidthOverride(10).HeightOverride(10)
+                        [SNew(SBorder)
+                            .BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+                            .BorderBackgroundColor(FLinearColor(1.0f, 0.35f, 0.35f))
+                            .Padding(FMargin(0))]];
+                R->AddSlot().Padding(FMargin(4, 1)).AutoWidth()
+                    [MakeLbl(FString::Printf(TEXT("P%d"), (int32)Vi.Rule + 1), 8, FLinearColor(1.0f, 0.6f, 0.6f))];
+                R->AddSlot().Padding(FMargin(4, 1)).FillWidth(1.0f)
+                    [SNew(STextBlock)
+                        .Text(FText::FromString(FString::Printf(TEXT("%s on %s (%s)"),
+                            UTF8_TO_TCHAR(FPLayout::RuleName(Vi.Rule)),
+                            UTF8_TO_TCHAR(Vi.Node),
+                            UTF8_TO_TCHAR(Vi.Detail.c_str()))))
+                        .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+                        .ColorAndOpacity(FLinearColor(1.0f, 0.6f, 0.6f))
+                        .AutoWrapText(true)];
+                LgBox->AddSlot().AutoHeight()[R];
+            }
+        }
+        // Phase 4: rail width range control (clamped via the manifest mirror).
+        TSharedRef<SHorizontalBox> LwRow = SNew(SHorizontalBox);
+        LwRow->AddSlot().Padding(FMargin(0, 2)).AutoWidth().VAlign(VAlign_Center)
+            [MakeLbl(TEXT("Rail Width"), 8, FLinearColor(0.7f, 0.7f, 0.7f))];
+        TSharedRef<SSpinBox<float>> LwSpin = SNew(SSpinBox<float>)
+            .Value(RailWidthPx)
+            .MinValue(FPLayout::RailWidthMin)
+            .MaxValue(FPLayout::RailWidthMax)
+            .MinSliderValue(FPLayout::RailWidthMin)
+            .MaxSliderValue(FPLayout::RailWidthMax)
+            .Delta(10.0f)
+            .OnValueCommitted_Lambda([this](float Val, ETextCommit::Type)
+            {
+                RailWidthPx = (float)FPLayout::ClampRailWidth((double)Val);
+                RebuildWidget();
+            });
+        LwSpin->SetToolTipText(FText::FromString(TEXT(
+            "Rail width 180-360 px (default 180). Rebuilds the editor layout.")));
+        RailWidthSpin = LwSpin;
+        LwRow->AddSlot().Padding(FMargin(4, 2)).AutoWidth()[LwSpin];
+        LwRow->AddSlot().Padding(FMargin(4, 2)).FillWidth(1.0f);
+        LgBox->AddSlot().AutoHeight()[LwRow];
+        ProblemsPanelBox->AddSlot().AutoHeight()
+            [MakeSectionBox(TEXT("Layout Group"), LgBox)];
+    }
+
+    // ---- Phase 4: search + issue list ----
+    TSharedRef<SVerticalBox> IssuesBox = SNew(SVerticalBox);
+    {
+        ProblemsSearchBox = SNew(SSearchBox)
+            .HintText(FText::FromString(TEXT("Filter issues...")))
+            .OnTextChanged_Lambda([this](const FText& T)
+            {
+                ProblemsFilter = T.ToString();
+                IssuesPageIndex = 0;
+                RebuildProblemsPanel();
+            });
+        TSharedRef<SHorizontalBox> SearchRow = SNew(SHorizontalBox);
+        SearchRow->AddSlot().Padding(FMargin(0, 2)).FillWidth(1.0f)[ProblemsSearchBox.ToSharedRef()];
+        IssuesBox->AddSlot().AutoHeight()[SearchRow];
+        ProblemsPanelBox->AddSlot().AutoHeight()
+            [MakeSectionBox(TEXT("Issues"), IssuesBox)];
+    }
+
     UFaceParallaxComponent* Comp = GetParallaxComponent();
     if (!Comp || !Comp->ActivePreset)
     {
-        ProblemsPanelBox->AddSlot().AutoHeight()
+        IssuesBox->AddSlot().AutoHeight()
             [MakeLbl(TEXT("No preset active."), 8, FLinearColor(1.0f,0.5f,0.5f))];
+        ProblemsSummaryText = TEXT("no preset");
+        ProblemsSummaryColor = FLinearColor(1.0f, 0.5f, 0.5f);
+        RefreshProblemsSummary();
         return;
     }
     auto StateLabel = [](EFaceAngleState S) -> const TCHAR*
@@ -1440,21 +1914,70 @@ void UFaceParallaxEditorWidget::RebuildProblemsPanel()
                     StateLabel(St), (int32)V, MinFrames, MaxFrames));
         }
     }
-    if (Rows.Num() == 0)
-    {
-        ProblemsPanelBox->AddSlot().AutoHeight()
-            [MakeLbl(TEXT("No problems found."), 8, FLinearColor(0.5f,1.0f,0.5f))];
-        return;
-    }
+    // ---- Phase 4: filtered issue list inside the Issues section ----
     int32 ErrorCount = 0;
     for (const FProblem& P : Rows) if (P.bError) ++ErrorCount;
-    ProblemsPanelBox->AddSlot().AutoHeight()
-        [MakeLbl(FString::Printf(TEXT("%d issues (%d errors, %d warnings)"), Rows.Num(), ErrorCount, Rows.Num() - ErrorCount),
-            9, FLinearColor(0.9f,0.7f,0.3f))];
-    const int32 MaxRows = 40;
-    for (int32 i = 0; i < FMath::Min(Rows.Num(), MaxRows); ++i)
+    const bool bFiltering = !ProblemsFilter.IsEmpty();
+    const FString FilterLower = ProblemsFilter.ToLower();
+    TArray<const FProblem*> Filtered;
+    for (const FProblem& P : Rows)
     {
-        const FProblem& P = Rows[i];
+        if (bFiltering && !P.Text.ToLower().Contains(FilterLower))
+            continue;
+        Filtered.Add(&P);
+    }
+    FString Summary = bFiltering
+        ? FString::Printf(TEXT("%d issues (%d errors) - %d match \"%s\""),
+            Rows.Num(), ErrorCount, Filtered.Num(), *ProblemsFilter)
+        : FString::Printf(TEXT("%d issues (%d errors, %d warnings)"),
+            Rows.Num(), ErrorCount, Rows.Num() - ErrorCount);
+    TextProblemsSummary = MakeLbl(Summary, 9, FLinearColor(0.9f,0.7f,0.3f));
+    IssuesBox->AddSlot().AutoHeight().Padding(FMargin(0, 2))
+        [TextProblemsSummary.ToSharedRef()];
+    ProblemsSummaryText = Summary;
+    ProblemsSummaryColor = (ErrorCount > 0)
+        ? FLinearColor(1.0f, 0.6f, 0.6f)
+        : (Rows.Num() > 0 ? FLinearColor(1.0f, 0.85f, 0.3f) : FLinearColor(0.5f, 1.0f, 0.5f));
+    RefreshProblemsSummary();
+
+    // P17/P18: issue rows flip through carousel pages inside a fixed page
+    // viewport; the 8px bottom reserve (P19) keeps the last row clear of the
+    // nav strip below it - no vertical scroll bar.
+    TSharedRef<SVerticalBox> IssuesRowsBox = SNew(SVerticalBox);
+    IssuesBox->AddSlot().AutoHeight()
+        [SNew(SBox)
+            .HeightOverride(FPLayout::CarouselViewportH)
+            .Padding(FMargin(0, 0, 0, FPLayout::ScrollReserveBottom))
+            [IssuesRowsBox]];
+    TSharedRef<SFaceCarouselNav> IssuesNav = SNew(SFaceCarouselNav)
+        .OnPrev_Lambda([this]()
+        {
+            IssuesPageIndex = FMath::Max(0, IssuesPageIndex - 1);
+            RebuildProblemsPanel();
+            return FReply::Handled();
+        })
+        .OnNext_Lambda([this]()
+        {
+            IssuesPageIndex = IssuesPageIndex + 1;
+            RebuildProblemsPanel();
+            return FReply::Handled();
+        });
+    IssuesPageLabel = IssuesNav->Label;
+    IssuesBox->AddSlot().AutoHeight().Padding(FMargin(4, 0, 4, 2))[IssuesNav];
+
+    if (Filtered.Num() == 0)
+    {
+        IssuesRowsBox->AddSlot().AutoHeight()
+            [MakeLbl(bFiltering ? TEXT("No matching issues.") : TEXT("No problems found."),
+                8, FLinearColor(0.5f,1.0f,0.5f))];
+    }
+    const int32 TotalPages = FPLayout::CarouselPageCount(Filtered.Num());
+    IssuesPageIndex = FPLayout::ClampCarouselPage(IssuesPageIndex, TotalPages);
+    const int32 Start = IssuesPageIndex * FPLayout::CarouselRowsPerPage;
+    const int32 End = FMath::Min(Start + FPLayout::CarouselRowsPerPage, Filtered.Num());
+    for (int32 i = Start; i < End; ++i)
+    {
+        const FProblem& P = *Filtered[i];
         FString JumpLabel = FString::Printf(TEXT(">%s"), StateLabel(P.State));
         TSharedRef<SHorizontalBox> R = SNew(SHorizontalBox);
         R->AddSlot().Padding(FMargin(0,1)).AutoWidth()
@@ -1480,13 +2003,19 @@ void UFaceParallaxEditorWidget::RebuildProblemsPanel()
                 RefreshUI();
                 return FReply::Handled();
             }));
-        ProblemsPanelBox->AddSlot().AutoHeight()[R];
+        IssuesRowsBox->AddSlot().AutoHeight()[R];
     }
-    if (Rows.Num() > MaxRows)
-    {
-        ProblemsPanelBox->AddSlot().AutoHeight()
-            [MakeLbl(FString::Printf(TEXT("... and %d more"), Rows.Num() - MaxRows),
-                8, FLinearColor(0.5f,0.5f,0.5f))];
-    }
+    if (IssuesPageLabel.IsValid())
+        IssuesPageLabel->SetText(FText::FromString(FString::Printf(TEXT("Page %d/%d"),
+            IssuesPageIndex + 1, TotalPages)));
+}
+
+// Phase 4: shows the issues summary in the Problems accordion header.
+void UFaceParallaxEditorWidget::RefreshProblemsSummary()
+{
+    if (!DebugAccordion.IsValid()) return;
+    const int32 N = DebugAccordion->NumSections();
+    if (N == 0) return;
+    DebugAccordion->SetSectionSummary(N - 1, ProblemsSummaryText, ProblemsSummaryColor);
 }
 #endif

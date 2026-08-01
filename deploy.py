@@ -42,6 +42,7 @@ After deployment, open the editor with the toolbar button or the
 
 import unreal
 import os
+import sys
 import time
 
 # =========================== CONFIG ===========================
@@ -277,8 +278,15 @@ def create_master_material():
     # DefaultTexture automatically, so face-layer quads stay visible before
     # any art is imported
     if editor_asset_lib.does_asset_exist(full_path):
-        unreal.log(f"[SKIP] {full_path} already exists")
-        return unreal.load_asset(full_path)
+        existing = unreal.load_asset(full_path)
+        if existing and existing.get_class().get_name() == "Material":
+            unreal.log(f"[SKIP] {full_path} already exists (valid Material)")
+            return existing
+        unreal.log_warning(
+            f"[REPAIR] {full_path} exists but is not a valid Material "
+            f"({existing.get_class().get_name() if existing else 'None'}) - recreating")
+        editor_asset_lib.delete_asset(full_path)
+        wait_asset_gone(full_path)
 
     factory = unreal.MaterialFactoryNew()
     material = asset_tools.create_asset(mat_name, mat_path, unreal.Material, factory)
@@ -430,8 +438,8 @@ def create_master_material():
     mel.connect_material_expressions(final_albedo, "", debug_switch, "False")
 
     out_normal = expr_normal_blend if expr_normal_blend else normal_blend
-    mel.connect_material_property(debug_switch, unreal.MaterialProperty.MP_BASE_COLOR, 0)
-    mel.connect_material_property(out_normal, unreal.MaterialProperty.MP_NORMAL, 0)
+    mel.connect_material_property(debug_switch, "", unreal.MaterialProperty.MP_BASE_COLOR)
+    mel.connect_material_property(out_normal, "", unreal.MaterialProperty.MP_NORMAL)
 
     mel.recompile_material(material)
     editor_asset_lib.save_asset(full_path)
@@ -451,9 +459,16 @@ def create_material_instances(master_material):
         name = f"MI_FaceParallax_{layer_tag}"
         full_path = f"{mi_path}/{name}"
         if editor_asset_lib.does_asset_exist(full_path):
-            unreal.log(f"[SKIP] {full_path} already exists")
-            instances[layer_tag] = unreal.load_asset(full_path)
-            continue
+            existing = unreal.load_asset(full_path)
+            if existing and existing.get_class().get_name() == "MaterialInstanceConstant":
+                unreal.log(f"[SKIP] {full_path} already exists (valid MaterialInstanceConstant)")
+                instances[layer_tag] = existing
+                continue
+            unreal.log_warning(
+                f"[REPAIR] {full_path} exists but is not a valid MaterialInstanceConstant "
+                f"({existing.get_class().get_name() if existing else 'None'}) - recreating")
+            editor_asset_lib.delete_asset(full_path)
+            wait_asset_gone(full_path)
 
         factory = unreal.MaterialInstanceConstantFactoryNew()
         mi = asset_tools.create_asset(name, mi_path, unreal.MaterialInstanceConstant, factory)
@@ -948,8 +963,15 @@ def create_render_target():
     name = "RT_FaceParallaxPreview"
     full = f"{rt_path}/{name}"
     if editor_asset_lib.does_asset_exist(full):
-        unreal.log(f"[SKIP] {full} already exists")
-        return unreal.load_asset(full)
+        existing = unreal.load_asset(full)
+        if existing and existing.get_class().get_name() == "TextureRenderTarget2D":
+            unreal.log(f"[SKIP] {full} already exists (valid TextureRenderTarget2D)")
+            return existing
+        unreal.log_warning(
+            f"[REPAIR] {full} exists but is not a valid TextureRenderTarget2D "
+            f"({existing.get_class().get_name() if existing else 'None'}) - recreating")
+        editor_asset_lib.delete_asset(full)
+        wait_asset_gone(full)
     factory = unreal.TextureRenderTargetFactoryNew()
     rt = asset_tools.create_asset(name, rt_path, unreal.TextureRenderTarget2D, factory)
     rt.set_editor_property("size_x", 1024)
@@ -1049,6 +1071,25 @@ def register_editor_toolbar():
 # 10. Verify deployment
 # --------------------------------------------------------------
 def verify_deployment():
+    # Hard gate: the deployment contract requires the plugin C++ classes to be
+    # live in this session. Stale content assets alone must NEVER pass
+    # verification - the [MANUAL] class-missing path is a deployment failure.
+    required_classes = [PRESET_CLASS_NAME, COMPONENT_CLASS_NAME,
+                        "FaceParallaxEditorWidget", "FaceParallaxPreviewActor"]
+    classes_ok = True
+    for cls in required_classes:
+        if not class_available(cls):
+            unreal.log(f"[VERIFY] C++ class {cls}: MISSING")
+            classes_ok = False
+        else:
+            unreal.log(f"[VERIFY] C++ class {cls}: available")
+    if not classes_ok:
+        unreal.log_error(
+            "[VERIFY] Deployment FAILED - FaceParallax plugin classes are not available. "
+            "Build the project (Tests\\run_tests.ps1 -IncludeUEBuild) and restart the "
+            "editor so the plugin loads, then run deploy.py again.")
+        return False
+
     checks = [
         ("Master material", f"{CONTENT_ROOT}/Materials/M_FaceParallax_Master"),
         ("Layer MI Eyes",   f"{CONTENT_ROOT}/Materials/Instances/MI_FaceParallax_Eyes"),
@@ -1078,57 +1119,89 @@ def verify_deployment():
 # --------------------------------------------------------------
 def main():
     unreal.log("==> Deploying FaceParallax editor assets (deploy.py)")
+    failures = 0
+
+    def step_fail(reason):
+        nonlocal failures
+        failures += 1
+        unreal.log_error(f"[DEPLOY] FAILED: {reason}")
+
     ensure_dir(CONTENT_ROOT)
 
     # Phase 0: Clean legacy/wrong-named assets from older pipelines
     delete_legacy_assets()
 
     # Phase 1: No C++ classes needed
-    master_mat = create_master_material()
-    create_material_instances(master_mat)
+    try:
+        master_mat = create_master_material()
+        create_material_instances(master_mat)
+    except Exception as e:
+        step_fail(f"material phase raised: {e}")
 
-    # Phase 2: Verify the C++ plugin classes are available
+    # Phase 2: The C++ plugin classes MUST be available - a missing class is a
+    # hard deployment failure (exit 1), never a silent return.
     required = [PRESET_CLASS_NAME, COMPONENT_CLASS_NAME, "FaceParallaxEditorWidget",
                 "FaceParallaxPreviewActor"]
-    for cls in required:
-        if not class_available(cls):
-            unreal.log_warning(
+    missing_classes = [cls for cls in required if not class_available(cls)]
+    if missing_classes:
+        for cls in missing_classes:
+            unreal.log_error(
                 f"[MANUAL] C++ class '{cls}' not available. The FaceParallax plugin is not "
-                f"loaded/built — build the project first (Tests\\run_tests.ps1 -IncludeUEBuild), "
-                f"then run deploy.py again.")
-            return
+                f"loaded/built - build the project first (Tests\\run_tests.ps1 -IncludeUEBuild), "
+                f"restart the editor so the plugin loads, then run deploy.py again.")
+        step_fail(f"plugin C++ classes not available: {missing_classes}")
 
-    # Phase 3: C++ classes available
-    preset = create_preset_asset()
-    create_character_blueprint(preset)
-    widget_bp = create_editor_widget_blueprint()
+    # Phase 3-5: only when the plugin classes are live
+    preset = None
+    widget_bp = None
+    rt = None
+    preview_actor = None
+    if not missing_classes:
+        try:
+            preset = create_preset_asset()
+            create_character_blueprint(preset)
+            widget_bp = create_editor_widget_blueprint()
+        except Exception as e:
+            step_fail(f"preset/character/widget phase raised: {e}")
+        try:
+            rt = create_render_target()
+            preview_actor = spawn_preview_actor(preset, rt)
+        except Exception as e:
+            step_fail(f"render-target/preview phase raised: {e}")
+        if widget_bp and preview_actor:
+            populate_widget_layout(widget_bp, preview_actor, rt)
+        register_editor_toolbar()
+        if not preset:
+            step_fail("preset asset was not created")
+        if not widget_bp:
+            step_fail("editor widget blueprint was not created")
+        if not rt:
+            step_fail("render target was not created")
+        if not preview_actor:
+            step_fail("preview actor was not spawned")
 
-    # Phase 4: Render target + preview actor
-    rt = create_render_target()
-    preview_actor = spawn_preview_actor(preset, rt)
+    # Phase 6: Verify - hard gate. Every step must have succeeded AND every
+    # required asset must exist AND the plugin classes must be live.
+    deployed_ok = verify_deployment()
+    if failures == 0 and deployed_ok:
+        unreal.log("==> Deployment done. The FaceParallax editor tool is ready.")
+        unreal.log(f"   - Master material: {CONTENT_ROOT}/Materials/M_FaceParallax_Master")
+        unreal.log(f"   - Layer MIs: {CONTENT_ROOT}/Materials/Instances/MI_FaceParallax_<Layer>")
+        unreal.log(f"   - Preset: {PRESET_OUTPUT_PATH}/{PRESET_NAME}")
+        unreal.log(f"   - Character BP: {CHARACTER_OUTPUT_PATH}/{CHARACTER_BP_NAME}")
+        unreal.log(f"   - Editor Widget: /Game/FaceParallax/Blueprints/WBP_FaceParallaxEditor")
+        unreal.log(f"   - Render Target: {CONTENT_ROOT}/Textures/RT_FaceParallaxPreview")
+        unreal.log(f"   - Preview Actor spawned in editor world")
+        unreal.log("   - Type 'FaceParallaxOpenEditor' in the console to open the interactive editor")
+        unreal.log("[HINT] The editor must open as a DOCKED TAB in the main editor window - check")
+        unreal.log("[HINT] the log for '[FaceParallax] EditorSubsystem initialized' and '[FaceParallax]")
+        unreal.log("[HINT] OpenEditorWidget - invoking nomad tab 'FaceParallaxEditor'.")
+        return
 
-    # Phase 5: Widget layout + toolbar (C++ handles both; log info)
-    if widget_bp and preview_actor:
-        populate_widget_layout(widget_bp, preview_actor, rt)
-    register_editor_toolbar()
-
-    # Phase 6: Verify
-    verify_deployment()
-
-    unreal.log("==> Deployment done. The FaceParallax editor tool is ready.")
-    unreal.log(f"   - Master material: {CONTENT_ROOT}/Materials/M_FaceParallax_Master")
-    unreal.log(f"   - Layer MIs: {CONTENT_ROOT}/Materials/Instances/MI_FaceParallax_<Layer>")
-    unreal.log(f"   - Preset: {PRESET_OUTPUT_PATH}/{PRESET_NAME}")
-    unreal.log(f"   - Character BP: {CHARACTER_OUTPUT_PATH}/{CHARACTER_BP_NAME}")
-    unreal.log(f"   - Editor Widget: /Game/FaceParallax/Blueprints/WBP_FaceParallaxEditor")
-    unreal.log(f"   - Render Target: {CONTENT_ROOT}/Textures/RT_FaceParallaxPreview")
-    unreal.log(f"   - Preview Actor spawned in editor world")
-    unreal.log("   - Type 'FaceParallaxOpenEditor' in the console to open the interactive editor")
-    unreal.log("[HINT] The C++ classes are built by UnrealBuildTool as a plugin. If the plugin was")
-    unreal.log("[HINT] rebuilt and the editor was not restarted, restart the editor and run deploy.py")
-    unreal.log("[HINT] again. The editor must open as a DOCKED TAB in the main editor window — check")
-    unreal.log("[HINT] the log for '[FaceParallax] EditorSubsystem initialized' and '[FaceParallax]")
-    unreal.log("[HINT] OpenEditorWidget — invoking nomad tab 'FaceParallaxEditor'.")
+    unreal.log_error(
+        f"[DEPLOY] FAILED with {failures} error(s) - deployment is INCOMPLETE. "
+        "Fix the reported steps and re-run deploy.py.")
+    sys.exit(1)
 
 
 if __name__ == "__main__":
