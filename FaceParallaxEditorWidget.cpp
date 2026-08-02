@@ -254,6 +254,132 @@ TArray<EFaceAngleState> UFaceParallaxEditorWidget::GetAssignedStates() const
     return ValidatePreset() ? ActivePreset->GetAssignedStates() : TArray<EFaceAngleState>();
 }
 
+// ====================================================================
+// UNDO STACK
+// ====================================================================
+
+void UFaceParallaxEditorWidget::PushUndoState(const FString& Desc)
+{
+    if (bIsRestoringUndo || IsTemplate() || !ActivePreset) return;
+
+    UPackage* TempPkg = CreatePackage(TEXT("/Temp/FaceParallaxUndoStack"));
+    TempPkg->SetFlags(RF_Transient);
+    const FString BackupName = FString::Printf(TEXT("UndoBackup_%d"), UndoSerial++);
+    UFaceParallaxPreset* Backup = DuplicateObject<UFaceParallaxPreset>(ActivePreset, TempPkg, FName(*BackupName));
+    if (!Backup) return;
+
+    UndoStack.Add(FFaceUndoEntry(Desc, Backup));
+    if (UndoStack.Num() > MaxUndoEntries)
+    {
+        UndoStack.RemoveAt(0);
+    }
+    // A new mutation invalidates the redo branch.
+    RedoStack.Empty();
+}
+
+bool UFaceParallaxEditorWidget::Undo()
+{
+    if (UndoStack.Num() == 0)
+    {
+        SetStatus(TEXT("Nothing to undo"), FLinearColor(0.8f, 0.8f, 0.8f));
+        return false;
+    }
+    const FFaceUndoEntry Entry = UndoStack.Last();
+    UndoStack.RemoveAt(UndoStack.Num() - 1);
+    bIsRestoringUndo = true;
+    RestoreFromBackup(Entry.Backup, Entry.Label);
+    bIsRestoringUndo = false;
+    RedoStack.Add(Entry);
+    RefreshUI();
+    if (TextStatus.IsValid())
+        TextStatus->SetText(FText::FromString(FString::Printf(TEXT("Undid: %s"), *Entry.Label)));
+    return true;
+}
+
+bool UFaceParallaxEditorWidget::Redo()
+{
+    if (RedoStack.Num() == 0)
+    {
+        SetStatus(TEXT("Nothing to redo"), FLinearColor(0.8f, 0.8f, 0.8f));
+        return false;
+    }
+    const FFaceUndoEntry Entry = RedoStack.Last();
+    RedoStack.RemoveAt(RedoStack.Num() - 1);
+    bIsRestoringUndo = true;
+    RestoreFromBackup(Entry.Backup, Entry.Label);
+    bIsRestoringUndo = false;
+    UndoStack.Add(Entry);
+    if (UndoStack.Num() > MaxUndoEntries)
+    {
+        UndoStack.RemoveAt(0);
+    }
+    RefreshUI();
+    if (TextStatus.IsValid())
+        TextStatus->SetText(FText::FromString(FString::Printf(TEXT("Redid: %s"), *Entry.Label)));
+    return true;
+}
+
+bool UFaceParallaxEditorWidget::CanUndo() const
+{
+    return UndoStack.Num() > 0;
+}
+
+bool UFaceParallaxEditorWidget::CanRedo() const
+{
+    return RedoStack.Num() > 0;
+}
+
+FString UFaceParallaxEditorWidget::GetUndoLabel() const
+{
+    return UndoStack.Num() > 0 ? UndoStack.Last().Label : FString();
+}
+
+FString UFaceParallaxEditorWidget::GetRedoLabel() const
+{
+    return RedoStack.Num() > 0 ? RedoStack.Last().Label : FString();
+}
+
+bool UFaceParallaxEditorWidget::RestoreFromBackup(UFaceParallaxPreset* Backup, const FString& Desc)
+{
+    if (!Backup || !ActivePreset) return false;
+
+    // Copy all assignments from the backup back into the active preset.
+    TArray<EFaceAngleState> AllStates = {
+        EFaceAngleState::Front, EFaceAngleState::ThreeQuarterRight,
+        EFaceAngleState::RightProfile, EFaceAngleState::BackRight,
+        EFaceAngleState::Back, EFaceAngleState::BackLeft,
+        EFaceAngleState::LeftProfile, EFaceAngleState::ThreeQuarterLeft,
+        EFaceAngleState::Top, EFaceAngleState::Bottom
+    };
+    for (EFaceAngleState S : AllStates)
+    {
+        ActivePreset->ClearState(S);
+        TArray<FName> Tags = Backup->GetAllLayerTags(S);
+        for (FName Tag : Tags)
+        {
+            FFaceArtSlot ArtSlot = Backup->GetSlot(S, Tag);
+            ActivePreset->SetSlot(S, Tag, ArtSlot);
+        }
+        if (Backup->HasState(S))
+        {
+            TArray<FName> STags = Backup->GetAllLayerTags(S);
+            for (FName Tag : STags)
+            {
+                const int32 N = Backup->GetNestedElementCount(S, Tag);
+                for (int32 i = 0; i < N; ++i)
+                {
+                    FFacePin3D Pin = Backup->GetNestedPin3D(S, Tag, i);
+                    ActivePreset->SetNestedPin3D(S, Tag, i, Pin);
+                }
+            }
+        }
+    }
+    ActivePreset->MarkPackageDirty();
+    ApplyPresetToPreview();
+    UE_LOG(LogTemp, Log, TEXT("[FaceParallaxWidget] RestoreFromBackup: %s"), *Desc);
+    return true;
+}
+
 bool UFaceParallaxEditorWidget::HasState(EFaceAngleState State) const
 {
     return ValidatePreset() && ActivePreset->HasState(State);
@@ -355,7 +481,7 @@ void UFaceParallaxEditorWidget::SetLayerTransform(EFaceAngleState State, FName L
 
 void UFaceParallaxEditorWidget::ResetLayerTransform(EFaceAngleState State, FName LayerTag)
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Reset Layer Transform"));
+    FWidgetUndoScope UndoScope(this, TEXT("Reset Layer Transform"));
     if (!ValidatePreset()) return;
     ActivePreset->SetCanonicalTransform(State, LayerTag, FFaceArtTransform());
 
@@ -403,7 +529,7 @@ void UFaceParallaxEditorWidget::ApplyAutoFitToAllSlots()
 
 void UFaceParallaxEditorWidget::SyncLayerToAllViews(EFaceAngleState State, FName LayerTag)
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Sync Layer to All Views"));
+    FWidgetUndoScope UndoScope(this, TEXT("Sync Layer to All Views"));
     if (!ValidatePreset()) return;
     ActivePreset->SyncCanonicalToAllViews(State, LayerTag);
 
@@ -415,7 +541,7 @@ void UFaceParallaxEditorWidget::SyncLayerToAllViews(EFaceAngleState State, FName
 
 void UFaceParallaxEditorWidget::SyncTexturesLayerToAllViews(EFaceAngleState State, FName LayerTag)
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Sync Textures to All Views"));
+    FWidgetUndoScope UndoScope(this, TEXT("Sync Textures to All Views"));
     if (!ValidatePreset()) return;
     ActivePreset->SyncTexturesToAllViews(State, LayerTag);
 
@@ -427,7 +553,7 @@ void UFaceParallaxEditorWidget::SyncTexturesLayerToAllViews(EFaceAngleState Stat
 
 void UFaceParallaxEditorWidget::SyncAllLayersToAllViews()
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Sync All Layers to All Views"));
+    FWidgetUndoScope UndoScope(this, TEXT("Sync All Layers to All Views"));
     if (!ValidatePreset()) return;
 
     for (const auto& StatePair : ActivePreset->ViewAssignments)
@@ -447,7 +573,7 @@ void UFaceParallaxEditorWidget::SyncAllLayersToAllViews()
 void UFaceParallaxEditorWidget::SyncLayerToSelectedViews(EFaceAngleState State, FName LayerTag,
     const TArray<EFaceAngleState>& DestViews, bool bIncludeTextures)
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Sync Layer to Selected Views"));
+    FWidgetUndoScope UndoScope(this, TEXT("Sync Layer to Selected Views"));
     if (!ValidatePreset()) return;
     if (!ActivePreset->HasState(State)) return;
 
@@ -477,6 +603,18 @@ void UFaceParallaxEditorWidget::SyncLayerToSelectedViews(EFaceAngleState State, 
     }
 }
 
+void UFaceParallaxEditorWidget::SyncLayerAxisToAllViews(EFaceAngleState State, FName LayerTag, int32 Axis)
+{
+    FWidgetUndoScope UndoScope(this, TEXT("Sync Layer Axis to All Views"));
+    if (!ValidatePreset()) return;
+    ActivePreset->SyncCanonicalAxisToAllViews(State, LayerTag, Axis);
+
+    if (PreviewActor.IsValid() && PreviewActor->FaceParallax)
+    {
+        PreviewActor->FaceParallax->ApplyCurrentStateTextures();
+    }
+}
+
 // ====================================================================
 // VIEW OVERRIDES
 // ====================================================================
@@ -499,7 +637,7 @@ FFaceArtTransform UFaceParallaxEditorWidget::GetViewOverride(EFaceAngleState Sta
 void UFaceParallaxEditorWidget::SetViewOverride(EFaceAngleState State, FName LayerTag,
     EFaceAngleState OverrideView, const FFaceArtTransform& Override)
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set View Override"));
+    FWidgetUndoScope UndoScope(this, TEXT("Set View Override"));
     if (!ValidatePreset()) return;
     ActivePreset->SetViewOverride(State, LayerTag, OverrideView, Override);
 
@@ -512,7 +650,7 @@ void UFaceParallaxEditorWidget::SetViewOverride(EFaceAngleState State, FName Lay
 void UFaceParallaxEditorWidget::ClearViewOverride(EFaceAngleState State, FName LayerTag,
     EFaceAngleState OverrideView)
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Clear View Override"));
+    FWidgetUndoScope UndoScope(this, TEXT("Clear View Override"));
     if (!ValidatePreset()) return;
     ActivePreset->ClearViewOverride(State, LayerTag, OverrideView);
 
@@ -524,7 +662,7 @@ void UFaceParallaxEditorWidget::ClearViewOverride(EFaceAngleState State, FName L
 
 void UFaceParallaxEditorWidget::ClearAllOverridesForSlot(EFaceAngleState State, FName LayerTag)
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Clear All Overrides for Slot"));
+    FWidgetUndoScope UndoScope(this, TEXT("Clear All Overrides for Slot"));
     if (!ValidatePreset()) return;
     ActivePreset->ClearAllOverridesForSlot(State, LayerTag);
 
@@ -536,7 +674,7 @@ void UFaceParallaxEditorWidget::ClearAllOverridesForSlot(EFaceAngleState State, 
 
 void UFaceParallaxEditorWidget::ClearAllOverrides()
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Clear All Overrides"));
+    FWidgetUndoScope UndoScope(this, TEXT("Clear All Overrides"));
     if (!ValidatePreset()) return;
     ActivePreset->ClearAllOverrides();
 
@@ -586,7 +724,7 @@ FFaceTextureSet UFaceParallaxEditorWidget::GetSlotTextures(EFaceAngleState State
 void UFaceParallaxEditorWidget::SetSlotTextures(EFaceAngleState State, FName LayerTag,
     const FFaceTextureSet& Textures)
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set Slot Textures"));
+    FWidgetUndoScope UndoScope(this, TEXT("Set Slot Textures"));
     if (!ValidatePreset()) return;
     ActivePreset->SetTexturesForSlot(State, LayerTag, Textures);
 
@@ -1111,7 +1249,7 @@ int32 UFaceParallaxEditorWidget::GetBlinkFrameCount(EFaceAngleState State, FName
 void UFaceParallaxEditorWidget::SetBlinkFrameTextures(EFaceAngleState State, FName LayerTag,
     int32 FrameIndex, const FFaceTextureSet& Textures)
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set Blink Frame Textures"));
+    FWidgetUndoScope UndoScope(this, TEXT("Set Blink Frame Textures"));
     if (!ValidatePreset()) return;
     FFaceArtSlot ArtSlot = ActivePreset->GetSlot(State, LayerTag);
     if (FrameIndex >= 0 && FrameIndex <= ArtSlot.BlinkFrames.Num())
@@ -1142,7 +1280,7 @@ FFaceTextureSet UFaceParallaxEditorWidget::GetBlinkFrameTextures(EFaceAngleState
 
 void UFaceParallaxEditorWidget::ClearBlinkFrames(EFaceAngleState State, FName LayerTag)
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Clear Blink Frames"));
+    FWidgetUndoScope UndoScope(this, TEXT("Clear Blink Frames"));
     if (!ValidatePreset()) return;
     FFaceArtSlot ArtSlot = ActivePreset->GetSlot(State, LayerTag);
     ArtSlot.BlinkFrames.Empty();
@@ -1186,7 +1324,7 @@ bool UFaceParallaxEditorWidget::IsExpressionTransitioning() const
 void UFaceParallaxEditorWidget::ClearExpressionTextures(EFaceAngleState State, FName LayerTag,
     EExpression Expression)
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Clear Expression Textures"));
+    FWidgetUndoScope UndoScope(this, TEXT("Clear Expression Textures"));
     if (!ValidatePreset()) return;
     FFaceArtSlot ArtSlot = ActivePreset->GetSlot(State, LayerTag);
     ArtSlot.ExpressionTextures.Remove(Expression);
@@ -1196,7 +1334,7 @@ void UFaceParallaxEditorWidget::ClearExpressionTextures(EFaceAngleState State, F
 void UFaceParallaxEditorWidget::SetExpressionTextures(EFaceAngleState State, FName LayerTag,
     EExpression Expression, const FFaceTextureSet& Textures)
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set Expression Textures"));
+    FWidgetUndoScope UndoScope(this, TEXT("Set Expression Textures"));
     if (!ValidatePreset()) return;
     FFaceArtSlot ArtSlot = ActivePreset->GetSlot(State, LayerTag);
     ArtSlot.ExpressionTextures.Add(Expression, Textures);
@@ -1251,7 +1389,7 @@ bool UFaceParallaxEditorWidget::IsNamedExpressionValid() const
 void UFaceParallaxEditorWidget::SetNamedExpressionTextures(EFaceAngleState State, FName LayerTag,
     FName ExpressionName, const FFaceTextureSet& Textures)
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set Named Expression Textures"));
+    FWidgetUndoScope UndoScope(this, TEXT("Set Named Expression Textures"));
     if (!ValidatePreset()) return;
     FFaceArtSlot ArtSlot = ActivePreset->GetSlot(State, LayerTag);
     ArtSlot.NamedExpressionTextures.Add(ExpressionName, Textures);
@@ -1288,7 +1426,7 @@ TArray<FName> UFaceParallaxEditorWidget::GetAssignedNamedExpressions(EFaceAngleS
 void UFaceParallaxEditorWidget::ClearNamedExpressionTextures(EFaceAngleState State, FName LayerTag,
     FName ExpressionName)
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Clear Named Expression Textures"));
+    FWidgetUndoScope UndoScope(this, TEXT("Clear Named Expression Textures"));
     if (!ValidatePreset()) return;
     FFaceArtSlot ArtSlot = ActivePreset->GetSlot(State, LayerTag);
     ArtSlot.NamedExpressionTextures.Remove(ExpressionName);
@@ -1386,7 +1524,7 @@ int32 UFaceParallaxEditorWidget::GetVisemeFrameCount(EFaceAngleState State, FNam
 void UFaceParallaxEditorWidget::SetVisemeFrameTextures(EFaceAngleState State, FName LayerTag,
     EExpression Expression, EViseme Viseme, int32 FrameIndex, const FFaceTextureSet& Textures)
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set Viseme Frame Textures"));
+    FWidgetUndoScope UndoScope(this, TEXT("Set Viseme Frame Textures"));
     if (!ValidatePreset()) return;
     FFaceArtSlot ArtSlot = ActivePreset->GetSlot(State, LayerTag);
     TArray<FFaceTextureSet>& Frames = ArtSlot.VisemeFrameSets.FindOrAdd(Expression).Visemes.FindOrAdd(Viseme).Frames;
@@ -1433,7 +1571,7 @@ TArray<EViseme> UFaceParallaxEditorWidget::GetAssignedVisemes(EFaceAngleState St
 void UFaceParallaxEditorWidget::ClearVisemeFrames(EFaceAngleState State, FName LayerTag,
     EExpression Expression, EViseme Viseme)
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Clear Viseme Frames"));
+    FWidgetUndoScope UndoScope(this, TEXT("Clear Viseme Frames"));
     if (!ValidatePreset()) return;
     FFaceArtSlot ArtSlot = ActivePreset->GetSlot(State, LayerTag);
     FFaceExpressionVisemeMap* ExprVisemes =
@@ -1448,7 +1586,7 @@ void UFaceParallaxEditorWidget::ClearVisemeFrames(EFaceAngleState State, FName L
 void UFaceParallaxEditorWidget::ClearAllVisemes(EFaceAngleState State, FName LayerTag,
     EExpression Expression)
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Clear All Visemes"));
+    FWidgetUndoScope UndoScope(this, TEXT("Clear All Visemes"));
     if (!ValidatePreset()) return;
     FFaceArtSlot ArtSlot = ActivePreset->GetSlot(State, LayerTag);
     ArtSlot.VisemeFrameSets.Remove(Expression);
@@ -1485,7 +1623,7 @@ int32 UFaceParallaxEditorWidget::GetNamedVisemeFrameCount(EFaceAngleState State,
 void UFaceParallaxEditorWidget::SetNamedVisemeFrameTextures(EFaceAngleState State, FName LayerTag,
     FName VisemeName, int32 FrameIndex, const FFaceTextureSet& Textures)
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set Named Viseme Frame Textures"));
+    FWidgetUndoScope UndoScope(this, TEXT("Set Named Viseme Frame Textures"));
     if (!ValidatePreset()) return;
     FFaceArtSlot ArtSlot = ActivePreset->GetSlot(State, LayerTag);
     FFaceVisemeFrameArray& Frames = ArtSlot.NamedVisemeFrames.FindOrAdd(VisemeName);
@@ -1526,7 +1664,7 @@ TArray<FName> UFaceParallaxEditorWidget::GetAssignedNamedVisemes(EFaceAngleState
 void UFaceParallaxEditorWidget::ClearNamedVisemeFrames(EFaceAngleState State, FName LayerTag,
     FName VisemeName)
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Clear Named Viseme Frames"));
+    FWidgetUndoScope UndoScope(this, TEXT("Clear Named Viseme Frames"));
     if (!ValidatePreset()) return;
     FFaceArtSlot ArtSlot = ActivePreset->GetSlot(State, LayerTag);
     ArtSlot.NamedVisemeFrames.Remove(VisemeName);
@@ -1535,7 +1673,7 @@ void UFaceParallaxEditorWidget::ClearNamedVisemeFrames(EFaceAngleState State, FN
 
 void UFaceParallaxEditorWidget::ClearAllNamedVisemes(EFaceAngleState State, FName LayerTag)
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Clear All Named Visemes"));
+    FWidgetUndoScope UndoScope(this, TEXT("Clear All Named Visemes"));
     if (!ValidatePreset()) return;
     FFaceArtSlot ArtSlot = ActivePreset->GetSlot(State, LayerTag);
     ArtSlot.NamedVisemeFrames.Empty();
@@ -1612,7 +1750,7 @@ TArray<FFaceParamBinding> UFaceParallaxEditorWidget::GetParamBindings(EFaceAngle
 
 void UFaceParallaxEditorWidget::SetParamBindings(EFaceAngleState State, FName LayerTag, const TArray<FFaceParamBinding>& Bindings)
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set Param Bindings"));
+    FWidgetUndoScope UndoScope(this, TEXT("Set Param Bindings"));
     if (!ValidatePreset()) return;
     ActivePreset->SetParamBindings(State, LayerTag, Bindings);
 
@@ -1630,7 +1768,7 @@ FFaceTextureSet UFaceParallaxEditorWidget::GetAltTextures(EFaceAngleState State,
 
 void UFaceParallaxEditorWidget::SetAltTextures(EFaceAngleState State, FName LayerTag, const FFaceTextureSet& Textures)
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set Alt Textures"));
+    FWidgetUndoScope UndoScope(this, TEXT("Set Alt Textures"));
     if (!ValidatePreset()) return;
     ActivePreset->SetAltTextures(State, LayerTag, Textures);
 
@@ -1713,7 +1851,7 @@ int32 UFaceParallaxEditorWidget::GetSwooshFrameCount(EFaceAngleState State, FNam
 void UFaceParallaxEditorWidget::SetSwooshFrameTextures(EFaceAngleState State, FName LayerTag,
     int32 FrameIndex, const FFaceTextureSet& Textures)
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set Swoosh Frame Textures"));
+    FWidgetUndoScope UndoScope(this, TEXT("Set Swoosh Frame Textures"));
     if (!ValidatePreset()) return;
     FFaceSwooshArt Art = ActivePreset->GetSwooshArt(State, LayerTag);
     if (FrameIndex >= 0)
@@ -1741,7 +1879,7 @@ FFaceTextureSet UFaceParallaxEditorWidget::GetSwooshFrameTextures(EFaceAngleStat
 
 void UFaceParallaxEditorWidget::ClearSwooshFrames(EFaceAngleState State, FName LayerTag)
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Clear Swoosh Frames"));
+    FWidgetUndoScope UndoScope(this, TEXT("Clear Swoosh Frames"));
     if (!ValidatePreset()) return;
     ActivePreset->ClearSwooshArt(State, LayerTag);
 }
@@ -1776,7 +1914,7 @@ FFaceNestedArt UFaceParallaxEditorWidget::GetNestedElement(EFaceAngleState State
 
 void UFaceParallaxEditorWidget::SetNestedElement(EFaceAngleState State, FName LayerTag, int32 Index, const FFaceNestedArt& Element)
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set Nested Element"));
+    FWidgetUndoScope UndoScope(this, TEXT("Set Nested Element"));
     if (!ValidatePreset()) return;
     ActivePreset->SetNestedElement(State, LayerTag, Index, Element);
     UFaceParallaxComponent* Comp = GetParallaxComponent();
@@ -1785,7 +1923,7 @@ void UFaceParallaxEditorWidget::SetNestedElement(EFaceAngleState State, FName La
 
 void UFaceParallaxEditorWidget::AddNestedElement(EFaceAngleState State, FName LayerTag, const FFaceNestedArt& Element)
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Add Nested Element"));
+    FWidgetUndoScope UndoScope(this, TEXT("Add Nested Element"));
     if (!ValidatePreset()) return;
     ActivePreset->AddNestedElement(State, LayerTag, Element);
     UFaceParallaxComponent* Comp = GetParallaxComponent();
@@ -1794,7 +1932,7 @@ void UFaceParallaxEditorWidget::AddNestedElement(EFaceAngleState State, FName La
 
 void UFaceParallaxEditorWidget::RemoveNestedElement(EFaceAngleState State, FName LayerTag, int32 Index)
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Remove Nested Element"));
+    FWidgetUndoScope UndoScope(this, TEXT("Remove Nested Element"));
     if (!ValidatePreset()) return;
     ActivePreset->RemoveNestedElement(State, LayerTag, Index);
     UFaceParallaxComponent* Comp = GetParallaxComponent();
@@ -1803,7 +1941,7 @@ void UFaceParallaxEditorWidget::RemoveNestedElement(EFaceAngleState State, FName
 
 void UFaceParallaxEditorWidget::SetNestedTextures(EFaceAngleState State, FName LayerTag, int32 Index, const FFaceTextureSet& Textures)
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set Nested Textures"));
+    FWidgetUndoScope UndoScope(this, TEXT("Set Nested Textures"));
     if (!ValidatePreset()) return;
     FFaceNestedArt Elem = ActivePreset->GetNestedElement(State, LayerTag, Index);
     Elem.Textures = Textures;
@@ -1821,7 +1959,7 @@ FFaceTextureSet UFaceParallaxEditorWidget::GetNestedTextures(EFaceAngleState Sta
 
 void UFaceParallaxEditorWidget::SetNestedTransform(EFaceAngleState State, FName LayerTag, int32 Index, const FFaceArtTransform& Transform)
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set Nested Transform"));
+    FWidgetUndoScope UndoScope(this, TEXT("Set Nested Transform"));
     UFaceParallaxComponent* Comp = GetParallaxComponent();
     if (Comp) Comp->SetNestedTransform(State, LayerTag, Index, Transform);
 }
@@ -1835,7 +1973,7 @@ FFaceArtTransform UFaceParallaxEditorWidget::GetNestedTransform(EFaceAngleState 
 
 void UFaceParallaxEditorWidget::SetNestedPivot(EFaceAngleState State, FName LayerTag, int32 Index, FVector2D Pivot)
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set Nested Pivot"));
+    FWidgetUndoScope UndoScope(this, TEXT("Set Nested Pivot"));
     UFaceParallaxComponent* Comp = GetParallaxComponent();
     if (Comp) Comp->SetNestedPivot(State, LayerTag, Index, Pivot);
 }
@@ -1849,7 +1987,7 @@ FVector2D UFaceParallaxEditorWidget::GetNestedPivot(EFaceAngleState State, FName
 
 void UFaceParallaxEditorWidget::SetNestedJiggleEnabled(EFaceAngleState State, FName LayerTag, int32 Index, bool bEnabled)
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set Nested Jiggle Enabled"));
+    FWidgetUndoScope UndoScope(this, TEXT("Set Nested Jiggle Enabled"));
     if (!ValidatePreset()) return;
     FFaceNestedArt Elem = ActivePreset->GetNestedElement(State, LayerTag, Index);
     Elem.bJiggleEnabled = bEnabled;
@@ -1858,7 +1996,7 @@ void UFaceParallaxEditorWidget::SetNestedJiggleEnabled(EFaceAngleState State, FN
 
 void UFaceParallaxEditorWidget::SetNestedJiggleSettings(EFaceAngleState State, FName LayerTag, int32 Index, const FFaceJiggleSettings& Settings)
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set Nested Jiggle Settings"));
+    FWidgetUndoScope UndoScope(this, TEXT("Set Nested Jiggle Settings"));
     if (!ValidatePreset()) return;
     FFaceNestedArt Elem = ActivePreset->GetNestedElement(State, LayerTag, Index);
     Elem.JiggleSettings = Settings;
@@ -1874,7 +2012,7 @@ FFaceJiggleSettings UFaceParallaxEditorWidget::GetNestedJiggleSettings(EFaceAngl
 
 void UFaceParallaxEditorWidget::SetNestedVisibility(EFaceAngleState State, FName LayerTag, FName ElementName, EFaceAngleState ViewState, bool bVisible)
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set Nested Visibility"));
+    FWidgetUndoScope UndoScope(this, TEXT("Set Nested Visibility"));
     UFaceParallaxComponent* Comp = GetParallaxComponent();
     if (Comp) Comp->SetNestedVisibility(State, LayerTag, ElementName, ViewState, bVisible);
 }
@@ -1897,7 +2035,7 @@ bool UFaceParallaxEditorWidget::GetNestedVisibility(EFaceAngleState State, FName
 
 void UFaceParallaxEditorWidget::SetNestedIdleFrames(EFaceAngleState State, FName LayerTag, int32 Index, const TArray<FFaceTextureSet>& Frames)
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set Nested Idle Frames"));
+    FWidgetUndoScope UndoScope(this, TEXT("Set Nested Idle Frames"));
     if (!ValidatePreset()) return;
     FFaceNestedArt Elem = ActivePreset->GetNestedElement(State, LayerTag, Index);
     Elem.IdleFrames = Frames;
@@ -1913,7 +2051,7 @@ TArray<FFaceTextureSet> UFaceParallaxEditorWidget::GetNestedIdleFrames(EFaceAngl
 
 void UFaceParallaxEditorWidget::ClearNestedIdleFrames(EFaceAngleState State, FName LayerTag, int32 Index)
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Clear Nested Idle Frames"));
+    FWidgetUndoScope UndoScope(this, TEXT("Clear Nested Idle Frames"));
     if (!ValidatePreset()) return;
     FFaceNestedArt Elem = ActivePreset->GetNestedElement(State, LayerTag, Index);
     Elem.IdleFrames.Empty();
@@ -1937,7 +2075,7 @@ bool UFaceParallaxEditorWidget::IsSlotFullyAssigned(EFaceAngleState State, FName
 
 void UFaceParallaxEditorWidget::ClearState(EFaceAngleState State)
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Clear State"));
+    FWidgetUndoScope UndoScope(this, TEXT("Clear State"));
     if (!ValidatePreset()) return;
     ActivePreset->ClearState(State);
 
@@ -1949,7 +2087,7 @@ void UFaceParallaxEditorWidget::ClearState(EFaceAngleState State)
 
 void UFaceParallaxEditorWidget::ClearAll()
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Clear All"));
+    FWidgetUndoScope UndoScope(this, TEXT("Clear All"));
     if (!ValidatePreset()) return;
     ActivePreset->ClearAll();
 
@@ -2042,7 +2180,7 @@ float UFaceParallaxEditorWidget::GetLayerRotation(EFaceAngleState State, FName L
 
 void UFaceParallaxEditorWidget::BatchSetTextures(EFaceAngleState State, FName LayerTag, const TArray<FFaceTextureSet>& Textures)
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Batch Set Textures"));
+    FWidgetUndoScope UndoScope(this, TEXT("Batch Set Textures"));
     if (!ValidatePreset()) return;
     ActivePreset->BatchSetTextures(State, LayerTag, Textures);
 
@@ -2054,7 +2192,7 @@ void UFaceParallaxEditorWidget::BatchSetTextures(EFaceAngleState State, FName La
 
 void UFaceParallaxEditorWidget::ClearAllTextures()
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Clear All Textures"));
+    FWidgetUndoScope UndoScope(this, TEXT("Clear All Textures"));
     if (!ValidatePreset()) return;
     ActivePreset->ClearAllTextures();
 
@@ -2066,7 +2204,7 @@ void UFaceParallaxEditorWidget::ClearAllTextures()
 
 void UFaceParallaxEditorWidget::DuplicateState(EFaceAngleState SourceState, EFaceAngleState DestState)
 {
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Duplicate State"));
+    FWidgetUndoScope UndoScope(this, TEXT("Duplicate State"));
     if (!ValidatePreset()) return;
     ActivePreset->DuplicateState(SourceState, DestState);
 

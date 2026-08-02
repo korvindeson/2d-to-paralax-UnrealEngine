@@ -81,6 +81,14 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Face Preset|Transform")
     void SyncCanonicalToAllViews(EFaceAngleState State, FName LayerTag);
 
+    // Per-axis sync (P3): propagates ONE axis of the source canonical into each
+    // other state's view override as a relative delta (Position diff, Scale
+    // ratio, Rotation diff); existing override components on other axes are
+    // preserved. Axis: 0 = Position X, 1 = Position Y, 2 = Scale X,
+    // 3 = Scale Y, 4 = Rotation.
+    UFUNCTION(BlueprintCallable, Category = "Face Preset|Transform")
+    void SyncCanonicalAxisToAllViews(EFaceAngleState State, FName LayerTag, int32 Axis);
+
     UFUNCTION(BlueprintCallable, Category = "Face Preset|Transform")
     void SyncTexturesToAllViews(EFaceAngleState State, FName LayerTag);
 

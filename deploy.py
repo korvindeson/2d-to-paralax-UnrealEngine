@@ -565,6 +565,32 @@ def _verify_preset_view_assignments(preset):
         return False
 
 
+def _detach_preset_references():
+    """Null ActivePreset on in-level preview actors so preset replacement is
+    never blocked by a live reference (headless deploy cannot prompt)."""
+    detached = 0
+    try:
+        comp_class = find_class("FaceParallaxComponent")
+        for actor in get_all_level_actors():
+            try:
+                if actor.get_class().get_name() != "FaceParallaxPreviewActor":
+                    continue
+                for comp in actor.get_components_by_class(comp_class):
+                    try:
+                        if comp.get_editor_property("ActivePreset") is not None:
+                            comp.set_editor_property("ActivePreset", None)
+                            detached += 1
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+    except Exception:
+        pass
+    if detached:
+        unreal.log(f"[CLEAN] Detached ActivePreset from {detached} preview actor component(s)")
+    return detached
+
+
 def create_preset_asset():
     ensure_dir(PRESET_OUTPUT_PATH)
 
@@ -578,10 +604,32 @@ def create_preset_asset():
         if _verify_preset_view_assignments(existing):
             unreal.log(f"[SKIP] {obj_path} already has valid ViewAssignments")
             return existing
-        unreal.log(f"[REPLACE] {obj_path} has invalid ViewAssignments — replacing")
+        unreal.log(f"[REPLACE] {obj_path} has invalid ViewAssignments — rebuilding")
+        # Rebuild in place when the property is readable: PopulateDefaultAssignments
+        # empties and re-fills the map, and every live reference (e.g. the
+        # preview actor's component in the loaded level) stays valid. Deletion
+        # cannot complete headlessly while anything references the asset, so
+        # delete+recreate is only the fallback for class-layout mismatches.
+        try:
+            existing.set_editor_property("ViewAssignments", {})
+            existing.populate_default_assignments(["Eyes", "Brows", "Mouth", "Hair"])
+            _set_prop(existing, ("canvas_size", "CanvasSize"), unreal.IntPoint(2048, 2048))
+            if _verify_preset_view_assignments(existing):
+                editor_asset_lib.save_loaded_asset(existing)
+                unreal.log(f"[OK] Rebuilt {obj_path} in place (10 states x 4 layers)")
+                return existing
+            unreal.log_warning("[REPLACE] in-place rebuild failed verification — falling back to delete+recreate")
+        except Exception as e:
+            unreal.log_warning(f"[REPLACE] in-place rebuild not possible ({e}) — falling back to delete+recreate")
+        existing = None
+        _detach_preset_references()
         editor_asset_lib.delete_asset(obj_path)
         force_gc()
-        wait_asset_gone(obj_path)
+        if not wait_asset_gone(obj_path):
+            unreal.log_warning(f"[REPLACE] delete of {obj_path} deferred — retrying after a second GC")
+            force_gc()
+            editor_asset_lib.delete_asset(obj_path)
+            wait_asset_gone(obj_path)
 
     factory = unreal.DataAssetFactory()
     factory.set_editor_property("data_asset_class", preset_class)

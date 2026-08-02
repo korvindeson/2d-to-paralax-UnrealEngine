@@ -29,6 +29,7 @@
 #include "Misc/FileHelper.h"
 #include "Editor.h"
 #include "Widgets/Input/SMultiLineEditableTextBox.h"
+#include "Widgets/Layout/SScrollBox.h"
 #include "UObject/ObjectSaveContext.h"
 #include "Rendering/DrawElements.h"
 
@@ -150,12 +151,50 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
     BuildPanelDebugRail();
     BuildPanelCameraRail();
     BuildPanelAdvancedRail();
+    BuildPanelAssignRail();
     BuildPanelTimeline(Root);
     BuildPanelBottomBar(Root);
     // Phase 4b: rail chips are built after every panel builder has registered
     // its sections; a pending cross-rail search jump is consumed last.
     BuildRailSectionChips();
     ConsumePendingJump();
+
+    // --- Pinned quick-actions strip: full-width Root row above the main row.
+    // P21 (PinnedActionsNeverInScroll): the canonical quick actions live HERE
+    // and only here - never inside a scroll viewport. Button set mirrors
+    // FPLayout::QuickActionLabels(); the manifest PinnedStrip node mirrors
+    // this exact row (no SScrollBox, fixed height FPLayout::PinnedStripHeight).
+    {
+        TSharedRef<SHorizontalBox> QB = SNew(SHorizontalBox);
+        const std::vector<std::string>& QLabels = FPLayout::QuickActionLabels();
+        TFunction<void()> QHandlers[] = {
+            [this]() { OpenImportArtDialog(); },
+            [this]() { SyncAllLayersToAllViews(); RefreshUI(); },
+            [this]() { ApplyAutoFitToAllSlots(); RefreshUI(); },
+            [this]() { ClearAllOverrides(); RefreshUI(); },
+        };
+        for (int32 Qi = 0; Qi < (int32)QLabels.size(); ++Qi)
+        {
+            FString Label = FString(UTF8_TO_TCHAR(QLabels[Qi].c_str()));
+            const FLinearColor BtnFG = (Qi == 3) ? FLinearColor(1.0f,0.6f,0.6f) : FLinearColor(0.85f,0.85f,0.85f);
+            TSharedRef<SButton> QBt = SNew(SButton)
+                .ButtonColorAndOpacity(FLinearColor(0.15f,0.15f,0.15f))
+                .OnClicked_Lambda([this, Q = QHandlers[Qi]]()
+                {
+                    Q();
+                    return FReply::Handled();
+                })
+                .Content()
+                [SNew(STextBlock)
+                    .Text(FText::FromString(Label))
+                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+                    .ColorAndOpacity(BtnFG)];
+            QB->AddSlot().Padding(FMargin(2, 2)).AutoWidth()[QBt];
+        }
+        QB->AddSlot().FillWidth(1.0f);
+        Root->AddSlot().AutoHeight()
+            [SNew(SBox).HeightOverride(FPLayout::PinnedStripHeight)[QB]];
+    }
 
     // --- Assemble main row: rail icons | rail switcher | canvas | slot props ---
     {
@@ -168,6 +207,7 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
             {2, TEXT("C"), FLinearColor(1.0f,0.7f,0.5f)},        // Camera
             {3, TEXT("D"), FLinearColor(1.0f,0.6f,0.8f)},        // Debug
             {4, TEXT("A"), FLinearColor(0.8f,0.7f,1.0f)},        // Advanced
+            {5, TEXT("S"), FLinearColor(1.0f,0.9f,0.6f)},        // Assign
         };
         const TCHAR* RailTooltips[] = {
             TEXT("Layers: layer list, add/remove, status matrix"),
@@ -175,6 +215,7 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
             TEXT("Camera: orbit controls, zone boundaries, blend preview"),
             TEXT("Debug: import, config checks, outline->depth, visualizer"),
             TEXT("Advanced: cross-layer overlay, param reference, nested art"),
+            TEXT("Assign: bulk-assign grid, fill/clear ops, performance tier, camera source"),
         };
         for (auto& Rd : RailDefs)
         {
@@ -193,43 +234,9 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
                     .BorderBackgroundColor(FLinearColor(0.05f,0.05f,0.05f))
                     .Padding(FMargin(2,4,0,4))
                     [RailIcons]]];
-        // Rail column: persistent quick-actions strip (Phase 4b) above the
-        // rail switcher. The strip is outside the scroll viewports so it stays
-        // pinned on every rail tab; button set mirrors FPLayout::QuickActionLabels().
+        // Rail column: the rail switcher fills it; the pinned quick-actions
+        // strip is a full-width Root row above the main row (never scrolled).
         TSharedRef<SVerticalBox> RailCol = SNew(SVerticalBox);
-        {
-            TSharedRef<SHorizontalBox> QB = SNew(SHorizontalBox);
-            const std::vector<std::string>& QLabels = FPLayout::QuickActionLabels();
-            TFunction<void()> QHandlers[] = {
-                [this]() { OpenImportArtDialog(); },
-                [this]() { SyncAllLayersToAllViews(); RefreshUI(); },
-                [this]() { ApplyAutoFitToAllSlots(); RefreshUI(); },
-                [this]() { ClearAllOverrides(); RefreshUI(); },
-            };
-            for (int32 Qi = 0; Qi < (int32)QLabels.size(); ++Qi)
-            {
-                FString Label = FString(UTF8_TO_TCHAR(QLabels[Qi].c_str()));
-                const FLinearColor BtnFG = (Qi == 3) ? FLinearColor(1.0f,0.6f,0.6f) : FLinearColor(0.85f,0.85f,0.85f);
-                TSharedRef<SButton> QBt = SNew(SButton)
-                    .ButtonColorAndOpacity(FLinearColor(0.15f,0.15f,0.15f))
-                    .OnClicked_Lambda([this, Q = QHandlers[Qi]]()
-                    {
-                        Q();
-                        return FReply::Handled();
-                    })
-                    .Content()
-                    [SNew(STextBlock)
-                        .Text(FText::FromString(Label))
-                        .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
-                        .ColorAndOpacity(BtnFG)];
-                QB->AddSlot().Padding(FMargin(2, 2)).AutoWidth()[QBt];
-            }
-            QB->AddSlot().FillWidth(1.0f);
-            TSharedRef<SScrollBox> QBScroll = SNew(SScrollBox).Orientation(Orient_Horizontal);
-            QBScroll->AddSlot()[QB];
-            RailCol->AddSlot().AutoHeight()
-                [SNew(SBox).HeightOverride(26)[QBScroll]];
-        }
         RailCol->AddSlot().FillHeight(1.0f)
             [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("NoBorder"))
                 .BorderBackgroundColor(FLinearColor(0.07f,0.07f,0.07f))
@@ -285,6 +292,13 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
         RefreshUI();
     }
 
-    return Root;
+    // Main window vertical scroll: the fixed design height (884) clips the
+    // bottom rows (timeline, bottom bar, diagnostic log) when the tab is
+    // pinned/docked short, leaving the bottom section invisible and
+    // unreachable. The window container scrolls vertically so every section
+    // stays reachable; panel content still packs to fit (P17/P18/P19).
+    TSharedRef<SScrollBox> MainWindowScroll = SNew(SScrollBox).Orientation(Orient_Vertical);
+    MainWindowScroll->AddSlot()[Root];
+    return MainWindowScroll;
 }
 #endif

@@ -28,14 +28,35 @@ class UFaceParallaxPreset;
 class UFaceParallaxComponent;
 
 // Pin marker painted by the canvas gizmo (Phase 3): one per nested element
-// of the selected layer. Color coding: pinned+rotation = cyan, pinned only
-// = amber, unpinned+jiggle = purple ring, unpinned plain = red ring.
+// of the selected layer, plus the slot's whole-layer pin (P3, bLayerPin).
+// Color coding: pinned+rotation = cyan, pinned only = amber, unpinned+jiggle
+// = purple ring, unpinned plain = red ring, layer pin = white.
 struct FFacePinMarker
 {
     FVector2D UV = FVector2D::ZeroVector;
     bool bPinned = false;
     bool bRotation = false;
     bool bJiggle = false;
+    bool bLayerPin = false;
+};
+
+// One undo-stack entry: a label plus a duplicated preset snapshot taken
+// BEFORE a mutation ran (mirror of the backup-point snapshot machinery).
+// Entries are transient and never serialized into the widget asset.
+USTRUCT()
+struct FFaceUndoEntry
+{
+    GENERATED_BODY()
+
+    FFaceUndoEntry() {}
+    FFaceUndoEntry(const FString& InLabel, UFaceParallaxPreset* InBackup)
+        : Label(InLabel), Backup(InBackup) {}
+
+    UPROPERTY()
+    FString Label;
+
+    UPROPERTY()
+    TObjectPtr<UFaceParallaxPreset> Backup;
 };
 
 UCLASS(BlueprintType, Blueprintable)
@@ -173,6 +194,13 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Transform")
     void SyncLayerToSelectedViews(EFaceAngleState State, FName LayerTag,
         const TArray<EFaceAngleState>& DestViews, bool bIncludeTextures);
+
+    // Per-axis sync (P3): propagates ONE axis of the active slot's canonical
+    // into every other state's view override as a relative delta, preserving
+    // the other axes' existing overrides. Axis: 0 = Position X, 1 = Position Y,
+    // 2 = Scale X, 3 = Scale Y, 4 = Rotation.
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Transform")
+    void SyncLayerAxisToAllViews(EFaceAngleState State, FName LayerTag, int32 Axis);
 
     // ===== VIEWOVERRIDE =====
     UFUNCTION(BlueprintCallable, Category = "Face Editor|ViewOverride")
@@ -930,6 +958,35 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Preset")
     bool HasSnapshot() const;
 
+    // ===== UNDO STACK =====
+    // Every user mutation wraps its preset edits in FWidgetUndoScope
+    // (FaceParallaxEditorWidgetShared.h), which pushes a pre-mutation
+    // duplicate onto UndoStack. Undo/Redo restore those duplicates and
+    // refresh the whole editor state.
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|UI")
+    bool Undo();
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|UI")
+    bool Redo();
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|UI")
+    bool CanUndo() const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|UI")
+    bool CanRedo() const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|UI")
+    FString GetUndoLabel() const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|UI")
+    FString GetRedoLabel() const;
+
+    // Pushes a pre-mutation preset duplicate. Called by FWidgetUndoScope.
+    void PushUndoState(const FString& Desc);
+
+    // Copy-back loop shared by RestoreSnapshot and Undo/Redo.
+    bool RestoreFromBackup(UFaceParallaxPreset* Backup, const FString& Desc);
+
     // ===== WORKSPACE RAIL (Phase A) =====
     void SetActiveRailIndex(int32 Index);
     FLinearColor GetStateDotColor(EFaceAngleState State) const;
@@ -1042,6 +1099,16 @@ private:
     TSharedPtr<SImage> ThumbDepth;
     TSharedPtr<STextBlock> TextStatus;
     TSharedPtr<STextBlock> TextStatusDetail;
+    // Assign rail (rail 5): bulk-assign grid cell dots + coverage label.
+    TArray<TSharedPtr<SImage>> AssignCells;
+    TSharedPtr<STextBlock> TextAssignCoverage;
+    int32 PerformanceTier = 1;
+    // Perf tier + camera source combos (P3): owned members so the combos'
+    // OptionsSource pointers stay valid for the widget's lifetime.
+    TArray<TSharedPtr<FString>> PerfTierOptions;
+    TSharedPtr<FString> PerfTierSelection;
+    TArray<TSharedPtr<FString>> CameraSourceOptions;
+    TSharedPtr<FString> CameraSourceSelection;
     TSharedPtr<STextBlock> TextLayerName;
     TSharedPtr<SVerticalBox> LayerPanelBox;
     // Carousel state (P17/P18): dynamic row lists flip through fixed-height
@@ -1113,9 +1180,14 @@ private:
     bool bLocalColorByDepth = false;
 
     // ===== ZONE DIAGRAM =====
-    TSharedPtr<SWidget> ZoneDiagramWidget;
+    // Stable 20px SBox slotted into the zone panel; RebuildZoneDiagram updates
+    // its content in place (SetContent) so rebuilds are never orphaned.
+    TSharedPtr<SBox> ZoneDiagramWidget;
     TSharedPtr<STextBlock> ZoneYawLabel;
     TSharedPtr<STextBlock> ZonePitchLabel;
+    // Camera rail's 4 zone-boundary editors (F/3Q/P/B), kept in sync by
+    // ApplyZoneBoundaryDrag so diagram drags and text edits agree.
+    TArray<TSharedPtr<SEditableTextBox>> ZoneEditBoxes;
 
     // ===== BLEND PREVIEW =====
     TSharedPtr<SSlider> BlendPreviewSlider;
@@ -1147,7 +1219,7 @@ private:
     // ===== WORKSPACE RAIL (Phase A) =====
     int32 ActiveRailIndex = 0;
     TSharedPtr<SWidgetSwitcher> RailSwitcher;
-    TArray<TSharedPtr<SVerticalBox>> RailContent;   // 0 Layers 1 Transform 2 Camera 3 Debug 4 Advanced
+    TArray<TSharedPtr<SVerticalBox>> RailContent;   // 0 Layers 1 Transform 2 Camera 3 Debug 4 Advanced 5 Assign
     TSharedPtr<SVerticalBox> SlotPropsBox;          // right pane: selected slot properties
     TSharedPtr<SBox> PreviewHost;                   // center canvas container
     TSharedPtr<SImage> OnionSkinImage;              // onion-skin ghost (Phase B)
@@ -1166,6 +1238,8 @@ private:
     TSharedPtr<SFaceRailResizer> RailResizer;       // drag-resize handle rail/canvas (Phase 4b)
     class SFaceHotspotLayer;
     TSharedPtr<SFaceHotspotLayer> HotspotLayer;     // canvas overlay: spatial part pick (Phase 4)
+    class SZoneBoundaryOverlay;
+    TSharedPtr<SZoneBoundaryOverlay> ZoneDragOverlay; // zone diagram drag layer (Phase P3)
     class SFaceCarouselNav;                         // P18: prev/page/next strip under a carousel viewport
     TSharedPtr<SWrapBox> PartsStrip;                // canvas strip: 13 anatomical part chips (Phase 1)
     bool bStatePickMode = false;                    // state-strip pick mode: tab clicks toggle sync destinations
@@ -1267,7 +1341,7 @@ private:
         FFaceRailSection(const FString& InTitle, TSharedRef<SWidget> InTarget)
             : Title(InTitle), Target(InTarget) {}
     };
-    TArray<TArray<FFaceRailSection>> RailSections;  // per-rail registry (5 rails)
+    TArray<TArray<FFaceRailSection>> RailSections;  // per-rail registry (6 rails)
     TArray<TSharedPtr<SHorizontalBox>> RailChipsRows; // per-rail chip rows (jump chips)
     int32 ActiveChipRail = -1;                      // last jumped chip highlight
     int32 ActiveChipIdx = -1;
@@ -1295,8 +1369,23 @@ private:
     TSharedPtr<SEditableTextBox> EditParamAddName;
 
     // ===== SNAPSHOT / UNDO =====
+    // Backup point: a single manual preset duplicate ("Backup Point" button).
     UPROPERTY(Transient)
     TObjectPtr<UFaceParallaxPreset> SnapshotPresetBackup;
+
+    // Real multi-step undo: every user mutation (FWidgetUndoScope) pushes a
+    // pre-mutation preset duplicate; Undo pops and restores, Redo re-applies.
+    UPROPERTY(Transient)
+    TArray<FFaceUndoEntry> UndoStack;
+
+    UPROPERTY(Transient)
+    TArray<FFaceUndoEntry> RedoStack;
+
+    // The restore path must not push undo entries of its own.
+    bool bIsRestoringUndo = false;
+
+    static constexpr int32 MaxUndoEntries = 32;
+    int32 UndoSerial = 0;
 
     // ===== TAG VALIDATOR =====
     TSharedPtr<STextBlock> TextTagValidator;
@@ -1306,6 +1395,8 @@ private:
 
     // ===== INTERNAL HELPERS =====
     void RebuildZoneDiagram();
+    void ApplyZoneBoundaryDrag(int32 Idx, float Multiplier);
+    void CommitZoneBoundaryDrag();
     void RebuildStatusMatrix();
     void RebuildCrossLayerPanel();
     void RebuildTagValidator();
@@ -1332,6 +1423,8 @@ private:
     void BuildPanelDebugRail();
     void BuildPanelCameraRail();
     void BuildPanelAdvancedRail();
+    void BuildPanelAssignRail();
+    void RefreshAssignGrid();
     void BuildPanelTimeline(const TSharedRef<SVerticalBox>& Root);
     void BuildPanelBottomBar(const TSharedRef<SVerticalBox>& Root);
 };

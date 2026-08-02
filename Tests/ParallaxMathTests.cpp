@@ -6264,20 +6264,20 @@ void TestPhaseHUIDesign() {
 
     // Positive contract: the real manifest must be clean.
     const std::vector<FPLayout::FPLayoutNode> Spec = FPLayout::BuildSpec();
-    TEST("Phase H: manifest builds (425 nodes)", Spec.size() == 425u);
+    TEST("Phase H: manifest builds (500 nodes)", Spec.size() == 500u);
     TEST("Phase H: every node reachable from root", FPLayout::CountReachable(Spec) == (int)Spec.size());
     const int RootIdx = FPLayout::FindRootIndex(Spec);
     TEST("Phase H: single root is the last node", RootIdx == (int)Spec.size() - 1);
     const std::vector<FPLayout::FPRect> Rects = FPLayout::ResolveLayout(Spec);
-    TEST("Phase H: root rect matches design (1001x858)",
-        Rects[(size_t)RootIdx].W == 1001.0 && Rects[(size_t)RootIdx].H == 858.0);
+    TEST("Phase H: root rect matches design (1089x884)",
+        Rects[(size_t)RootIdx].W == 1089.0 && Rects[(size_t)RootIdx].H == 884.0);
     const std::vector<FPLayout::FPViolation> V = FPLayout::ValidateDesign(Spec);
-    TEST("Phase H: zero design violations (P1..P19)", V.empty());
+    TEST("Phase H: zero design violations (P1..P21)", V.empty());
 
-    // Scroll-viewport contract: the 5 rails are fixed 180x560 clipped viewports,
+    // Scroll-viewport contract: the 6 rails are fixed 180x560 clipped viewports,
     // so their content can never overlap other panels or leave the screen.
     {
-        const char* RailNames[5] = { "RL-Layers", "RL-Transform", "RL-Camera", "RL-Debug", "RL-Advanced" };
+        const char* RailNames[6] = { "RL-Layers", "RL-Transform", "RL-Camera", "RL-Debug", "RL-Advanced", "RL-Assign" };
         bool bViewports = true;
         for (const char* nm : RailNames)
         {
@@ -6314,6 +6314,9 @@ void TestPhaseHUIDesign() {
     TEST("Phase H: RAIL-Switcher present", Has("RAIL-Switcher"));
     TEST("Phase H: RL-Layers present", Has("RL-Layers"));
     TEST("Phase H: RL-Advanced present", Has("RL-Advanced"));
+    TEST("Phase H: RL-Assign present", Has("RL-Assign"));
+    TEST("Phase H: AG-Grid present", Has("AG-Grid"));
+    TEST("Phase H: AO-PerfCombo present", Has("AO-PerfCombo"));
     TEST("Phase H: PR-ThumbCol0 present", Has("PR-ThumbCol0"));
     TEST("Phase H: TB-ClearStale present", Has("TB-ClearStale"));
     TEST("Phase H: BA-BotBar present", Has("BA-BotBar"));
@@ -6609,9 +6612,9 @@ void TestPhaseIUITesting() {
 
     // --- Step 1 fit-first: the real rails pack without vertical scroll ---
     const std::vector<FPLayout::FPLayoutNode> Spec = FPLayout::BuildSpec();
-    TEST("UI: manifest builds (425 nodes)", Spec.size() == 425u);
+    TEST("UI: manifest builds (500 nodes)", Spec.size() == 500u);
     {
-        const char* RailNames[5] = { "RL-Layers", "RL-Transform", "RL-Camera", "RL-Debug", "RL-Advanced" };
+        const char* RailNames[6] = { "RL-Layers", "RL-Transform", "RL-Camera", "RL-Debug", "RL-Advanced", "RL-Assign" };
         bool bNoV = true;
         for (const char* nm : RailNames)
         {
@@ -6620,7 +6623,7 @@ void TestPhaseIUITesting() {
                 if (std::string(n.Name) == nm) { found = &n; break; }
             if (!found || !found->bNoVScroll) bNoV = false;
         }
-        TEST("UI: all 5 rails are fit-first (no vertical scroll)", bNoV);
+        TEST("UI: all 6 rails are fit-first (no vertical scroll)", bNoV);
     }
     const std::vector<FPLayout::FPViolation> V = FPLayout::ValidateDesign(Spec);
     {
@@ -7802,7 +7805,7 @@ void TestAccessibilityMirrors() {
 
     // ---- Rail section registry (chips + search jump source of truth) ----
     const std::vector<std::vector<std::string>>& Titles = FPLayout::RailSectionTitles();
-    TEST("Registry: 5 rails", Titles.size() == 5);
+    TEST("Registry: 6 rails", Titles.size() == 6);
     TEST("Registry: rail 0 Layers + Status Detail", Titles[0].size() == 2
         && Titles[0][0] == "Layers" && Titles[0][1] == "Status Detail");
     TEST("Registry: rail 1 Transform 2 sections", Titles[1].size() == 2
@@ -7819,6 +7822,8 @@ void TestAccessibilityMirrors() {
     TEST("Registry: rail 4 Advanced 4 sections", Titles[4].size() == 4
         && Titles[4][0] == "All Layers (current state)" && Titles[4][1] == "Param Reference"
         && Titles[4][2] == "Param Bindings (state + layer)" && Titles[4][3] == "Nested Art / Pins");
+    TEST("Registry: rail 5 Assign 2 sections", Titles[5].size() == 2
+        && Titles[5][0] == "Bulk Assign" && Titles[5][1] == "Assign Ops");
 
     // ---- Cross-rail search jump (mirror of OnRailSearchCommitted) ----
     int OutRail = -1, OutIdx = -1;
@@ -7886,6 +7891,157 @@ void TestAccessibilityMirrors() {
     printf("  [Accessibility Mirrors: 38 tests]\n");
 }
 
+// --- Phase 4b: P21 PinnedActionsNeverInScroll ---
+// The canonical quick actions (FPLayout::QuickActionLabels) live ONLY in the
+// PinnedStrip node: never inside a clipped scroll viewport, never anywhere
+// else. Positive contract on the real manifest + negative controls that plant
+// pinned actions inside clip()'d viewports and outside the strip.
+void TestPinnedActionsRule() {
+    printf("\n=== Pinned Actions Rule (P21) ===\n");
+
+    const std::vector<FPLayout::FPLayoutNode> Spec = FPLayout::BuildSpec();
+
+    // Positive: the manifest is clean and the strip is a fixed-height,
+    // full-width row between the zone diagram and the main row.
+    const std::vector<FPLayout::FPViolation> V = FPLayout::ValidateDesign(Spec);
+    bool bP21 = true;
+    for (const FPLayout::FPViolation& v : V)
+        if (v.Rule == FPLayout::DesignRule::PinnedActionsNeverInScroll) bP21 = false;
+    TEST("P21: real manifest has zero pinned-action violations", bP21);
+
+    const FPLayout::FPLayoutNode* Strip = nullptr;
+    const FPLayout::FPLayoutNode* RootNode = nullptr;
+    for (const FPLayout::FPLayoutNode& n : Spec)
+    {
+        if (std::string(n.Name) == "PinnedStrip") Strip = &n;
+        if (std::string(n.Name) == "Root") RootNode = &n;
+    }
+    TEST("P21: PinnedStrip node exists", Strip != nullptr);
+    TEST("P21: strip is fixed-height 26", Strip && Strip->FixedH == FPLayout::PinnedStripHeight);
+    TEST("P21: strip is a full-width row (flex width)",
+        Strip && Strip->bFlexW && Strip->Children.size() == 5);
+
+    // Strip children map 1:1 to the canonical labels, all flagged, all
+    // directly under the strip (never in a scroll viewport).
+    const std::vector<std::string>& QL = FPLayout::QuickActionLabels();
+    bool bStripOk = Strip && Strip->Children.size() == 5;
+    int StripIdx = -1;
+    if (Strip)
+        for (size_t i = 0; i < Spec.size(); ++i)
+            if (&Spec[i] == Strip) { StripIdx = (int)i; break; }
+    if (bStripOk)
+    {
+        for (int c = 0; c < 4 && bStripOk; ++c)
+        {
+            const FPLayout::FPLayoutNode& btn = Spec[(size_t)Strip->Children[(size_t)c]];
+            if (!btn.bPinnedAction || std::string(btn.Name) != QL[(size_t)c])
+                bStripOk = false;
+        }
+    }
+    TEST("P21: strip holds exactly the 4 canonical actions, flagged", bStripOk);
+    TEST("P21: strip is a direct root child above the main row",
+        RootNode && StripIdx >= 0
+        && (int)RootNode->Children.size() == 9
+        && RootNode->Children[3] == StripIdx
+        && std::string(Spec[(size_t)RootNode->Children[4]].Name) == "MainRow");
+
+    auto Violates = [](const std::vector<FPLayout::FPLayoutNode>& nodes, FPLayout::DesignRule rule) {
+        for (const FPLayout::FPViolation& v : FPLayout::ValidateDesign(nodes))
+            if (v.Rule == rule) return true;
+        return false;
+    };
+
+    // Negative: a canonical label planted inside a clipped viewport fires P21.
+    {
+        FPLayout::Builder B;
+        const int Root = FPLayout::VF(B, "Root",
+            FPLayout::HF(B, "PinnedStrip",
+                FPLayout::LF(B, "Import Art...", 97, 20),
+                FPLayout::LF(B, "Sync All -> All", 119, 20),
+                FPLayout::LF(B, "Auto-Fit All", 98, 20),
+                FPLayout::LF(B, "Clear All Overrides", 147, 20),
+                FPLayout::LF(B, "PS-Spacer", 0, 0)),
+            FPLayout::VF(B, "RailViewport",
+                FPLayout::LF(B, "QA-AutoFitAll", 98, 20)));
+        B.N[(size_t)Root].FixedW = 1089.0;
+        B.N[(size_t)Root].FixedH = 900.0;
+        const int Strip2 = B.N[(size_t)Root].Children[0];
+        B.N[(size_t)Strip2].FixedH = 26.0;
+        B.N[(size_t)Strip2].bFlexW = true;
+        for (int c = 0; c < 4; ++c)
+            B.N[(size_t)B.N[(size_t)Strip2].Children[(size_t)c]].bPinnedAction = true;
+        const int Rail = B.N[(size_t)Root].Children[1];
+        B.N[(size_t)Rail].bClipH = true;
+        B.N[(size_t)Rail].FixedW = 180.0;
+        B.N[(size_t)Rail].FixedH = 560.0;
+        B.N[(size_t)B.N[(size_t)Rail].Children[0]].bPinnedAction = true;
+        TEST("P21: canonical action inside a rail viewport fires",
+            Violates(B.N, FPLayout::DesignRule::PinnedActionsNeverInScroll));
+    }
+    // Negative: a pinned action as a direct root child (outside the strip)
+    // fires P21 even though it is not scrolled.
+    {
+        FPLayout::Builder B;
+        const int Root = FPLayout::VF(B, "Root",
+            FPLayout::HF(B, "PinnedStrip",
+                FPLayout::LF(B, "Import Art...", 97, 20),
+                FPLayout::LF(B, "Sync All -> All", 119, 20),
+                FPLayout::LF(B, "Auto-Fit All", 98, 20),
+                FPLayout::LF(B, "Clear All Overrides", 147, 20),
+                FPLayout::LF(B, "PS-Spacer", 0, 0)),
+            FPLayout::LF(B, "TB-Import", 97, 22));
+        B.N[(size_t)Root].FixedW = 1089.0;
+        B.N[(size_t)Root].FixedH = 900.0;
+        const int Strip3 = B.N[(size_t)Root].Children[0];
+        B.N[(size_t)Strip3].FixedH = 26.0;
+        B.N[(size_t)Strip3].bFlexW = true;
+        for (int c = 0; c < 4; ++c)
+            B.N[(size_t)B.N[(size_t)Strip3].Children[(size_t)c]].bPinnedAction = true;
+        B.N[(size_t)B.N[(size_t)Root].Children[1]].bPinnedAction = true;
+        TEST("P21: pinned action outside the strip fires",
+            Violates(B.N, FPLayout::DesignRule::PinnedActionsNeverInScroll));
+    }
+    // Negative: a canonical label with no strip at all fires (orphan pinned
+    // action - must live in the strip).
+    {
+        FPLayout::Builder B;
+        FPLayout::VF(B, "Root",
+            FPLayout::LF(B, "Auto-Fit All", 98, 20));
+        TEST("P21: canonical label without a strip fires",
+            Violates(B.N, FPLayout::DesignRule::PinnedActionsNeverInScroll));
+    }
+    // Negative: strip child duplicated inside a carousel page viewport fires.
+    {
+        FPLayout::Builder B;
+        const int Root = FPLayout::VF(B, "Root",
+            FPLayout::HF(B, "PinnedStrip",
+                FPLayout::LF(B, "Import Art...", 97, 20),
+                FPLayout::LF(B, "Sync All -> All", 119, 20),
+                FPLayout::LF(B, "Auto-Fit All", 98, 20),
+                FPLayout::LF(B, "Clear All Overrides", 147, 20),
+                FPLayout::LF(B, "PS-Spacer", 0, 0)),
+            FPLayout::VF(B, "CarouselPage",
+                FPLayout::LF(B, "Import Art...", 97, 20)));
+        B.N[(size_t)Root].FixedW = 1089.0;
+        B.N[(size_t)Root].FixedH = 900.0;
+        B.N[(size_t)B.N[(size_t)Root].Children[0]].FixedH = 26.0;
+        B.N[(size_t)B.N[(size_t)Root].Children[0]].bFlexW = true;
+        const int Strip4 = B.N[(size_t)Root].Children[0];
+        for (int c = 0; c < 4; ++c)
+            B.N[(size_t)B.N[(size_t)Strip4].Children[(size_t)c]].bPinnedAction = true;
+        const int Page = B.N[(size_t)Root].Children[1];
+        B.N[(size_t)Page].bClipH = true;
+        B.N[(size_t)Page].bCarousel = true;
+        B.N[(size_t)Page].FixedW = 180.0;
+        B.N[(size_t)Page].FixedH = 184.0;
+        B.N[(size_t)B.N[(size_t)Page].Children[0]].bPinnedAction = true;
+        TEST("P21: duplicate inside a carousel page fires",
+            Violates(B.N, FPLayout::DesignRule::PinnedActionsNeverInScroll));
+    }
+
+    printf("  [Pinned Actions Rule: tests]\n");
+}
+
 // --- Phase 4b: preview mode mirrors ---
 // Cycle Preview runs the four live systems one at a time (2s each); Live
 // Preview runs blink + expression + viseme + orbit all at once. Pins the
@@ -7919,6 +8075,224 @@ void TestPreviewModesMirror() {
     TEST("Live: orbit sweep period 8s", FPLayout::LivePreviewOrbitPeriod() == 8.0);
 
     printf("  [Preview Modes Mirror: 13 tests]\n");
+}
+
+// Mirror of the widget undo stack (UFaceParallaxEditorWidget::PushUndoState /
+// Undo / Redo): a labeled stack of full-preset snapshots with a 32-entry cap;
+// a new mutation clears the redo branch; restore copies the whole preset.
+struct FMirrorUndoStack
+{
+    struct FEntry { std::string Label; std::vector<int> Preset; };
+    std::vector<FEntry> UndoStack;
+    std::vector<FEntry> RedoStack;
+    bool bRestoring = false;
+    static constexpr size_t Max = 32;
+
+    void Push(const std::string& Label, const std::vector<int>& PreState)
+    {
+        if (bRestoring) return;
+        UndoStack.push_back({ Label, PreState });
+        if (UndoStack.size() > Max) UndoStack.erase(UndoStack.begin());
+        RedoStack.clear();
+    }
+    bool Undo(std::vector<int>& Out)
+    {
+        if (UndoStack.empty()) return false;
+        Out = UndoStack.back().Preset;
+        RedoStack.push_back(UndoStack.back());
+        UndoStack.pop_back();
+        return true;
+    }
+    bool Redo(std::vector<int>& Out)
+    {
+        if (RedoStack.empty()) return false;
+        Out = RedoStack.back().Preset;
+        UndoStack.push_back(RedoStack.back());
+        RedoStack.pop_back();
+        if (UndoStack.size() > Max) UndoStack.erase(UndoStack.begin());
+        return true;
+    }
+};
+
+void TestUndoStackSemantics() {
+    printf("\n=== Undo Stack Semantics ===\n");
+    FMirrorUndoStack S;
+    std::vector<int> P(10, 0);
+    S.Push("A", P); P[0] = 1;
+    S.Push("B", P); P[0] = 2;
+    S.Push("C", P); P[0] = 3;
+    TEST("push: 3 undo entries, empty redo",
+        S.UndoStack.size() == 3 && S.RedoStack.size() == 0);
+    std::vector<int> Out;
+    TEST("undo -> C pre-state (2)", S.Undo(Out) && Out[0] == 2);
+    TEST("undo -> B pre-state (1)", S.Undo(Out) && Out[0] == 1);
+    TEST("undo -> A pre-state (0)", S.Undo(Out) && Out[0] == 0);
+    TEST("undo on empty -> false", !S.Undo(Out));
+    TEST("redo -> A pre-state (0)", S.Redo(Out) && Out[0] == 0);
+    TEST("redo -> B pre-state (1)", S.Redo(Out) && Out[0] == 1);
+    TEST("redo -> C pre-state (2)", S.Redo(Out) && Out[0] == 2);
+    TEST("redo on empty -> false", !S.Redo(Out));
+    TEST("redo returns entry to undo stack", S.UndoStack.size() == 3 && S.RedoStack.size() == 0);
+}
+
+void TestUndoRedoClearsOnNewMutation() {
+    printf("\n=== Undo Clears On New Mutation ===\n");
+    FMirrorUndoStack S;
+    std::vector<int> P(10, 0);
+    S.Push("A", P); P[0] = 1;
+    S.Push("B", P); P[0] = 2;
+    std::vector<int> Out;
+    S.Undo(Out);
+    P = Out;  // undo restored the preset to B's pre-state (mirror of RestoreFromBackup)
+    TEST("redo branch populated after undo", S.RedoStack.size() == 1);
+    S.Push("D", P);
+    P[0] = 5;
+    TEST("new mutation clears redo branch", S.RedoStack.size() == 0);
+    TEST("undo stack: A and D only (redo entry not merged back)", S.UndoStack.size() == 2);
+    S.Undo(Out);
+    TEST("undo after new mutation -> D pre-state (1)", Out[0] == 1);
+    S.bRestoring = true;
+    S.Push("DuringRestore", P);
+    S.bRestoring = false;
+    TEST("push suppressed while restoring", S.UndoStack.size() == 1);
+}
+
+void TestUndoPreservesUntouchedViews() {
+    printf("\n=== Undo Preserves Untouched Views ===\n");
+    // A backup copies the WHOLE preset: undoing a change to view 3 must
+    // leave every untouched view exactly as captured, even if the mutation
+    // clobbered other views (restore is not a delta apply).
+    FMirrorUndoStack S;
+    std::vector<int> P(10, 0);
+    P[7] = 7;
+    S.Push("Set View3", P);
+    P[3] = 3;
+    P[7] = 99;
+    std::vector<int> Out;
+    TEST("undo restores", S.Undo(Out));
+    bool bFull = Out.size() == 10;
+    for (int i = 0; i < 10; ++i)
+    {
+        if (Out[i] != (i == 7 ? 7 : 0)) bFull = false;
+    }
+    TEST("undo restores all 10 views from backup", bFull);
+}
+
+void TestUndoStackCap() {
+    printf("\n=== Undo Stack Cap (32) ===\n");
+    FMirrorUndoStack S;
+    std::vector<int> P(10, 0);
+    for (int i = 0; i < 40; ++i) { S.Push("E" + std::to_string(i), P); P[0] = i; }
+    TEST("cap keeps 32 entries", S.UndoStack.size() == 32);
+    TEST("oldest entries dropped", S.UndoStack.front().Label == "E8");
+    std::vector<int> Out;
+    S.Undo(Out);
+    TEST("top entry is E39 pre-state (38)", Out[0] == 38);
+}
+
+// --- Phase P3 mirrors: 6th Assign rail + per-axis sync / base-layer pins /
+// import completion / camera source combo / zone drag / performance tier /
+// display-mode dedupe / assign grid. All helpers are pure FPLayout functions
+// consumed 1:1 by the widget (FaceParallaxEditorWidgetPanels.cpp +
+// FaceParallaxEditorWidgetInteractions.cpp).
+void TestPhaseP3Mirrors() {
+    printf("\n=== Phase P3 Mirrors (Assign rail + companions) ===\n");
+
+    // ---- Per-axis sync (SyncCanonicalAxisToAllViews) ----
+    {
+        double Dx, Dy, Dr;
+        FPLayout::SyncAxisDelta(100.0, 50.0, 10.0, 80.0, 50.0, 5.0, 0, Dx, Dy, Dr);
+        TEST("axis 0: position X delta only", Dx == 20.0 && Dy == 0.0 && Dr == 0.0);
+        FPLayout::SyncAxisDelta(100.0, 50.0, 10.0, 80.0, 40.0, 5.0, 1, Dx, Dy, Dr);
+        TEST("axis 1: position Y delta only", Dx == 0.0 && Dy == 10.0 && Dr == 0.0);
+        FPLayout::SyncAxisDelta(2.0, 50.0, 10.0, 1.0, 50.0, 5.0, 2, Dx, Dy, Dr);
+        TEST("axis 2: scale X ratio", Dx == 2.0 && Dy == 0.0 && Dr == 0.0);
+        FPLayout::SyncAxisDelta(100.0, 2.0, 10.0, 100.0, 0.5, 5.0, 3, Dx, Dy, Dr);
+        TEST("axis 3: scale Y ratio", Dx == 0.0 && Dy == 4.0 && Dr == 0.0);
+        FPLayout::SyncAxisDelta(100.0, 50.0, 30.0, 80.0, 40.0, 12.0, 4, Dx, Dy, Dr);
+        TEST("axis 4: rotation delta", Dx == 0.0 && Dy == 0.0 && Dr == 18.0);
+        FPLayout::SyncAxisDelta(100.0, 0.0, 10.0, 0.0, 0.0, 5.0, 2, Dx, Dy, Dr);
+        TEST("axis 2: zero dest guards ratio", Dx == 1.0 && Dr == 0.0);
+    }
+
+    // ---- Base-layer pin authoring + gizmo projection (LayerPinFromUV) ----
+    {
+        double X, Y, Z;
+        FPLayout::LayerPinFromUV(0.5, 0.5, 0.0, X, Y, Z);
+        TEST("front zone: pin at center", X == 0.0 && Y == 0.0 && Z == 0.0);
+        FPLayout::LayerPinFromUV(0.75, 0.5, 0.0, X, Y, Z);
+        TEST("front zone: +U maps +X", X > 0.0 && Y == 0.0 && Z == 0.0);
+        FPLayout::LayerPinFromUV(0.75, 0.75, 60.0, X, Y, Z);
+        TEST("quarter zone: +V maps +Y, X zeroed", X == 0.0 && Y > 0.0 && Z != 0.0);
+        FPLayout::LayerPinFromUV(0.25, 0.5, 60.0, X, Y, Z);
+        TEST("quarter zone: left UV flips Z", Z < 0.0);
+        FPLayout::LayerPinFromUV(0.75, 0.5, 170.0, X, Y, Z);
+        TEST("back zone: +U maps -X", X < 0.0 && Z == 0.0);
+    }
+    {
+        double U, V;
+        FPLayout::PinProjectToUV(0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.1, U, V);
+        TEST("pin at origin projects to UV center", U == 0.5 && V == 0.5);
+        FPLayout::PinProjectToUV(0.5, 0.5, 0.0, 0.0, 0.0, 1.0, 1.0, 0.1, U, V);
+        TEST("front pin projects to 0.75,0.75", U > 0.74 && U < 0.76 && V > 0.74 && V < 0.76);
+        FPLayout::PinProjectToUV(0.0, 0.0, 5.0, 0.0, 0.0, 1.0, 1.0, 0.1, U, V);
+        TEST("projection clamps to unit square", U >= 0.0 && U <= 1.0 && V >= 0.0 && V <= 1.0);
+    }
+
+    // ---- Import completion summary ----
+    {
+        const std::string S0 = FPLayout::ImportCoverageSummary(10, 10, 9, 8);
+        TEST("coverage summary 10/10 9/10 8/10",
+            S0 == "albedo 10/10, normal 9/10, depth 8/10");
+        TEST("coverage summary no states", FPLayout::ImportCoverageSummary(0, 0, 0, 0) == "no states");
+    }
+
+    // ---- Camera source combo (6 entries, PlayerCamera0 first) ----
+    {
+        const auto& L = FPLayout::CameraSourceLabels();
+        TEST("camera sources: 6 entries", L.size() == 6);
+        TEST("camera sources: pinned order",
+            L[0] == "PlayerCamera0" && L[1] == "PlayerCamera1" && L[2] == "SpecifiedActor"
+            && L[3] == "SequencerCamera" && L[4] == "PreviewActor" && L[5] == "Custom");
+    }
+
+    // ---- Zone boundary drag (multiplier edit, clamped, NaN-guarded) ----
+    {
+        TEST("zone drag: +10deg on 22.5 half-width", FPLayout::ZoneBoundaryAfterDrag(1.0, 10.0, 22.5) > 1.44
+            && FPLayout::ZoneBoundaryAfterDrag(1.0, 10.0, 22.5) < 1.45);
+        TEST("zone drag: clamps at 0.5", FPLayout::ZoneBoundaryAfterDrag(1.0, -30.0, 22.5) == 0.5);
+        TEST("zone drag: clamps at 20", FPLayout::ZoneBoundaryAfterDrag(1.0, 500.0, 22.5) == 20.0);
+        TEST("zone drag: NaN delta keeps multiplier", FPLayout::ZoneBoundaryAfterDrag(1.5, 0.0 / 0.0, 22.5) == 1.5);
+        TEST("zone drag: NaN multiplier propagates NaN", std::isnan(FPLayout::ZoneBoundaryAfterDrag(0.0 / 0.0, 10.0, 22.5)));
+    }
+
+    // ---- Performance tiers ----
+    {
+        TEST("perf tier: cache sizes 64/256/512",
+            FPLayout::PerformanceTierCacheSize(0) == 64 && FPLayout::PerformanceTierCacheSize(1) == 256
+            && FPLayout::PerformanceTierCacheSize(2) == 512);
+        TEST("perf tier: grid sizes 32/64/128",
+            FPLayout::PerformanceTierGridSize(0) == 32 && FPLayout::PerformanceTierGridSize(1) == 64
+            && FPLayout::PerformanceTierGridSize(2) == 128);
+    }
+
+    // ---- Display-mode dedupe (three debug toggles -> one exclusive mode) ----
+    {
+        TEST("display mode: textured", FPLayout::DeriveDisplayMode(true, false, false) == 0);
+        TEST("display mode: depth", FPLayout::DeriveDisplayMode(false, true, false) == 1);
+        TEST("display mode: wireframe", FPLayout::DeriveDisplayMode(false, false, true) == 2);
+        TEST("display mode: split (textures+depth)", FPLayout::DeriveDisplayMode(true, true, false) == 3);
+        TEST("display mode: custom combo clears highlight", FPLayout::DeriveDisplayMode(true, false, true) == -1);
+        TEST("display mode: all off clears highlight", FPLayout::DeriveDisplayMode(false, false, false) == -1);
+    }
+
+    // ---- Assign grid cells (2 full / 1 partial / 0 empty) ----
+    {
+        TEST("assign cell: full", FPLayout::AssignCellState(true, true, true) == 2);
+        TEST("assign cell: partial", FPLayout::AssignCellState(true, false, false) == 1);
+        TEST("assign cell: empty", FPLayout::AssignCellState(false, false, false) == 0);
+        TEST("assign coverage text", FPLayout::AssignCoverageText(21, 30) == "21/30");
+    }
 }
 
 int main() {
@@ -8006,7 +8380,13 @@ int main() {
     TestPinDataSurvivesSync();
 
     TestAccessibilityMirrors();
+    TestPinnedActionsRule();
     TestPreviewModesMirror();
+    TestUndoStackSemantics();
+    TestUndoRedoClearsOnNewMutation();
+    TestUndoPreservesUntouchedViews();
+    TestUndoStackCap();
+    TestPhaseP3Mirrors();
 
     printf("\n===== Results: %d/%d passed (%d failed) =====\n",
         g_passed, g_total, g_total - g_passed);

@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "FaceParallaxEditorWidget.h"
 #include "FaceParallaxPreset.h"
+#include "FaceParallaxComponent.h"
 #include "FaceParallaxLayoutSpec.h"
 #include <functional>
 
@@ -142,6 +143,33 @@ namespace
             }
         }
         ~FPresetTransactionScope()
+        {
+            if (bActive)
+                GEditor->EndTransaction();
+        }
+    };
+
+    // User-mutation scope: opens a UE editor transaction (so Ctrl+Z works on
+    // the preset asset) AND pushes a pre-mutation preset duplicate onto the
+    // widget's own multi-step undo stack (Undo/Redo buttons). Every mutating
+    // widget UFUNCTION must wrap its edits in one of these.
+    struct FWidgetUndoScope
+    {
+        bool bActive = false;
+        FWidgetUndoScope(UFaceParallaxEditorWidget* Owner, const FString& Desc)
+        {
+            if (Owner)
+            {
+                Owner->PushUndoState(Desc);
+            }
+            if (GEditor && Owner && Owner->ActivePreset)
+            {
+                bActive = true;
+                GEditor->BeginTransaction(FText::FromString(Desc));
+                Owner->ActivePreset->Modify();
+            }
+        }
+        ~FWidgetUndoScope()
         {
             if (bActive)
                 GEditor->EndTransaction();
@@ -316,11 +344,13 @@ public:
             const FVector2D Px = UFaceParallaxEditorWidget::GizmoUVToPixels(M.UV, CanvasSize);
             const float S = M.bPinned ? 13.0f : 9.0f;
             // Pinned: filled. Unpinned: ring (dark inner box hollows it out).
-            const FLinearColor Col = M.bPinned
-                ? (M.bRotation ? FLinearColor(0.3f, 0.85f, 1.0f, 0.95f)   // cyan: rotation pin
-                               : FLinearColor(1.0f, 0.85f, 0.3f, 0.95f))  // amber: static pin
-                : (M.bJiggle ? FLinearColor(0.75f, 0.4f, 1.0f, 0.9f)      // purple: jiggle element
-                             : FLinearColor(1.0f, 0.3f, 0.3f, 0.9f));     // red: plain pivot anchor
+            const FLinearColor Col = M.bLayerPin
+                ? FLinearColor(0.95f, 0.95f, 1.0f, 0.95f)            // white: whole-layer pin (P3)
+                : (M.bPinned
+                    ? (M.bRotation ? FLinearColor(0.3f, 0.85f, 1.0f, 0.95f)   // cyan: rotation pin
+                                   : FLinearColor(1.0f, 0.85f, 0.3f, 0.95f))  // amber: static pin
+                    : (M.bJiggle ? FLinearColor(0.75f, 0.4f, 1.0f, 0.9f)      // purple: jiggle element
+                                 : FLinearColor(1.0f, 0.3f, 0.3f, 0.9f)));    // red: plain pivot anchor
             FSlateDrawElement::MakeBox(L, Id,
                 G.ToPaintGeometry(FVector2D(S, S),
                     FSlateLayoutTransform(Px - FVector2D(S * 0.5f, S * 0.5f))),
@@ -827,5 +857,150 @@ private:
     }
 
     std::vector<FPLayout::FPHotspotRegion> Regions;
+};
+
+// SZoneBoundaryOverlay - transparent drag layer over the zone diagram (P3):
+// paints the 8 zone-boundary lines (from the 4 ZoneBoundaryMultipliers via
+// GetBoundaryOrDefault, mirrored ±) plus the live yaw cursor, and lets the
+// user drag any boundary line to remap its multiplier live. Pixel deltas are
+// converted to degrees (the full 360° spans the diagram width) and fed through
+// FPLayout::ZoneBoundaryAfterDrag — the same math the mirrors/tests cover — so
+// a negative-side boundary dragged toward the center shrinks its multiplier.
+// During the drag the Owner live-updates the diagram bar and the Camera rail
+// text editors; on release it commits (RefreshUI). Lives above the diagram
+// Bar in the zone SOverlay (which RebuildZoneDiagram swaps into the slotted
+// SBox in place).
+class UFaceParallaxEditorWidget::SZoneBoundaryOverlay : public SLeafWidget
+{
+public:
+    SLATE_BEGIN_ARGS(SZoneBoundaryOverlay) {}
+    SLATE_END_ARGS()
+
+    void Construct(const FArguments&) {}
+
+    UFaceParallaxEditorWidget* Owner = nullptr;
+
+    virtual FVector2D ComputeDesiredSize(float) const override
+    {
+        return FVector2D(400.0f, 20.0f);
+    }
+
+    // Boundary sides: -4..-1 mirror indices 0..3 on the negative angle side,
+    // +1..+4 on the positive side; 0 means no hit.
+    static float BoundaryPixel(int32 Side, const TArray<float>& Mults,
+        float HalfZoneWidth, float DiagramWidth)
+    {
+        const float Ang = UFaceParallaxComponent::GetBoundaryOrDefault(Mults, FMath::Abs(Side) - 1)
+            * HalfZoneWidth;
+        const float Signed = Side < 0 ? -Ang : Ang;
+        return (Signed + 180.0f) / 360.0f * DiagramWidth;
+    }
+
+    int32 HitTest(const FGeometry& Geo, const FVector2D& Local) const
+    {
+        const float W = Geo.GetLocalSize().X;
+        if (W <= 1.0f) return 0;
+        UFaceParallaxComponent* Comp = Owner ? Owner->GetParallaxComponent() : nullptr;
+        const TArray<float>& Mults = Comp ? Comp->ZoneBoundaryMultipliers : TArray<float>();
+        const float HZW = Comp ? Comp->HalfZoneWidth : 22.5f;
+        int32 BestSide = 0;
+        float BestDist = 12.0f;
+        for (int32 Side = -4; Side <= 4; ++Side)
+        {
+            if (Side == 0) continue;
+            const float Dist = FMath::Abs(BoundaryPixel(Side, Mults, HZW, W) - Local.X);
+            if (Dist < BestDist) { BestDist = Dist; BestSide = Side; }
+        }
+        return BestSide;
+    }
+
+    virtual int32 OnPaint(const FPaintArgs&, const FGeometry& AllottedGeometry,
+        const FSlateRect&, FSlateWindowElementList& OutDrawElements,
+        int32 LayerId, const FWidgetStyle&, bool) const override
+    {
+        const FSlateBrush* Brush = FCoreStyle::Get().GetBrush("WhiteBrush");
+        if (!Brush) return LayerId;
+        const FVector2D Sz = AllottedGeometry.GetLocalSize();
+        if (Sz.X <= 1.0f) return LayerId;
+        UFaceParallaxComponent* Comp = Owner ? Owner->GetParallaxComponent() : nullptr;
+        const TArray<float>& Mults = Comp ? Comp->ZoneBoundaryMultipliers : TArray<float>();
+        const float HZW = Comp ? Comp->HalfZoneWidth : 22.5f;
+        for (int32 Side = -4; Side <= 4; ++Side)
+        {
+            if (Side == 0) continue;
+            const float Px = BoundaryPixel(Side, Mults, HZW, Sz.X);
+            if (Px < 0.0f || Px > Sz.X) continue;
+            const bool bDrag = Side == DragSide;
+            const float W = bDrag ? 3.0f : 1.0f;
+            FSlateDrawElement::MakeBox(OutDrawElements, LayerId,
+                AllottedGeometry.ToPaintGeometry(FVector2D(W, Sz.Y),
+                    FSlateLayoutTransform(FVector2D(Px - W * 0.5f, 0.0f))),
+                Brush, ESlateDrawEffect::None,
+                bDrag ? FLinearColor(1.0f, 0.85f, 0.35f, 0.95f)
+                      : FLinearColor(0.04f, 0.04f, 0.07f, 0.85f));
+        }
+        if (Comp)
+        {
+            const float YPx = (Comp->CurrentYaw + 180.0f) / 360.0f * Sz.X;
+            if (YPx >= 0.0f && YPx <= Sz.X)
+                FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 1,
+                    AllottedGeometry.ToPaintGeometry(FVector2D(3.0f, Sz.Y),
+                        FSlateLayoutTransform(FVector2D(YPx - 1.5f, 0.0f))),
+                    Brush, ESlateDrawEffect::None, FLinearColor(1.0f, 0.2f, 0.2f, 0.9f));
+        }
+        return LayerId + 2;
+    }
+
+    virtual FReply OnMouseButtonDown(const FGeometry& Geo, const FPointerEvent& Ev) override
+    {
+        if (Ev.GetEffectingButton() != EKeys::LeftMouseButton) return FReply::Unhandled();
+        const FVector2D Local = Geo.AbsoluteToLocal(Ev.GetScreenSpacePosition());
+        const int32 Side = HitTest(Geo, Local);
+        if (Side == 0) return FReply::Unhandled();
+        DragSide = Side;
+        DragStartPx = Local.X;
+        UFaceParallaxComponent* Comp = Owner ? Owner->GetParallaxComponent() : nullptr;
+        const TArray<float>& Mults = Comp ? Comp->ZoneBoundaryMultipliers : TArray<float>();
+        DragStartMultiplier = UFaceParallaxComponent::GetBoundaryOrDefault(Mults, FMath::Abs(Side) - 1);
+        return FReply::Handled().CaptureMouse(SharedThis(this));
+    }
+
+    virtual FReply OnMouseMove(const FGeometry& Geo, const FPointerEvent& Ev) override
+    {
+        if (DragSide == 0) return FReply::Unhandled();
+        const float W = Geo.GetLocalSize().X;
+        if (W <= 1.0f) return FReply::Handled();
+        const float DeltaPx = Geo.AbsoluteToLocal(Ev.GetScreenSpacePosition()).X - DragStartPx;
+        const double DeltaDeg = (DragSide < 0 ? -1.0 : 1.0) * (double)DeltaPx * 360.0 / (double)W;
+        UFaceParallaxComponent* Comp = Owner ? Owner->GetParallaxComponent() : nullptr;
+        const float HZW = Comp ? Comp->HalfZoneWidth : 22.5f;
+        const float Mult = (float)FPLayout::ZoneBoundaryAfterDrag(
+            DragStartMultiplier, DeltaDeg, HZW);
+        if (Owner) Owner->ApplyZoneBoundaryDrag(FMath::Abs(DragSide) - 1, Mult);
+        return FReply::Handled();
+    }
+
+    virtual FReply OnMouseButtonUp(const FGeometry&, const FPointerEvent&) override
+    {
+        if (DragSide == 0) return FReply::Unhandled();
+        DragSide = 0;
+        if (Owner) Owner->CommitZoneBoundaryDrag();
+        return FReply::Handled().ReleaseMouseCapture();
+    }
+
+    virtual void OnMouseCaptureLost(const FCaptureLostEvent&) override
+    {
+        DragSide = 0;
+    }
+
+    virtual FCursorReply OnCursorQuery(const FGeometry&, const FPointerEvent&) const override
+    {
+        return FCursorReply::Cursor(EMouseCursor::ResizeLeftRight);
+    }
+
+private:
+    int32 DragSide = 0;
+    float DragStartPx = 0.0f;
+    float DragStartMultiplier = 1.0f;
 };
 #endif

@@ -111,6 +111,7 @@ inline constexpr double ZoneDiagramHeight   = 20.0;   // zone strips row
 inline constexpr double ModeTabPad          = 1.0;    // display-mode row spacing
 inline constexpr double PreviewCanvasHeight = 450.0;  // SBox HeightOverride
 inline constexpr double MainRowHeight       = 560.0;  // main area fixed height
+inline constexpr double PinnedStripHeight   = 26.0;   // pinned action strip (P21)
 inline constexpr double RailIconsWidth      = 36.0;   // rail icon column
 inline constexpr double RailIconSize        = 30.0;   // rail icon buttons
 inline constexpr double RailWidth           = 180.0;  // rail switcher width
@@ -165,7 +166,8 @@ enum class DesignRule : unsigned char {
     FitNoVScroll,       // P17
     CarouselFallback,   // P18
     ScrollbarReserve,   // P19
-    PageWhitespaceReview // P20
+    PageWhitespaceReview, // P20
+    PinnedActionsNeverInScroll // P21
 };
 
 struct FPViolation {
@@ -196,6 +198,7 @@ inline const char* RuleName(DesignRule r)
         case DesignRule::CarouselFallback:   return "CarouselFallback";
         case DesignRule::ScrollbarReserve:   return "ScrollbarReserve";
         case DesignRule::PageWhitespaceReview: return "PageWhitespaceReview";
+        case DesignRule::PinnedActionsNeverInScroll: return "PinnedActionsNeverInScroll";
     }
     return "?";
 }
@@ -234,6 +237,7 @@ struct FPLayoutNode {
     bool bSection = false; // P9: first child must be a title
     bool bTitle = false;
     bool bAccordion = false; // P16: one-open-per-group collapsible section
+    bool bPinnedAction = false; // P21: canonical pinned action (strip-only)
 };
 
 struct FPRect { double X = 0, Y = 0, W = 0, H = 0; };
@@ -317,6 +321,7 @@ inline std::vector<FPLayoutNode> BuildSpec()
     auto Car = [&](int i) { b.N[(size_t)i].bCarousel = true; };
     auto Nav = [&](int i) { b.N[(size_t)i].bCarouselNav = true; };
     auto Acc = [&](int i) { b.N[(size_t)i].bAccordion = true; };
+    auto PK = [&](int i) { b.N[(size_t)i].bPinnedAction = true; };
     auto GP  = [&](int i, int c, int r) { FPLayoutNode& n = b.N[(size_t)i]; n.GridCol = c; n.GridRow = r; };
 
     // Section helper: given the section container, configure title + body.
@@ -337,6 +342,8 @@ inline std::vector<FPLayoutNode> BuildSpec()
     const int Toolbar = HF(b, "Toolbar",
         LF(b, "TB-NewPreset", 84, 22),
         LF(b, "TB-Save", 42, 22),
+        LF(b, "TB-Undo", 42, 22),
+        LF(b, "TB-Redo", 42, 22),
         LF(b, "TB-Import", 97, 22),
         LF(b, "TB-Search", SearchBoxWidth, 22),
         LF(b, "TB-Spacer", 0, 0),
@@ -348,15 +355,16 @@ inline std::vector<FPLayoutNode> BuildSpec()
         LF(b, "TB-ClearStale", 83, 22));
     S(Toolbar, ToolbarItemPad);
     P(Toolbar, ToolbarPadL, ToolbarPadV, ToolbarPadL, ToolbarPadV);
-    Sp(b.N[(size_t)Toolbar].Children[4]);
-    M(b.N[(size_t)Toolbar].Children[3], 6, 2, 6, 2);  // search box slot FMargin(6,2)
+    Sp(b.N[(size_t)Toolbar].Children[6]);
+    M(b.N[(size_t)Toolbar].Children[5], 6, 2, 6, 2);  // search box slot FMargin(6,2)
     // Toolbar clusters: 8px left margin opens each group (matches RebuildWidget).
-    // Button widths above are tuned so the toolbar natural width stays 1001
-    // (the design window width contract asserted by Phase H).
-    M(b.N[(size_t)Toolbar].Children[2], 8, 2, 2, 2);  // Import Art
-    M(b.N[(size_t)Toolbar].Children[5], 8, 2, 2, 2);  // Help
-    M(b.N[(size_t)Toolbar].Children[6], 8, 2, 2, 2);  // Spawn Preview
-    M(b.N[(size_t)Toolbar].Children[10], 8, 2, 2, 2); // Clear Stale
+    // Button widths above are tuned so the toolbar natural width stays 1089
+    // (the design window width contract asserted by Phase H; Undo/Redo buttons
+    // widen the contract from 1001).
+    M(b.N[(size_t)Toolbar].Children[4], 8, 2, 2, 2);  // Import Art
+    M(b.N[(size_t)Toolbar].Children[7], 8, 2, 2, 2);  // Help
+    M(b.N[(size_t)Toolbar].Children[8], 8, 2, 2, 2);  // Spawn Preview
+    M(b.N[(size_t)Toolbar].Children[12], 8, 2, 2, 2); // Clear Stale
 
     // ========================= 2. VIEW STATE STRIP =========================
     const int StateStrip = HF(b, "StateStrip",
@@ -400,7 +408,8 @@ inline std::vector<FPLayoutNode> BuildSpec()
             LF(b, "RI-Transform", RailIconSize, RailIconSize),
             LF(b, "RI-Camera", RailIconSize, RailIconSize),
             LF(b, "RI-Debug", RailIconSize, RailIconSize),
-            LF(b, "RI-Advanced", RailIconSize, RailIconSize)),
+            LF(b, "RI-Advanced", RailIconSize, RailIconSize),
+            LF(b, "RI-Assign", RailIconSize, RailIconSize)),
 
         // --- 3b. RAIL SWITCHER (overlay: one rail visible at a time) ---
         OV(b, "RAIL-Switcher",
@@ -417,9 +426,6 @@ inline std::vector<FPLayoutNode> BuildSpec()
                     LF(b, "Sec-QA-Title", 120, 14),
                     VF(b, "Sec-QA-Body",
                         HF(b, "QA-Row0",
-                            LF(b, "QA-AutoFitAll", 98, 20),
-                            LF(b, "QA-SyncAllAll", 119, 20),
-                            LF(b, "QA-ClearAll", 147, 20),
                             LF(b, "QA-DupFront", 168, 20),
                             LF(b, "QA-FillMissing", 140, 20),
                             LF(b, "QA-Spacer", 0, 0)))),
@@ -432,7 +438,14 @@ inline std::vector<FPLayoutNode> BuildSpec()
                             LF(b, "CV-CopyBtn", 105, 20),
                             LF(b, "CV-Spacer", 0, 0),
                             LF(b, "CV-LinkChk", 20, 20),
-                            LF(b, "CV-LinkLbl", 28, 14))))),
+                            LF(b, "CV-LinkLbl", 28, 14)),
+                        HF(b, "CV-AxisRow",
+                            LF(b, "CV-AxisLbl", 64, 14),
+                            LF(b, "CV-AxisX", 26, 20),
+                            LF(b, "CV-AxisY", 26, 20),
+                            LF(b, "CV-AxisSX", 32, 20),
+                            LF(b, "CV-AxisSY", 32, 20),
+                            LF(b, "CV-AxisR", 26, 20))))),
             VF(b, "RL-Camera",
                 VF(b, "Sec-Camera",
                     LF(b, "Sec-Cam-Title", 120, 14),
@@ -464,7 +477,7 @@ inline std::vector<FPLayoutNode> BuildSpec()
                     LF(b, "Sec-IM-Title", 120, 14),
                     VF(b, "Sec-IM-Body",
                         HF(b, "IM-Row",
-                            LF(b, "IM-ImportBtn", 105, 20), LF(b, "IM-ImportAssign", 119, 20), LF(b, "IM-AssignCB", 147, 20), LF(b, "IM-Spacer", 0, 0)))),
+                            LF(b, "IM-ImportAssign", 119, 20), LF(b, "IM-AssignCB", 147, 20), LF(b, "IM-Spacer", 0, 0)))),
                 VF(b, "Sec-Config",
                     LF(b, "Sec-CFG-Title", 120, 14),
                     VF(b, "Sec-CFG-Body",
@@ -581,7 +594,48 @@ inline std::vector<FPLayoutNode> BuildSpec()
                         HF(b, "NP-Sens",
                             LF(b, "NP-SensLbl", 56, 14), LF(b, "NP-SensSlider", 0, 0), LF(b, "NP-SensVal", 44, 10)),
                         LF(b, "NP-DetectBtn", 91, 20),
-                        LF(b, "NP-Outliner", 200, 60))))),
+                        LF(b, "NP-Outliner", 200, 60)))),
+            VF(b, "RL-Assign",
+                VF(b, "Sec-AssignGrid",
+                    LF(b, "Sec-AG-Title", 120, 14),
+                    VF(b, "Sec-AG-Body",
+                        GRID(b, "AG-Grid",
+                            LF(b, "AG-H0", 16, 14), LF(b, "AG-H1", 16, 14),
+                            LF(b, "AG-H2", 16, 14), LF(b, "AG-H3", 16, 14),
+                            LF(b, "AG-H4", 16, 14), LF(b, "AG-H5", 16, 14),
+                            LF(b, "AG-H6", 16, 14), LF(b, "AG-H7", 16, 14),
+                            LF(b, "AG-H8", 16, 14), LF(b, "AG-H9", 16, 14),
+                            LF(b, "AG-C00", 16, 16), LF(b, "AG-C01", 16, 16),
+                            LF(b, "AG-C02", 16, 16), LF(b, "AG-C03", 16, 16),
+                            LF(b, "AG-C04", 16, 16), LF(b, "AG-C05", 16, 16),
+                            LF(b, "AG-C06", 16, 16), LF(b, "AG-C07", 16, 16),
+                            LF(b, "AG-C08", 16, 16), LF(b, "AG-C09", 16, 16),
+                            LF(b, "AG-C10", 16, 16), LF(b, "AG-C11", 16, 16),
+                            LF(b, "AG-C12", 16, 16), LF(b, "AG-C13", 16, 16),
+                            LF(b, "AG-C14", 16, 16), LF(b, "AG-C15", 16, 16),
+                            LF(b, "AG-C16", 16, 16), LF(b, "AG-C17", 16, 16),
+                            LF(b, "AG-C18", 16, 16), LF(b, "AG-C19", 16, 16),
+                            LF(b, "AG-C20", 16, 16), LF(b, "AG-C21", 16, 16),
+                            LF(b, "AG-C22", 16, 16), LF(b, "AG-C23", 16, 16),
+                            LF(b, "AG-C24", 16, 16), LF(b, "AG-C25", 16, 16),
+                            LF(b, "AG-C26", 16, 16), LF(b, "AG-C27", 16, 16),
+                            LF(b, "AG-C28", 16, 16), LF(b, "AG-C29", 16, 16)),
+                        HF(b, "AG-RowLbls",
+                            LF(b, "AG-Lbl0", 60, 14), LF(b, "AG-Lbl1", 60, 14), LF(b, "AG-Lbl2", 60, 14),
+                            LF(b, "AG-Coverage", 116, 14)))),
+                VF(b, "Sec-AssignOps",
+                    LF(b, "Sec-AO-Title", 120, 14),
+                    VF(b, "Sec-AO-Body",
+                        HF(b, "AO-Row0",
+                            LF(b, "AO-Fill", 110, 20),
+                            LF(b, "AO-ClearRow", 105, 20),
+                            LF(b, "AO-SlotToAll", 152, 20),
+                            LF(b, "AO-Spacer", 0, 0)),
+                        HF(b, "AO-Row1",
+                            LF(b, "AO-PerfLbl", 80, 14),
+                            LF(b, "AO-PerfCombo", 70, 20),
+                            LF(b, "AO-CamLbl", 92, 14),
+                            LF(b, "AO-CamCombo", 100, 20)))))),
 
         // --- 3c. CENTER COLUMN ---
         VF(b, "CENTER",
@@ -701,12 +755,16 @@ inline std::vector<FPLayoutNode> BuildSpec()
             SecSetup(QA, 2);
             const int QA0 = b.N[(size_t)Bod(QA)].Children[0];
             S(QA0, 4);
-            Sp(b.N[(size_t)QA0].Children[5]);
+            Sp(b.N[(size_t)QA0].Children[2]);
             const int CV = b.N[(size_t)RLTransform].Children[1];
             SecSetup(CV, 2);
-            const int CVR = b.N[(size_t)Bod(CV)].Children[0];
-            S(CVR, 4);
-            Sp(b.N[(size_t)CVR].Children[3]);
+            {
+                const int CVR = b.N[(size_t)Bod(CV)].Children[0];
+                S(CVR, 4);
+                Sp(b.N[(size_t)CVR].Children[3]);
+                const int CVA = b.N[(size_t)Bod(CV)].Children[1];
+                S(CVA, 2);
+            }
         }
 
         const int RLCamera = b.N[(size_t)RailSw].Children[2];
@@ -765,7 +823,7 @@ inline std::vector<FPLayoutNode> BuildSpec()
             {
                 const int IM0 = b.N[(size_t)Bod(Im)].Children[0];
                 S(IM0, 4);
-                Sp(b.N[(size_t)IM0].Children[3]);
+                Sp(b.N[(size_t)IM0].Children[2]);
             }
             const int Cfg = b.N[(size_t)RLDebug].Children[1];
             SecSetup(Cfg, 2);
@@ -887,6 +945,38 @@ inline std::vector<FPLayoutNode> BuildSpec()
             }
             M(b.N[(size_t)Bod(NP)].Children[9], 0, 2, 0, 2);
             M(b.N[(size_t)Bod(NP)].Children[10], 0, 2, 0, 2);
+        }
+
+        const int RLAssign = b.N[(size_t)RailSw].Children[5];
+        S(RLAssign, 2);
+        Clip(RLAssign);
+        NoV(RLAssign);
+        b.N[(size_t)RLAssign].FixedH = MainRowHeight;
+        b.N[(size_t)RLAssign].FixedW = RailWidth;
+        {
+            for (int c = 0; c < (int)b.N[(size_t)RLAssign].Children.size(); ++c)
+                Acc(b.N[(size_t)RLAssign].Children[(size_t)c]);
+            const int AG = b.N[(size_t)RLAssign].Children[0];
+            SecSetup(AG, 0);
+            {
+                const int GB = Bod(AG);
+                const int Grid = b.N[(size_t)GB].Children[0];
+                // 10 state columns (H0..H9 header + C00..C29 = 3 layer rows).
+                for (int c = 0; c < (int)b.N[(size_t)Grid].Children.size(); ++c)
+                    GP(b.N[(size_t)Grid].Children[(size_t)c], c % 10, c / 10);
+                const int RowL = b.N[(size_t)GB].Children[1];
+                S(RowL, 4);
+                Sp(b.N[(size_t)RowL].Children[3]);
+            }
+            const int AO = b.N[(size_t)RLAssign].Children[1];
+            SecSetup(AO, 2);
+            {
+                const int AORow0 = b.N[(size_t)Bod(AO)].Children[0];
+                S(AORow0, 4);
+                Sp(b.N[(size_t)AORow0].Children[3]);
+                const int AORow1 = b.N[(size_t)Bod(AO)].Children[1];
+                S(AORow1, 4);
+            }
         }
     }
 
@@ -1037,9 +1127,29 @@ inline std::vector<FPLayoutNode> BuildSpec()
     const int DiagLog = LF(b, "DiagnosticLog", 0, DiagnosticLogHeight);
     Fx(DiagLog);
 
+    // =================== PINNED ACTION STRIP (P21) ===================
+    // Full-width row above the main row: the canonical quick actions live
+    // HERE and only here. They are pinned (never inside a scroll viewport),
+    // mirroring the widget strip built from FPLayout::QuickActionLabels().
+    const int PinnedStrip = HF(b, "PinnedStrip",
+        LF(b, "Import Art...", 97, 20),
+        LF(b, "Sync All -> All", 119, 20),
+        LF(b, "Auto-Fit All", 98, 20),
+        LF(b, "Clear All Overrides", 147, 20),
+        LF(b, "PS-Spacer", 0, 0));
+    b.N[(size_t)PinnedStrip].FixedH = PinnedStripHeight;
+    FxW(PinnedStrip);
+    S(PinnedStrip, 2);
+    Sp(b.N[(size_t)PinnedStrip].Children[4]);
+    for (int c = 0; c < 4; ++c)
+    {
+        PK(b.N[(size_t)PinnedStrip].Children[(size_t)c]);
+        M(b.N[(size_t)PinnedStrip].Children[(size_t)c], 2, 2, 2, 2);
+    }
+
     // =========================== ROOT ===========================
     const int Root = VF(b, "Root",
-        Toolbar, StateStrip, ZoneDiagram, MainRow, Timeline, FrameCounts, BotArea, DiagLog);
+        Toolbar, StateStrip, ZoneDiagram, PinnedStrip, MainRow, Timeline, FrameCounts, BotArea, DiagLog);
     (void)Root;
 
     return b.N;
@@ -1330,8 +1440,9 @@ inline int CountReachable(const std::vector<FPLayoutNode>& Nodes)
 }
 
 // ----------------------------------------------------------------------------
-// Validator: enforces P1..P11 over the resolved tree.
+// Validator: enforces P1..P21 over the resolved tree.
 // ----------------------------------------------------------------------------
+inline const std::vector<std::string>& QuickActionLabels();
 inline std::vector<FPViolation> ValidateDesign(const std::vector<FPLayoutNode>& Nodes)
 {
     std::vector<FPViolation> Out;
@@ -1595,6 +1706,38 @@ inline std::vector<FPViolation> ValidateDesign(const std::vector<FPLayoutNode>& 
         }
         return false;
     };
+
+    // ---- P21 PinnedActionsNeverInScroll: canonical quick actions live ONLY
+    // ---- in the PinnedStrip node. A node that is a pinned action (flagged
+    // ---- bPinnedAction, or named exactly like a canonical QuickActionLabels
+    // ---- entry) must never be inside a clipped scroll viewport, and must be
+    // ---- a direct child of PinnedStrip - regardless of which panel or rail
+    // ---- a duplicate is placed in.
+    {
+        const std::vector<std::string>& Labels = QuickActionLabels();
+        int Strip = -1;
+        for (size_t i = 0; i < Nodes.size(); ++i)
+            if (Nodes[i].Name && std::string(Nodes[i].Name) == "PinnedStrip") { Strip = (int)i; break; }
+        auto IsPinnedAction = [&](const FPLayoutNode& n)
+        {
+            if (n.bPinnedAction) return true;
+            if (!n.Name) return false;
+            const std::string nm(n.Name);
+            for (const std::string& L : Labels) if (nm == L) return true;
+            return false;
+        };
+        for (size_t i = 0; i < Nodes.size(); ++i)
+        {
+            const FPLayoutNode& n = Nodes[i];
+            if (!IsPinnedAction(n)) continue;
+            if (InViewport[i] != 0)
+                Out.push_back({ DesignRule::PinnedActionsNeverInScroll, n.Name,
+                    "pinned action inside a scroll viewport" });
+            if (Strip < 0 || Parent[i] != Strip)
+                Out.push_back({ DesignRule::PinnedActionsNeverInScroll, n.Name,
+                    "pinned action outside the PinnedStrip node" });
+        }
+    }
 
     // ---- P18 CarouselFallback + P19 ScrollbarReserve: every carousel page
     // ---- viewport has a fixed height, a nav strip right after it, and a
@@ -1989,7 +2132,8 @@ inline const std::vector<std::vector<std::string>>& RailSectionTitles()
                                 "Problems (click row = jump)" },
         /* rail 4 Advanced */ { "All Layers (current state)", "Param Reference",
                                 "Param Bindings (state + layer)",
-                                "Nested Art / Pins" }
+                                "Nested Art / Pins" },
+        /* rail 5 Assign */   { "Bulk Assign", "Assign Ops" }
     };
     return Titles;
 }
@@ -2079,6 +2223,158 @@ inline std::vector<bool> PreviewModeSystemFlags(const std::string& Mode, int Pha
         F[(size_t)Phase] = true;
     }
     return F;
+}
+
+// ============================================================================
+// Per-axis sync mirrors (P3): SyncCanonicalAxisToAllViews propagates ONE axis
+// of the source canonical into each other state's view override, leaving the
+// other axes' existing overrides untouched. Axis codes: 0 = Position X,
+// 1 = Position Y, 2 = Scale X, 3 = Scale Y, 4 = Rotation (degrees).
+// Position deltas subtract; scale deltas divide (ratio); rotation subtracts.
+// ============================================================================
+inline void SyncAxisDelta(double SrcX, double SrcY, double SrcRot,
+                          double DstX, double DstY, double DstRot,
+                          int Axis, double& OutDX, double& OutDY, double& OutRot)
+{
+    OutDX = 0.0; OutDY = 0.0; OutRot = 0.0;
+    switch (Axis)
+    {
+        case 0: OutDX = SrcX - DstX; break;
+        case 1: OutDY = SrcY - DstY; break;
+        case 2: OutDX = (DstX > 1e-6) ? SrcX / DstX : 1.0; break;
+        case 3: OutDY = (DstY > 1e-6) ? SrcY / DstY : 1.0; break;
+        case 4: OutRot = SrcRot - DstRot; break;
+        default: break;
+    }
+}
+
+// ============================================================================
+// Base-layer pin mirrors (P3): the layer pin uses the same zone-frame authoring
+// math as nested pins (SetNestedPinFromUV), plus the projection used by the
+// gizmo to place the handle (ProjectPinToUVAtAngles). Zone yaw decides which
+// of the head axes the horizontal UV axis maps to.
+// ============================================================================
+inline void LayerPinFromUV(double UVX, double UVY, double ZoneYawDeg,
+                           double& OutX, double& OutY, double& OutZ)
+{
+    const double UVCenterX = UVX - 0.5, UVCenterY = UVY - 0.5;
+    const double AY = ZoneYawDeg < 0.0 ? -ZoneYawDeg : ZoneYawDeg;
+    if (AY < 45.0)
+    {
+        OutX = UVCenterX * 2.0; OutY = UVCenterY * 2.0; OutZ = 0.0;
+    }
+    else if (AY >= 45.0 && AY < 135.0)
+    {
+        OutX = 0.0; OutY = UVCenterY * 2.0; OutZ = UVCenterX * 2.0;
+        if (ZoneYawDeg < 0.0) OutZ = -OutZ;
+    }
+    else
+    {
+        OutX = -UVCenterX * 2.0; OutY = UVCenterY * 2.0; OutZ = 0.0;
+    }
+}
+
+inline void PinProjectToUV(double PX, double PY, double PZ, double YawDeg, double PitchDeg,
+                           double HalfW, double HalfH, double HalfD,
+                           double& OutU, double& OutV)
+{
+    const double Cy = cos(YawDeg * 3.14159265358979323846 / 180.0);
+    const double Sy = sin(YawDeg * 3.14159265358979323846 / 180.0);
+    const double Cp = cos(PitchDeg * 3.14159265358979323846 / 180.0);
+    const double Sp = sin(PitchDeg * 3.14159265358979323846 / 180.0);
+    const double WX = PX * HalfW, WY = PY * HalfH, WZ = PZ * HalfD;
+    const double ViewX = WX * Cy + WZ * Sy;
+    const double VisibleX = HalfW * fabs(Cy) + HalfD * fabs(Sy);
+    const double ViewY = WY * Cp;
+    const double VisibleY = HalfH * fabs(Cp) + HalfD * fabs(Sp);
+    OutU = 0.5 + 0.5 * ViewX / (VisibleX > 1e-9 ? VisibleX : 1.0);
+    OutV = 0.5 + 0.5 * ViewY / (VisibleY > 1e-9 ? VisibleY : 1.0);
+    if (OutU < 0.0) { OutU = 0.0; }
+    if (OutU > 1.0) { OutU = 1.0; }
+    if (OutV < 0.0) { OutV = 0.0; }
+    if (OutV > 1.0) { OutV = 1.0; }
+}
+
+// ============================================================================
+// Import completion mirrors (P3): the coverage summary the import paths print
+// after an apply ("albedo A/10, normal N/10, depth D/10" over the 10 states).
+// ============================================================================
+inline std::string ImportCoverageSummary(int TotalStates, int WithAlbedo, int WithNormal, int WithDepth)
+{
+    if (TotalStates <= 0) return "no states";
+    return std::string("albedo ") + std::to_string(WithAlbedo) + "/" + std::to_string(TotalStates)
+         + ", normal " + std::to_string(WithNormal) + "/" + std::to_string(TotalStates)
+         + ", depth " + std::to_string(WithDepth) + "/" + std::to_string(TotalStates);
+}
+
+// ============================================================================
+// Camera source mirrors (P3): the six ECameraSource entries in the widget's
+// Camera rail combo, in pinned order (default PlayerCamera0 first).
+// ============================================================================
+inline const std::vector<std::string>& CameraSourceLabels()
+{
+    static const std::vector<std::string> Labels = {
+        "PlayerCamera0", "PlayerCamera1", "SpecifiedActor",
+        "SequencerCamera", "PreviewActor", "Custom"
+    };
+    return Labels;
+}
+
+// ============================================================================
+// Zone drag mirrors (P3): dragging a zone-boundary handle changes the matching
+// ZoneBoundaryMultipliers entry by the dragged angle (multiplier = boundary
+// degrees / HalfZoneWidth), clamped to the [0.5, 20] editor range. NaN input
+// keeps the existing multiplier (mirror of ApplyZoneBoundaryDrag).
+// ============================================================================
+inline double ZoneBoundaryAfterDrag(double Multiplier, double DeltaDegrees, double HalfZoneWidth)
+{
+    if (Multiplier != Multiplier) return Multiplier;  // NaN guard
+    const double HZW = (HalfZoneWidth > 1e-6) ? HalfZoneWidth : 22.5;
+    double Deg = Multiplier * HZW + (DeltaDegrees != DeltaDegrees ? 0.0 : DeltaDegrees);
+    double M = Deg / HZW;
+    if (M < 0.5) M = 0.5;
+    if (M > 20.0) M = 20.0;
+    return M;
+}
+
+// ============================================================================
+// Performance tier mirrors (P3): tier 0 Low / 1 Medium / 2 High map to an
+// async texture-cache budget and a default outline->depth grid resolution.
+// Medium (the pre-tier defaults) keeps cache 256 / grid 64.
+// ============================================================================
+inline int PerformanceTierCacheSize(int Tier) { return Tier <= 0 ? 64 : (Tier >= 2 ? 512 : 256); }
+inline int PerformanceTierGridSize(int Tier)  { return Tier <= 0 ? 32 : (Tier >= 2 ? 128 : 64); }
+
+// ============================================================================
+// Display-mode dedupe mirror (P3): the three debug toggles (textures / depth
+// mesh / wireframe) derive the exclusive display mode. Standard combos map to
+// 0 Textured, 1 Depth, 2 Wireframe, 3 Split (textures+depth); anything else
+// (e.g. textures+wireframe) is a custom combo and yields -1, which clears the
+// mode-row highlight instead of pretending one mode is active.
+// ============================================================================
+inline int DeriveDisplayMode(bool bTex, bool bDepth, bool bWire)
+{
+    if (bTex && !bDepth && !bWire) return 0;
+    if (!bTex && bDepth && !bWire) return 1;
+    if (!bTex && !bDepth && bWire) return 2;
+    if (bTex && bDepth && !bWire) return 3;
+    return -1;
+}
+
+// ============================================================================
+// Assign-grid mirror (P3): each cell of the bulk-assign grid summarizes one
+// (state, layer) slot as 2 = fully assigned (albedo+normal+depth), 1 = partial
+// (any channel present), 0 = empty. The real grid paints the same three states
+// and the row summary line prints Filled/Total via AssignCoverageText.
+// ============================================================================
+inline int AssignCellState(bool bAlbedo, bool bNormal, bool bDepth)
+{
+    return (bAlbedo && bNormal && bDepth) ? 2 : ((bAlbedo || bNormal || bDepth) ? 1 : 0);
+}
+
+inline std::string AssignCoverageText(int Filled, int Total)
+{
+    return std::to_string(Filled) + "/" + std::to_string(Total);
 }
 
 } // namespace FPLayout

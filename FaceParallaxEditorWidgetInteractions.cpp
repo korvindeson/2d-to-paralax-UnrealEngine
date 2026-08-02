@@ -284,7 +284,7 @@ void UFaceParallaxEditorWidget::OpenHotspotRemapMenu(const FString& RegionName, 
 
 void UFaceParallaxEditorWidget::SetActiveRailIndex(int32 Index)
 {
-    ActiveRailIndex = FMath::Clamp(Index, 0, 4);
+    ActiveRailIndex = FMath::Clamp(Index, 0, 5);
     RebuildWidget();
 }
 
@@ -315,7 +315,7 @@ void UFaceParallaxEditorWidget::RegisterAccordionSections(int32 RailIdx, const T
 
 void UFaceParallaxEditorWidget::BuildRailSectionChips()
 {
-    for (int32 Ri = 0; Ri < 5 && Ri < RailChipsRows.Num() && Ri < RailSections.Num(); ++Ri)
+    for (int32 Ri = 0; Ri < 6 && Ri < RailChipsRows.Num() && Ri < RailSections.Num(); ++Ri)
     {
         RailChipsRows[Ri]->ClearChildren();
         for (int32 Si = 0; Si < RailSections[Ri].Num(); ++Si)
@@ -484,7 +484,7 @@ int32 UFaceParallaxEditorWidget::FillMissingViewsFromActiveSlot()
         return 0;
     }
     int32 Filled = 0;
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Fill Missing Views"));
+    FWidgetUndoScope UndoScope(this, TEXT("Fill Missing Views"));
     for (int32 i = 0; i < 10; ++i)
     {
         const EFaceAngleState S = (EFaceAngleState)i;
@@ -603,7 +603,7 @@ void UFaceParallaxEditorWidget::ApplyCanonicalTransformWithLink(EFaceAngleState 
     const FFaceArtTransform& T)
 {
     if (!ValidatePreset()) return;
-    FPresetTransactionScope Transaction(ActivePreset, TEXT("Set Layer Transform"));
+    FWidgetUndoScope UndoScope(this, TEXT("Set Layer Transform"));
     if (bLinkAcrossViews)
     {
         for (EFaceAngleState S : GetLinkTargets(State))
@@ -1004,6 +1004,23 @@ void UFaceParallaxEditorWidget::OpenImportFolderWizard(const FString& PreselectP
                 }
                 RefreshTextureThumbs();
                 RefreshUI();
+                // Import completion (P3): report the post-apply coverage across
+                // all 10 states on the active layer, mirroring
+                // FPLayout::ImportCoverageSummary.
+                {
+                    int32 WithA = 0, WithN = 0, WithD = 0;
+                    for (int32 S = 0; S <= (int32)EFaceAngleState::Bottom; ++S)
+                    {
+                        const FFaceTextureSet T = ActivePreset->GetTexturesForSlot((EFaceAngleState)S, SelectedLayerName);
+                        if (T.Albedo) ++WithA;
+                        if (T.Normal) ++WithN;
+                        if (T.Depth) ++WithD;
+                    }
+                    const std::string Cov = FPLayout::ImportCoverageSummary(10, WithA, WithN, WithD);
+                    SetStatus(FString::Printf(TEXT("Wizard: imported %d, assigned %d for part '%s' | %s"),
+                        Imported.Num(), Assigned, *W->Parts[W->SelectedPart], UTF8_TO_TCHAR(Cov.c_str())),
+                        FLinearColor(0.3f, 1.0f, 0.3f));
+                }
                 Window->RequestDestroyWindow();
                 return FReply::Handled();
             })
@@ -1283,22 +1300,45 @@ FVector2D UFaceParallaxEditorWidget::GetSelectedPinUV()
 {
     FFaceNestedArt El;
     int32 Count = 0;
-    if (!GetSelectedPinElement(El, Count) || !El.Pin3D.bPinned) return FVector2D(-1.0f, -1.0f);
     UFaceParallaxComponent* Comp = GetParallaxComponent();
     if (!Comp) return FVector2D(-1.0f, -1.0f);
-    return Comp->ProjectPinToUVForState(El.Pin3D.Position3D, ActiveViewState);
+    if (GetSelectedPinElement(El, Count) && El.Pin3D.bPinned)
+        return Comp->ProjectPinToUVForState(El.Pin3D.Position3D, ActiveViewState);
+    // P3: whole-layer pin — draggable even when the layer has no nested
+    // elements (projection mirrors FPLayout::PinProjectToUV).
+    if (SelectedLayerName.IsValid() && ActivePreset)
+    {
+        const FFaceArtSlot SlotRec = ActivePreset->GetSlot(ActiveViewState, SelectedLayerName);
+        if (SlotRec.LayerPin3D.bPinned)
+            return Comp->ProjectPinToUVForState(SlotRec.LayerPin3D.Position3D, ActiveViewState);
+    }
+    return FVector2D(-1.0f, -1.0f);
 }
 
 void UFaceParallaxEditorWidget::SetGizmoPinUV(const FVector2D& UV)
 {
     FFaceNestedArt El;
     int32 Count = 0;
-    if (!GetSelectedPinElement(El, Count) || !El.Pin3D.bPinned) return;
     UFaceParallaxComponent* Comp = GetParallaxComponent();
     if (!Comp) return;
     const FVector2D Clamped(FMath::Clamp(UV.X, 0.0f, 1.0f), FMath::Clamp(UV.Y, 0.0f, 1.0f));
-    SetNestedPinFromUV(ActiveViewState, SelectedLayerName, SelectedNestedElementIndex,
-        ActiveViewState, Clamped);
+    if (GetSelectedPinElement(El, Count) && El.Pin3D.bPinned)
+    {
+        SetNestedPinFromUV(ActiveViewState, SelectedLayerName, SelectedNestedElementIndex,
+            ActiveViewState, Clamped);
+        RefreshPinControls();
+        return;
+    }
+    // P3: whole-layer pin (LayerPin3D), authored with the mirrored zone-frame
+    // math (FPLayout::LayerPinFromUV) that SetNestedPinFromUV inlines for
+    // nested elements. Zone yaw decides which head axis the U axis maps to.
+    if (!SelectedLayerName.IsValid() || !ActivePreset) return;
+    FFaceArtSlot SlotRec = ActivePreset->GetSlot(ActiveViewState, SelectedLayerName);
+    if (!SlotRec.LayerPin3D.bPinned) return;
+    double PX = 0.0, PY = 0.0, PZ = 0.0;
+    FPLayout::LayerPinFromUV(Clamped.X, Clamped.Y, Comp->GetZoneCenterYaw(ActiveViewState), PX, PY, PZ);
+    SlotRec.LayerPin3D.Position3D = FVector((float)PX, (float)PY, (float)PZ);
+    ActivePreset->SetSlot(ActiveViewState, SelectedLayerName, SlotRec);
     RefreshPinControls();
 }
 
@@ -1307,21 +1347,31 @@ void UFaceParallaxEditorWidget::RefreshPinControls()
     FFaceNestedArt El;
     int32 Count = 0;
     const bool bHasElement = GetSelectedPinElement(El, Count);
+    // P3: with no nested element selected, the pin controls edit the slot's
+    // whole-layer pin (LayerPin3D) instead of staying disabled.
+    FFaceArtSlot LS;
+    const bool bHasLayerPin = !bHasElement && SelectedLayerName.IsValid() && ActivePreset;
+    if (bHasLayerPin) LS = ActivePreset->GetSlot(ActiveViewState, SelectedLayerName);
+    const bool bControls = bHasElement || bHasLayerPin;
 
     if (TextPinIndex.IsValid())
     {
         FString IdxStr = bHasElement
             ? FString::Printf(TEXT("%d/%d"), SelectedNestedElementIndex + 1, Count)
-            : TEXT("0/0");
+            : (bHasLayerPin ? TEXT("Layer") : TEXT("0/0"));
         TextPinIndex->SetText(FText::FromString(IdxStr));
     }
     if (CheckPinPinned.IsValid())
     {
-        CheckPinPinned->SetIsChecked(bHasElement && El.Pin3D.bPinned ? ECheckBoxState::Checked : ECheckBoxState::Unchecked);
+        const bool bPinned = bHasElement ? El.Pin3D.bPinned
+            : (bHasLayerPin ? LS.LayerPin3D.bPinned : false);
+        CheckPinPinned->SetIsChecked(bPinned ? ECheckBoxState::Checked : ECheckBoxState::Unchecked);
     }
     if (CheckPinRotEnabled.IsValid())
     {
-        CheckPinRotEnabled->SetIsChecked(bHasElement && El.Pin3D.bEnableViewAngleRotation ? ECheckBoxState::Checked : ECheckBoxState::Unchecked);
+        const bool bRot = bHasElement ? El.Pin3D.bEnableViewAngleRotation
+            : (bHasLayerPin ? LS.LayerPin3D.bEnableViewAngleRotation : false);
+        CheckPinRotEnabled->SetIsChecked(bRot ? ECheckBoxState::Checked : ECheckBoxState::Unchecked);
     }
 
     auto SetSliderReadout = [](const TSharedPtr<SSlider>& Sl, const TSharedPtr<STextBlock>& Txt,
@@ -1334,28 +1384,29 @@ void UFaceParallaxEditorWidget::RefreshPinControls()
     {
         if (W.IsValid()) W->SetEnabled(Enabled);
     };
-    SetCtrlEnabled(CheckPinPinned, bHasElement);
-    SetCtrlEnabled(CheckPinRotEnabled, bHasElement);
-    SetCtrlEnabled(SliderPinX, bHasElement);
-    SetCtrlEnabled(SliderPinY, bHasElement);
-    SetCtrlEnabled(SliderPinZ, bHasElement);
-    SetCtrlEnabled(SliderPinMinRot, bHasElement);
-    SetCtrlEnabled(SliderPinMaxRot, bHasElement);
-    SetCtrlEnabled(SliderPinRotSens, bHasElement);
-    if (bHasElement)
+    SetCtrlEnabled(CheckPinPinned, bControls);
+    SetCtrlEnabled(CheckPinRotEnabled, bControls);
+    SetCtrlEnabled(SliderPinX, bControls);
+    SetCtrlEnabled(SliderPinY, bControls);
+    SetCtrlEnabled(SliderPinZ, bControls);
+    SetCtrlEnabled(SliderPinMinRot, bControls);
+    SetCtrlEnabled(SliderPinMaxRot, bControls);
+    SetCtrlEnabled(SliderPinRotSens, bControls);
+    const FFacePin3D P = bHasElement ? El.Pin3D : LS.LayerPin3D;
+    if (bHasElement || bHasLayerPin)
     {
-        SetSliderReadout(SliderPinX, TextPinX, El.Pin3D.Position3D.X, -2.0f, 2.0f,
-            FString::Printf(TEXT("%.2f"), El.Pin3D.Position3D.X));
-        SetSliderReadout(SliderPinY, TextPinY, El.Pin3D.Position3D.Y, -2.0f, 2.0f,
-            FString::Printf(TEXT("%.2f"), El.Pin3D.Position3D.Y));
-        SetSliderReadout(SliderPinZ, TextPinZ, El.Pin3D.Position3D.Z, -2.0f, 2.0f,
-            FString::Printf(TEXT("%.2f"), El.Pin3D.Position3D.Z));
-        SetSliderReadout(SliderPinMinRot, TextPinMinRot, El.Pin3D.MinRotation, -180.0f, 180.0f,
-            FString::Printf(TEXT("%.1f"), El.Pin3D.MinRotation));
-        SetSliderReadout(SliderPinMaxRot, TextPinMaxRot, El.Pin3D.MaxRotation, -180.0f, 180.0f,
-            FString::Printf(TEXT("%.1f"), El.Pin3D.MaxRotation));
-        SetSliderReadout(SliderPinRotSens, TextPinRotSens, El.Pin3D.RotationSensitivity, -10.0f, 10.0f,
-            FString::Printf(TEXT("%.2f"), El.Pin3D.RotationSensitivity));
+        SetSliderReadout(SliderPinX, TextPinX, P.Position3D.X, -2.0f, 2.0f,
+            FString::Printf(TEXT("%.2f"), P.Position3D.X));
+        SetSliderReadout(SliderPinY, TextPinY, P.Position3D.Y, -2.0f, 2.0f,
+            FString::Printf(TEXT("%.2f"), P.Position3D.Y));
+        SetSliderReadout(SliderPinZ, TextPinZ, P.Position3D.Z, -2.0f, 2.0f,
+            FString::Printf(TEXT("%.2f"), P.Position3D.Z));
+        SetSliderReadout(SliderPinMinRot, TextPinMinRot, P.MinRotation, -180.0f, 180.0f,
+            FString::Printf(TEXT("%.1f"), P.MinRotation));
+        SetSliderReadout(SliderPinMaxRot, TextPinMaxRot, P.MaxRotation, -180.0f, 180.0f,
+            FString::Printf(TEXT("%.1f"), P.MaxRotation));
+        SetSliderReadout(SliderPinRotSens, TextPinRotSens, P.RotationSensitivity, -10.0f, 10.0f,
+            FString::Printf(TEXT("%.2f"), P.RotationSensitivity));
     }
     else
     {

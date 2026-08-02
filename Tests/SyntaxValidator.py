@@ -71,13 +71,45 @@ class SyntaxValidator:
         #    bar; dynamic row lists flip through carousel pages; the 8px
         #    reserve (ScrollReserveBottom) keeps pages clear of the buttons
         #    under them. Horizontal scroll boxes are fine (wide button rows).
+        #    Exemption: the main-window container (MainWindowScroll) scrolls
+        #    vertically - the fixed 884px design height clips the bottom rows
+        #    when the docked tab is short, leaving the bottom section
+        #    invisible, so the window itself scrolls; panels still pack to fit.
         if fp.name in ('FaceParallaxEditorWidgetUI.cpp', 'FaceParallaxEditorWidgetPanels.cpp',
                        'FaceParallaxEditorWidgetInteractions.cpp'):
             self._check_no_vertical_scroll(fp, text)
+        # 9. UFUNCTION exposure audit: every public non-static, non-override
+        #    method on the two Blueprint-facing classes (UFaceParallaxComponent,
+        #    UFaceParallaxEditorWidget) must be UFUNCTION-exposed so widget and
+        #    Blueprint code can cross the DLL boundary. Defect class: the depth
+        #    bake GenerateDepthBufferFromOutlinesForView shipped without a
+        #    UFUNCTION and was only callable via the editor module's include.
+        #    Exempt: constructors, virtual overrides (UHT wires them), static
+        #    helpers, and the explicit helper whitelist below (widget-internal
+        #    plumbing). Adding a new public method requires a UFUNCTION.
+        if fp.name in ('FaceParallaxComponent.h', 'FaceParallaxEditorWidget.h'):
+            self._check_ufunction_exposure(fp, text)
+        # 10. Pinned-action placement audit (P21 PinnedActionsNeverInScroll):
+        #     the canonical quick actions ("Import Art...", "Sync All -> All",
+        #     "Auto-Fit All", "Clear All Overrides") may only be built as
+        #     MakeBtn buttons in the pinned strip (UI.cpp) or the toolbar
+        #     (Panels.cpp). Any occurrence elsewhere means the action got
+        #     duplicated into a scrolled panel - the defect class that hid
+        #     copies in the rails' horizontal scroll boxes.
+        if fp.name in ('FaceParallaxEditorWidgetUI.cpp', 'FaceParallaxEditorWidgetPanels.cpp',
+                       'FaceParallaxEditorWidgetInteractions.cpp'):
+            self._check_pinned_action_slots(fp, text)
 
     def _check_no_vertical_scroll(self, fp: Path, text: str):
         # An SScrollBox without an explicit horizontal orientation scrolls
-        # vertically (SScrollBox defaults to vertical).
+        # vertically (SScrollBox defaults to vertical). Panel-level vertical
+        # scroll bars are banned (P17 pack content to fit; P18 carousel
+        # pages; P19 8px reserve). Exemption: the main-window container
+        # (TSharedRef<SScrollBox> MainWindowScroll) - the fixed 884px design
+        # height clips the bottom rows (timeline, bottom bar, diagnostic log)
+        # when the docked tab is short, leaving the bottom section invisible
+        # and unreachable, so the window itself scrolls vertically while the
+        # panels inside it still pack to fit.
         for m in re.finditer(r'SNew\s*\(\s*SScrollBox\s*\)', text):
             start = m.start()
             pre = text[m.end():]
@@ -87,10 +119,160 @@ class SyntaxValidator:
             om = re.search(r'\.Orientation\s*\(\s*Orient_Horizontal\s*\)', pre)
             if om:
                 continue
+            assign = text.rfind('TSharedRef<SScrollBox> MainWindowScroll =', 0, start)
+            stmt_end = text.find('\n', assign) if assign >= 0 else -1
+            if assign >= 0 and (stmt_end < 0 or stmt_end > start):
+                continue
             line = text.count('\n', 0, start) + 1
             self._error(fp, f"line {line}: vertical SScrollBox (P17: pack "
                              f"content to fit; P18: carousel pages; P19: 8px "
                              f"reserve - never a vertical scroll bar)")
+
+    def _check_ufunction_exposure(self, fp: Path, text: str):
+        # Rule 9: scan UCLASS bodies, public sections only. A method missing
+        # UFUNCTION is a defect unless it is one of:
+        #   - the constructor (name == class name)
+        #   - a virtual override (UHT wires engine overrides without UFUNCTION)
+        #   - a static helper (no DLL boundary crossing)
+        #   - a name in the widget-internal helper whitelist below
+        # Comments are stripped to newlines so line numbers stay accurate.
+        t = re.sub(r'/\*.*?\*/', lambda mm: '\n' * mm.group(0).count('\n'),
+                   text, flags=re.S)
+        t = re.sub(r'//[^\n]*', '', t)
+
+        # Widget-internal plumbing: called only by the widget's own TUs or by
+        # panel builders; deliberately not exposed to Blueprint. Kept public
+        # because the widget is split across several translation units.
+        helper_whitelist = {
+            # UFaceParallaxComponent runtime internals
+            'ApplyCurrentStateTextures', 'CaptureCurrentTextures',
+            'SetPreviousStateTextures', 'CalculateLookDelta',
+            'DetermineStateFromAngles', 'UpdateParallaxOffsets',
+            'ComputeOffsetForState', 'StopAnimationsOnStateChange',
+            'LogWarning', 'GetCameraLocationAndRotation',
+            'RefreshSequencerCamera', 'OnAsyncTexturesLoaded',
+            'EnforceAsyncCacheSize', 'ResolveTexture', 'BuildNestedArtCache',
+            # UFaceParallaxEditorWidget panel/UI plumbing
+            'SyncTexturesLayerToAllViews', 'RefreshCanvasPreview',
+            'RefreshHotspotRegions', 'StartCyclePreview', 'StopCyclePreview',
+            'StartLivePreview', 'StopLivePreview', 'PushUndoState',
+            'RestoreFromBackup', 'SetActiveRailIndex', 'GetStateDotColor',
+            'RefreshViewStripDots', 'FillMissingViewsFromActiveSlot',
+            'RefreshSlotPropStatus', 'ToggleOnionSkin', 'SetOnionSkinOpacity',
+            'RefreshOnionSkin', 'CopyTransformFromView',
+            'ApplyCanonicalTransformWithLink', 'GetGizmoTransform',
+            'SetGizmoTransform', 'HandleHotspotClick', 'ImportHotspotRegion',
+            'RebuildPartsStrip', 'OpenHotspotRemapMenu', 'RemapHotspotLayer',
+            'ResolveHotspotLayer', 'RefreshSyncDriftIndicator',
+            'SetDisplayMode', 'RefreshDebugSliders', 'BuildEdgeOverlay',
+            'RebuildHistogramBars', 'RefreshHullThumbnails',
+            'RefreshPinControls', 'GetLayerPinMarkers', 'RebuildVisemeGrid',
+            'RebuildNestedOutliner', 'RebuildParamTable',
+            'RebuildProblemsPanel',
+        }
+
+        cls_re = (r'UCLASS\s*\((?:[^()]|\([^()]*\))*\)\s*\n\s*'
+                  r'class\s+(?:[A-Z_]+[ \t]+)*?([A-Za-z_]\w*)\s*[:\{]')
+        method_re = (r'([A-Za-z_][A-Za-z_0-9:<>,&\*\s]*?)\s+'
+                     r'([A-Za-z_]\w*)\s*\([^;{}]*\)\s*'
+                     r'(?:const\s*)?(?:override\s*)?;')
+        for m in re.finditer(cls_re, t):
+            cls = m.group(1)
+            start = m.end()
+            depth = 0
+            i = start
+            while i < len(t):
+                if t[i] == '{':
+                    depth += 1
+                elif t[i] == '}':
+                    depth -= 1
+                    if depth == 0:
+                        break
+                i += 1
+            body = t[start:i]
+            secs = [(mm.start(), mm.group(1))
+                    for mm in re.finditer(r'\b(public|private|protected)\b\s*:', body)]
+            for k, (off, kind) in enumerate(secs):
+                if kind != 'public':
+                    continue
+                end = secs[k + 1][0] if k + 1 < len(secs) else len(body)
+                seg = body[off:end]
+                for mm in re.finditer(method_re, seg, re.M):
+                    sig = mm.group(0).strip()
+                    if '=' in sig:
+                        continue
+                    name = mm.group(2)
+                    chunk = seg[max(0, seg.rfind(';', 0, mm.start()) + 1):mm.start()]
+                    if chunk.rstrip().endswith('}'):
+                        chunk = chunk.rstrip()[:-1]
+                    if 'UFUNCTION' in chunk:
+                        continue
+                    if name == cls:
+                        continue
+                    if re.search(r'\b(static|virtual)\b', sig):
+                        continue
+                    if name in helper_whitelist:
+                        continue
+                    line = text.count('\n', 0, start + off + mm.start() + 1) + 1
+                    self._error(fp, f"line {line}: public method {cls}::{name}() "
+                                     f"lacks UFUNCTION (rule 9 exposure audit - "
+                                     f"add UFUNCTION(BlueprintCallable) or move "
+                                     f"to the helper whitelist)")
+
+    def _check_pinned_action_slots(self, fp: Path, text: str):
+        # Rule 10: canonical quick-action labels must only be built as MakeBtn
+        # buttons inside the pinned strip (UI.cpp RebuildWidget strip block) or
+        # the toolbar (Panels.cpp BuildPanelToolbar). A canonical literal
+        # anywhere else is a P21 PinnedActionsNeverInScroll violation: the
+        # action has been duplicated into a scrolled or rail-local panel.
+        canonical = [
+            'Import Art...', 'Sync All -> All', 'Auto-Fit All', 'Clear All Overrides',
+        ]
+        lines = text.split('\n')
+
+        # Allowed regions per file (start..end line numbers, inclusive).
+        allowed = []
+        if fp.name == 'FaceParallaxEditorWidgetUI.cpp':
+            start = None
+            end = None
+            for i, line in enumerate(lines, 1):
+                if 'Pinned quick-actions strip' in line and start is None:
+                    start = i
+                if 'Assemble main row' in line and start is not None:
+                    end = i - 1
+                    break
+            if start is not None and end is not None:
+                allowed.append((start, end))
+        elif fp.name == 'FaceParallaxEditorWidgetPanels.cpp':
+            start = None
+            end = None
+            for i, line in enumerate(lines, 1):
+                if 'UFaceParallaxEditorWidget::BuildPanelToolbar' in line and start is None:
+                    start = i
+                elif 'UFaceParallaxEditorWidget::BuildPanel' in line and start is not None:
+                    end = i - 1
+                    break
+            if start is not None and end is not None:
+                allowed.append((start, end))
+
+        def in_allowed(line_no: int) -> bool:
+            for a, b in allowed:
+                if a <= line_no <= b:
+                    return True
+            return False
+
+        for m in re.finditer(r'MakeBtn\s*\(\s*TEXT\s*\(\s*("([^"]+)")', text):
+            label = m.group(2)
+            if label not in canonical:
+                continue
+            line_no = text.count('\n', 0, m.start()) + 1
+            if in_allowed(line_no):
+                continue
+            self._error(fp, f"line {line_no}: canonical quick action "
+                             f"'{label}' built outside the pinned strip / "
+                             f"toolbar (P21 PinnedActionsNeverInScroll - "
+                             f"pinned actions must not be duplicated into "
+                             f"rails or scrolled panels)")
 
     def _check_self_add(self, fp: Path, text: str):
         for m in re.finditer(r'\b(\w+)\s*(?:\.|->)\s*(?:Add|AddLast|Emplace)\s*\(\s*(\w+)\s*\[', text):

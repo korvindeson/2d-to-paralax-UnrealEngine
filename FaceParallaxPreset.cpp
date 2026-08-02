@@ -187,6 +187,65 @@ void UFaceParallaxPreset::SyncCanonicalToAllViews(EFaceAngleState State, FName L
     }
 }
 
+void UFaceParallaxPreset::SyncCanonicalAxisToAllViews(EFaceAngleState State, FName LayerTag, int32 Axis)
+{
+    FFaceViewStateLayerSet* StateSet = ViewAssignments.Find(State);
+    if (!StateSet) return;
+
+    FFaceArtSlot* SourceSlot = StateSet->Layers.Find(LayerTag);
+    if (!SourceSlot) return;
+
+    // Mirrors FPLayout::SyncAxisDelta (FaceParallaxLayoutSpec.h, editor-only
+    // header; asserted by TestPhaseP3Mirrors): axis 0/1 = Position X/Y delta,
+    // 2/3 = Scale X/Y ratio (dest-zero guarded), 4 = Rotation delta.
+    auto AxisDelta = [](double SrcX, double SrcY, double SrcRot,
+        double DstX, double DstY, double DstRot, int32 A,
+        double& OutDX, double& OutDY, double& OutRot)
+    {
+        OutDX = 0.0; OutDY = 0.0; OutRot = 0.0;
+        switch (A)
+        {
+            case 0: OutDX = SrcX - DstX; break;
+            case 1: OutDY = SrcY - DstY; break;
+            case 2: OutDX = (DstX > 1e-6) ? SrcX / DstX : 1.0; break;
+            case 3: OutDY = (DstY > 1e-6) ? SrcY / DstY : 1.0; break;
+            case 4: OutRot = SrcRot - DstRot; break;
+            default: break;
+        }
+    };
+
+    const FFaceArtTransform SourceCanonical = SourceSlot->CanonicalTransform;
+
+    for (auto& OtherStatePair : ViewAssignments)
+    {
+        if (OtherStatePair.Key == State) continue;
+
+        FFaceArtSlot* OtherSlot = OtherStatePair.Value.Layers.Find(LayerTag);
+        if (!OtherSlot) continue;
+
+        // Preserve any existing override components on the untouched axes;
+        // only the chosen axis is rewritten as a relative delta.
+        FFaceArtTransform Override = OtherSlot->ViewOverrides.FindRef(OtherStatePair.Key);
+        const FFaceArtTransform TargetCanonical = OtherSlot->CanonicalTransform;
+
+        double DX = 0.0, DY = 0.0, DR = 0.0;
+        AxisDelta(
+            SourceCanonical.Position.X, SourceCanonical.Position.Y, (double)SourceCanonical.Rotation,
+            TargetCanonical.Position.X, TargetCanonical.Position.Y, (double)TargetCanonical.Rotation,
+            Axis, DX, DY, DR);
+        switch (Axis)
+        {
+            case 0: Override.Position.X = DX; break;
+            case 1: Override.Position.Y = DY; break;
+            case 2: Override.Scale.X = DX; break;
+            case 3: Override.Scale.Y = DY; break;
+            case 4: Override.Rotation = DR; break;
+            default: break;
+        }
+        OtherSlot->SetOverride(OtherStatePair.Key, Override);
+    }
+}
+
 void UFaceParallaxPreset::SyncTexturesToAllViews(EFaceAngleState State, FName LayerTag)
 {
     if (LayerTag.IsNone()) return;

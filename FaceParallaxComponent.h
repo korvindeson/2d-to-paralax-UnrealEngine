@@ -380,6 +380,7 @@ public:
     // every silhouette prism, plus a dome falloff measured against the front
     // silhouette foreshortened into the view. At yaw 0 / pitch 0 the result is
     // identical to GenerateDepthBufferFromOutlines. Editor tooling only.
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|Outline")
     bool GenerateDepthBufferFromOutlinesForView(int32 GridSize, float YawDegrees, float PitchDegrees,
         TArray<float>& OutDepth, float& OutCellSize) const;
 
