@@ -30,6 +30,55 @@
 #include "Widgets/Input/SMultiLineEditableTextBox.h"
 #include "UObject/ObjectSaveContext.h"
 #include "Rendering/DrawElements.h"
+#include "Input/DragAndDrop.h"
+#include "DragAndDrop/AssetDragDropOp.h"
+#include "ContentBrowserDataDragDropOp.h"
+#include "Misc/Paths.h"
+
+// Drag-drop target wrapper used by the texture thumbnails: accepts Content
+// Browser asset drags (legacy FAssetDragDropOp and FContentBrowserDataDragDropOp)
+// and OS file drags (FExternalDragOperation). The lambdas attached here decide
+// validity and perform the channel assignment.
+DECLARE_DELEGATE_RetVal_TwoParams(FReply, FOnFaceDragOver, const FGeometry&, const FDragDropEvent&);
+DECLARE_DELEGATE_RetVal_TwoParams(FReply, FOnFaceDrop, const FGeometry&, const FDragDropEvent&);
+
+class SFaceDropTarget : public SCompoundWidget
+{
+public:
+    SLATE_BEGIN_ARGS(SFaceDropTarget) {}
+        SLATE_DEFAULT_SLOT(FArguments, Content)
+        SLATE_EVENT(FOnFaceDragOver, OnFaceDragOver)
+        SLATE_EVENT(FOnFaceDrop, OnFaceDrop)
+    SLATE_END_ARGS()
+
+    void Construct(const FArguments& InArgs)
+    {
+        DragOver = InArgs._OnFaceDragOver;
+        Drop = InArgs._OnFaceDrop;
+        ChildSlot[InArgs._Content.Widget];
+    }
+
+    virtual FReply OnDragOver(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent) override
+    {
+        return DragOver.IsBound() ? DragOver.Execute(MyGeometry, DragDropEvent) : FReply::Unhandled();
+    }
+
+    virtual FReply OnDrop(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent) override
+    {
+        return Drop.IsBound() ? Drop.Execute(MyGeometry, DragDropEvent) : FReply::Unhandled();
+    }
+
+private:
+    FOnFaceDragOver DragOver;
+    FOnFaceDrop Drop;
+};
+
+static bool IsDroppableImageFile(const FString& Path)
+{
+    const FString Ext = FPaths::GetExtension(Path).ToLower();
+    return Ext == TEXT("png") || Ext == TEXT("jpg") || Ext == TEXT("jpeg") ||
+        Ext == TEXT("tga") || Ext == TEXT("bmp");
+}
 
 
 void UFaceParallaxEditorWidget::RefreshUI()
@@ -41,6 +90,7 @@ void UFaceParallaxEditorWidget::RefreshUI()
     RefreshLayerList();
     RebuildPartsStrip();
     RefreshHotspotRegions();
+    RefreshSchematic();
     RefreshTextureThumbs();
     RefreshCanvasPreview();
     RefreshViewStripDots();
@@ -59,6 +109,10 @@ void UFaceParallaxEditorWidget::RefreshUI()
             bPinMode = ActivePreset->GetSlot(ActiveViewState, SelectedLayerName).LayerPin3D.bPinned;
         GizmoWidget->SetPinMode(bPinMode);
         GizmoWidget->Invalidate(EInvalidateWidgetReason::Paint);
+        // Phase 0: the gizmo is paint-only — the hotspot layer routes the
+        // pin-drag (and every other canvas click).
+        if (HotspotLayer.IsValid())
+            HotspotLayer->SetCanvasPinMode(bPinMode);
     }
     RefreshTimeline();
     RefreshTransformSliders();
@@ -75,6 +129,7 @@ void UFaceParallaxEditorWidget::RefreshUI()
     RebuildMaterialCrossRef();
     RebuildVisemeGrid();
     RebuildNestedOutliner();
+    RebuildPinManager();
     RebuildParamTable();
     RebuildProblemsPanel();
     RefreshAssignGrid();
@@ -158,10 +213,15 @@ void UFaceParallaxEditorWidget::RefreshConfigCheckboxes()
     ApplyCheck(CheckDepthMesh, bLocalShowDepthMesh);
     ApplyCheck(CheckWireframe, bLocalShowWireframe);
     ApplyCheck(CheckColorByDepth, bLocalColorByDepth);
-    // Display-mode dedupe (P3): the Debug rail's three toggles are the source
-    // of truth; the canvas mode row is derived from them (custom combos and
+    // Display-mode dedupe (P3): the Advanced rail's Config checks (Show
+    // Textures / Depth Mesh / Wireframe) are the source of truth; the canvas
+    // mode row is derived from them (custom combos and
     // all-off clear the row highlight via -1), mirroring DeriveDisplayMode.
     DisplayMode = FPLayout::DeriveDisplayMode(bLocalShowTextures, bLocalShowDepthMesh, bLocalShowWireframe);
+    // Phase C: the unified inspect row adds the Outline overlay + Color by
+    // Depth to the same five-toggle source set (DeriveInspectMode).
+    InspectMode = FPLayout::DeriveInspectMode(bLocalShowTextures, bLocalShowDepthMesh,
+        bLocalShowWireframe, bOutlineOverlayVisible, bLocalColorByDepth);
     UpdateDisclosureSummaries();
 }
 
@@ -180,12 +240,43 @@ void UFaceParallaxEditorWidget::RefreshLayerList()
     const int32 End = FMath::Min(Start + FPLayout::CarouselRowsPerPage, LayerNames.Num());
 
     UFaceParallaxComponent* Comp = GetParallaxComponent();
+    LayerRowBrushes.SetNum(FMath::Max(0, End - Start));
     for (int32 li = Start; li < End; ++li)
     {
         const FName& Tag = LayerNames[li];
         bool bSelected = (Tag == SelectedLayerName);
         FString TagStr = Tag.ToString();
         bool bLayerHidden = Comp && !Comp->GetLayerVisibility(Tag);
+
+        // Phase E: per-row albedo thumbnail (active view) + completeness
+        // badge (Assigned / Partial / Missing for the active view).
+        UTexture2D* RowAlbedo = nullptr;
+        bool bA = false, bN = false, bD = false;
+        if (Comp && Comp->ActivePreset)
+        {
+            const FFaceArtSlot& RS = Comp->ActivePreset->GetSlot(ActiveViewState, Tag);
+            bA = RS.Textures.Albedo != nullptr;
+            bN = RS.Textures.Normal != nullptr;
+            bD = RS.Textures.Depth != nullptr;
+            RowAlbedo = RS.Textures.Albedo;
+        }
+        FSlateBrush& RowBrush = LayerRowBrushes[li - Start];
+        RowBrush = FSlateBrush();
+        if (RowAlbedo)
+        {
+            RowBrush.SetResourceObject(RowAlbedo);
+            RowBrush.ImageSize = FVector2D(18, 14);
+            RowBrush.DrawAs = ESlateBrushDrawType::Image;
+        }
+        const int RowCell = FPLayout::AssignCellState(bA, bN, bD);
+        const FLinearColor BadgeCol = (RowCell == 2) ? FLinearColor(0.35f,0.75f,0.35f)
+            : (RowCell == 1) ? FLinearColor(1.0f,0.75f,0.25f)
+            : FLinearColor(0.8f,0.35f,0.35f);
+        const FString BadgeTip = FString::Printf(TEXT("%s in %s (A/N/D: %s)"),
+            UTF8_TO_TCHAR(FPLayout::AssignCellLabel(RowCell)),
+            Comp ? *Comp->GetStateLabel(ActiveViewState).ToString() : TEXT("?"),
+            *FString::Printf(TEXT("%c%c%c"), bA ? TCHAR('A') : TCHAR('-'),
+                bN ? TCHAR('N') : TCHAR('-'), bD ? TCHAR('D') : TCHAR('-')));
 
         TSharedRef<SHorizontalBox> Row = SNew(SHorizontalBox);
         // Eye toggle
@@ -198,6 +289,19 @@ void UFaceParallaxEditorWidget::RefreshLayerList()
                     if (Comp) Comp->SetLayerVisibility(Tag, !bNowHidden);
                     RefreshUI();
                 })];
+        // Phase E: albedo thumbnail (gray block when the view has none)
+        Row->AddSlot().AutoWidth().Padding(FMargin(3,0,0,0)).VAlign(VAlign_Center)
+            [SNew(SBox).WidthOverride(18).HeightOverride(14)
+                [SNew(SImage)
+                    .Image(&RowBrush)
+                    .ColorAndOpacity(RowAlbedo ? FLinearColor(1,1,1) : FLinearColor(0.16f,0.16f,0.16f))]];
+        // Phase E: completeness badge dot (active view)
+        Row->AddSlot().AutoWidth().Padding(FMargin(3,0,0,0)).VAlign(VAlign_Center)
+            [SNew(SBox).WidthOverride(9).HeightOverride(9)
+                [SNew(SBorder)
+                    .BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
+                    .BorderBackgroundColor(BadgeCol)
+                    .Padding(FMargin(0))]];
         // Layer name button
         Row->AddSlot().FillWidth(1.0f).Padding(FMargin(4,0)).VAlign(VAlign_Center)
             [SNew(SButton)
@@ -208,6 +312,7 @@ void UFaceParallaxEditorWidget::RefreshLayerList()
                     RefreshUI();
                     return FReply::Handled();
                 })
+                .ToolTipText(FText::FromString(BadgeTip))
                 .Content()
                 [SNew(STextBlock)
                     .Text(FText::FromString(bLayerHidden ? (TagStr + TEXT(" [hidden]")) : TagStr))
@@ -1396,15 +1501,18 @@ void UFaceParallaxEditorWidget::ApplySearchFilter(const FString& Filter)
         }
         if (!bHit && MatchingLayers.Num() > 0) Acc->ExpandAll();
     };
-    ExpandAccordion(DebugAccordion);
+    ExpandAccordion(ArtAccordion);
+    ExpandAccordion(AnimatedAccordion);
+    ExpandAccordion(NestedAccordion);
     ExpandAccordion(AdvancedAccordion);
 
     for (int32 Ri = 0; Ri < PropTabContent.Num(); ++Ri)
     {
-        // Accordion-managed panels are expanded above; plain sections still
-        // use the visibility-toggle contract. Rail 0 (Layers) hosts the
-        // carousel page viewport - never visibility-toggled.
-        if (Ri == 0 || Ri == 4 || Ri == 5) continue;
+        // Accordion-managed rails (Art/Animated/NestedPins/Advanced = tabs
+        // 2,3,4,6) are expanded above; plain-section rails (Layers/Camera =
+        // tabs 1,5) still use the visibility-toggle contract. Slot 0 is the
+        // shared right pane - never visibility-toggled.
+        if (Ri == 0 || Ri == 2 || Ri == 3 || Ri == 4 || Ri == 6) continue;
         ApplyToChildren(PropTabContent[Ri]);
     }
 }
@@ -1722,30 +1830,33 @@ TSharedRef<SVerticalBox> UFaceParallaxEditorWidget::BuildPanelCanvas(const TShar
 {
     TSharedRef<SVerticalBox> CenterCol = SNew(SVerticalBox);
     {
-        // Display mode row (0 Textured 1 Depth 2 Wireframe 3 Split)
+        // Unified inspect-mode row (Phase C): Textured / Outline / Depth /
+        // Wireframe / Heatmap — one segmented switcher on the canvas itself
+        // (replaces the old Textured/Depth/Wireframe/Split display row). The
+        // Advanced rail Config checks stay the single source of truth (P3
+        // dedupe): the row only applies canonical combos via SetInspectMode,
+        // and the highlights derive from the toggles via DeriveInspectMode.
         {
             TSharedRef<SHorizontalBox> ModeRow = SNew(SHorizontalBox);
-            struct { int32 M; const TCHAR* T; } Modes[] = {
-                {0, TEXT("Textured")}, {1, TEXT("Depth")}, {2, TEXT("Wireframe")}, {3, TEXT("Split")},
-            };
-            for (auto& Mo : Modes)
+            for (int32 M = 0; M < 5; ++M)
             {
-                const int32 M = Mo.M;
+                const int32 MM = M;
                 ModeRow->AddSlot().Padding(FMargin(1)).AutoWidth()
-                    [SNew(SButton)
-                        .ButtonColorAndOpacity_Lambda([this, M]()
-                        {
-                            return DisplayMode == M ? AccentBlue() : FLinearColor(0.13f,0.13f,0.15f);
-                        })
-                        .OnClicked_Lambda([this, M](){ SetDisplayMode(M); return FReply::Handled(); })
-                        .Content()
-                        [SNew(STextBlock)
-                            .Text(FText::FromString(Mo.T))
-                            .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
-                            .ColorAndOpacity(FLinearColor(0.85f,0.85f,0.85f))]];
+                    [SNew(SBox).WidthOverride(51).HeightOverride(20)
+                        [SNew(SButton)
+                            .ButtonColorAndOpacity_Lambda([this, MM]()
+                            {
+                                return InspectMode == MM ? AccentBlue() : FLinearColor(0.13f, 0.13f, 0.15f);
+                            })
+                            .OnClicked_Lambda([this, MM](){ SetInspectMode(MM); return FReply::Handled(); })
+                            .Content()
+                            [SNew(STextBlock)
+                                .Text(FText::FromString(UTF8_TO_TCHAR(FPLayout::InspectModeLabel(MM))))
+                                .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+                                .ColorAndOpacity(FLinearColor(0.85f, 0.85f, 0.85f))]]];
             }
             ModeRow->AddSlot().Padding(FMargin(4,2)).AutoWidth().VAlign(VAlign_Center)
-                [MakeLbl(TEXT("Display"), 8, FLinearColor(0.6f,0.6f,0.6f))];
+                [MakeLbl(TEXT("Inspect"), 8, FLinearColor(0.6f, 0.6f, 0.6f))];
             // Onion-skin control lives next to Display Mode: checkbox + flex
             // slider + opacity label (kept compact for the center width budget).
             {
@@ -1782,12 +1893,61 @@ TSharedRef<SVerticalBox> UFaceParallaxEditorWidget::BuildPanelCanvas(const TShar
                 ModeRow->AddSlot().Padding(FMargin(0,2)).AutoWidth().VAlign(VAlign_Center)
                     [MakeLbl(TEXT("Pins"), 8, FLinearColor(0.6f,0.6f,0.6f))];
             }
+            // Redesign: Depth — composites the selected layer's depth map over
+            // the live preview at low opacity (live + depth in one view).
+            {
+                TSharedRef<SCheckBox> DepthCheck = SNew(SCheckBox)
+                    .IsChecked(bDepthOverlayVisible ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
+                    .OnCheckStateChanged_Lambda([this](ECheckBoxState S)
+                    {
+                        ToggleDepthOverlay(S == ECheckBoxState::Checked);
+                    });
+                DepthCheck->SetToolTipText(FText::FromString(TEXT(
+                    "Depth Overlay: composite the selected layer's depth map over the live preview")));
+                CheckDepthOverlay = DepthCheck;
+                ModeRow->AddSlot().Padding(FMargin(4,2)).AutoWidth().VAlign(VAlign_Center)
+                    [DepthCheck];
+                ModeRow->AddSlot().Padding(FMargin(0,2)).AutoWidth().VAlign(VAlign_Center)
+                    [MakeLbl(TEXT("Depth"), 8, FLinearColor(0.6f,0.6f,0.6f))];
+            }
+            // Redesign: Filter — shows/hides the schematic filter row under
+            // this mode row (depth radio + 10 layer chips + Focus + Clear).
+            {
+                TSharedRef<SCheckBox> FilterCheck = SNew(SCheckBox)
+                    .IsChecked(bSchematicFilterVisible ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
+                    .OnCheckStateChanged_Lambda([this](ECheckBoxState S)
+                    {
+                        bSchematicFilterVisible = (S == ECheckBoxState::Checked);
+                    });
+                FilterCheck->SetToolTipText(FText::FromString(TEXT(
+                    "Filter: show/hide the schematic filter row (depth classes, layer chips, Focus zoom, Clear)")));
+                ModeRow->AddSlot().Padding(FMargin(4,2)).AutoWidth().VAlign(VAlign_Center)
+                    [FilterCheck];
+                ModeRow->AddSlot().Padding(FMargin(0,2)).AutoWidth().VAlign(VAlign_Center)
+                    [MakeLbl(TEXT("Filter"), 8, FLinearColor(0.6f,0.6f,0.6f))];
+            }
             ModeRow->AddSlot().FillWidth(1.0f);
             CenterCol->AddSlot().AutoHeight().Padding(FMargin(2,2,2,0))
                 [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("NoBorder"))
                     .BorderBackgroundColor(FLinearColor(0.1f,0.1f,0.1f))
                     .Padding(FMargin(2,1))
                     [ModeRow]];
+            // Redesign: schematic filter row (Phase 3) — depth radio (All/
+            // Front/Base/Back), one toggle chip per base-preset layer (colored
+            // by depth class), the Focus zoom toggle, and Clear. Lives
+            // between the mode row and the canvas; hidden via the Filter
+            // checkbox on the mode row.
+            SchematicFilterBox = SNew(SWrapBox).UseAllottedSize(true);
+            CenterCol->AddSlot().AutoHeight().Padding(FMargin(2,0,2,0))
+                [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("NoBorder"))
+                    .BorderBackgroundColor(FLinearColor(0.09f,0.09f,0.09f))
+                    .Padding(FMargin(2,1))
+                    .Visibility_Lambda([this]()
+                    {
+                        return bSchematicFilterVisible ? EVisibility::Visible : EVisibility::Collapsed;
+                    })
+                    [SchematicFilterBox.ToSharedRef()]];
+            RebuildSchematicFilterRow();
         }
 
         // Preview canvas (overlays: outline, onion skin, edge detection, gizmo)
@@ -1807,24 +1967,53 @@ TSharedRef<SVerticalBox> UFaceParallaxEditorWidget::BuildPanelCanvas(const TShar
             {
                 return bEdgeOverlayVisible && EdgeOverlayTexture ? EVisibility::Visible : EVisibility::Collapsed;
             });
+        // Redesign: depth-map composite over the live preview (Depth checkbox).
+        DepthOverlayImage = SNew(SImage)
+            .Image(&DepthOverlayBrush)
+            .ColorAndOpacity(FLinearColor(1.0f, 1.0f, 1.0f, 0.55f))
+            .Visibility_Lambda([this]()
+            {
+                return bDepthOverlayVisible && DepthOverlayTexture ? EVisibility::Visible : EVisibility::Collapsed;
+            });
         GizmoWidget = SNew(SFaceLayerGizmo);
         GizmoWidget->Owner = this;
+        // Phase 0: the gizmo may never intercept a click — it is paint-only
+        // (SelfHitTestInvisible on both the SBox and the leaf).
+        GizmoWidget->SetVisibility(EVisibility::SelfHitTestInvisible);
         GizmoLayer = SNew(SBox)
-            .Visibility_Lambda([this]() { return SelectedLayerName.IsValid() ? EVisibility::Visible : EVisibility::Collapsed; })
+            .Visibility_Lambda([this]() { return SelectedLayerName.IsValid() ? EVisibility::SelfHitTestInvisible : EVisibility::Collapsed; })
             [GizmoWidget.ToSharedRef()];
         HotspotLayer = SNew(SFaceHotspotLayer);
         HotspotLayer->Owner = this;
         HotspotLayer->SetRegions(FPLayout::DefaultHotspotRegions());
-        PreviewHost = SNew(SBox).HeightOverride(450)
+        // Redesign: the schematic default-view layer — paints part glyphs for
+        // artless layers above the edge overlay but below the hotspot layer,
+        // so the hotspot routes every click (pin -> region -> glyph -> quad)
+        // and forwards hover here. SelfHitTestInvisible: never hit-testable
+        // itself, so it can never become a dead-click swallow.
+        SchematicLayer = SNew(SFaceSchematicLayer);
+        SchematicLayer->Owner = this;
+        SchematicLayer->SetVisibility(EVisibility::SelfHitTestInvisible);
+        HotspotLayer->SetSchematicLayer(SchematicLayer);
+        PreviewHost = SNew(SBox)
+            .HeightOverride(TAttribute<FOptionalSize>::CreateLambda([this]() { return FOptionalSize(CanvasHeight); }))
             [SNew(SOverlay)
                 + SOverlay::Slot()[PreviewImageWidget.ToSharedRef()]
                 + SOverlay::Slot()[OutlinePreviewImage.ToSharedRef()]
                 + SOverlay::Slot()[OnionSkinImage.ToSharedRef()]
                 + SOverlay::Slot()[EdgeOverlayImage.ToSharedRef()]
+                + SOverlay::Slot()[DepthOverlayImage.ToSharedRef()]
+                + SOverlay::Slot()[SchematicLayer.ToSharedRef()]
                 + SOverlay::Slot()[HotspotLayer.ToSharedRef()]
                 + SOverlay::Slot()[GizmoLayer.ToSharedRef()]];
         CenterCol->AddSlot().AutoHeight().Padding(FMargin(2))
             [PreviewHost.ToSharedRef()];
+        // Redesign: canvas drag-resize handle (state-only; the manifest keeps
+        // the 450px design constant as the default height).
+        CanvasResizer = SNew(SFaceCanvasResizer);
+        CanvasResizer->Owner = this;
+        CenterCol->AddSlot().AutoHeight().Padding(FMargin(2, 0, 2, 0))
+            [CanvasResizer.ToSharedRef()];
 
         // Parts strip: the 13 anatomical part chips under the canvas (Phase 1).
         // Left-click selects the mapped layer; Alt+click imports art for that
@@ -1898,7 +2087,11 @@ TSharedRef<SVerticalBox> UFaceParallaxEditorWidget::BuildPanelCanvas(const TShar
 // Phase 2: recompute the canvas hotspot outlines for the current view.
 // Each region whose hotspot maps to a layer is transformed by that layer's
 // effective transform (master-material UV chain mirror); unmapped regions
-// keep the default front-facing template pose.
+// keep the default front-facing template pose. Phase C: also rebuilds the
+// per-layer art quads (draw order = layer list order, last on top) used for
+// canvas click-to-select and the persistent selection outline — both are
+// computed from the ACTIVE VIEW STATE's stored transforms, so the outline
+// hugs the art in Profile/Back/¾/Top/Bottom too (cross-view constraint).
 void UFaceParallaxEditorWidget::RefreshHotspotRegions()
 {
     if (!HotspotLayer.IsValid()) return;
@@ -1918,6 +2111,170 @@ void UFaceParallaxEditorWidget::RefreshHotspotRegions()
         }
     }
     HotspotLayer->SetRegions(Regions);
+    std::vector<FPLayout::FPLayerQuad> Quads;
+    TArray<FString> Tags;
+    if (ActivePreset)
+    {
+        for (const FName& Tag : GetUILayerTags())
+        {
+            const FFaceArtSlot& ArtSlot = ActivePreset->GetSlot(ActiveViewState, Tag);
+            const FFaceArtTransform T = ArtSlot.GetEffectiveTransform(ActiveViewState);
+            Quads.push_back(FPLayout::FLayerQuadFromTransform(
+                T.Position.X, T.Position.Y, T.Scale.X, T.Scale.Y, T.Rotation));
+            Tags.Add(Tag.ToString());
+        }
+    }
+    HotspotLayer->SetLayerQuads(Quads, Tags);
+    HotspotLayer->SetSelectedLayerTag(SelectedLayerName.IsValid() ? SelectedLayerName.ToString() : FString());
+}
+
+// Redesign: repaint the canvas schematic default view. Parts whose mapped
+// layer has assigned Front art are DROPPED (the art itself replaces the
+// default outline on the live preview); artless parts keep their glyph,
+// transformed by the mapped layer's effective transform for the active view
+// state (same UV chain as RefreshHotspotRegions, so the schematic hugs the
+// rendered head in every view). Unmapped parts keep the default template
+// pose. Phase 0/3: also feeds the resolved per-part layer tags (selection
+// emphasis + filter drops) and the Focus lens box (the selected layer's
+// transformed glyph bounds). Runs on every RefreshUI.
+void UFaceParallaxEditorWidget::RefreshSchematic()
+{
+    if (!SchematicLayer.IsValid()) return;
+    std::vector<FPSchematic::FPSchematicPart> Parts = FPSchematic::DefaultPartSchematics();
+    std::vector<std::string> Tags;
+    Tags.reserve(Parts.size());
+    double BMinX = 2.0, BMinY = 2.0, BMaxX = -1.0, BMaxY = -1.0;
+    bool bHaveFocusBox = false;
+    const FString SelTag = SelectedLayerName.IsValid() ? SelectedLayerName.ToString() : FString();
+    if (ActivePreset)
+    {
+        for (FPSchematic::FPSchematicPart& P : Parts)
+        {
+            if (!P.Name || !P.Name[0] || P.Outline.empty())
+            {
+                Tags.emplace_back();
+                continue;
+            }
+            const FString PartName = UTF8_TO_TCHAR(P.Name);
+            const FName LayerTag = ResolveHotspotLayer(PartName);
+            if (!LayerTag.IsValid())
+            {
+                Tags.emplace_back();
+                continue;
+            }
+            const std::string ResolvedTag = TCHAR_TO_UTF8(*LayerTag.ToString());
+            if (LayerHasFrontArt(LayerTag))
+            {
+                P.Outline.clear();   // assigned art replaces the default outline
+                Tags.push_back(ResolvedTag);
+                continue;
+            }
+            const FFaceArtSlot& ArtSlot = ActivePreset->GetSlot(ActiveViewState, LayerTag);
+            const FFaceArtTransform T = ArtSlot.GetEffectiveTransform(ActiveViewState);
+            FPSchematic::FPSchematicPart Transformed;
+            Transformed.Name = P.Name;
+            Transformed.DepthClass = P.DepthClass;
+            Transformed.Outline.reserve(P.Outline.size());
+            const bool bInFocusBox = bSchematicFocus && !SelTag.IsEmpty() && LayerTag.ToString() == SelTag;
+            for (const FPSchematic::FPSchematicPoint& Pt : P.Outline)
+            {
+                const FPLayout::FPHotspotPoint H = FPLayout::FPHotspotTransformPoint(
+                    FPLayout::FPHotspotPoint{ Pt.X, Pt.Y }, T.Position.X, T.Position.Y,
+                    T.Scale.X, T.Scale.Y, T.Rotation);
+                Transformed.Outline.push_back({ H.X, H.Y });
+                if (bInFocusBox)
+                {
+                    BMinX = FMath::Min(BMinX, H.X);
+                    BMaxX = FMath::Max(BMaxX, H.X);
+                    BMinY = FMath::Min(BMinY, H.Y);
+                    BMaxY = FMath::Max(BMaxY, H.Y);
+                    bHaveFocusBox = true;
+                }
+            }
+            P = Transformed;
+            Tags.push_back(ResolvedTag);
+        }
+    }
+    SchematicLayer->SetParts(Parts);
+    SchematicLayer->SetPartLayerTags(Tags);
+    std::vector<std::string> LayerFilter;
+    LayerFilter.reserve(SchematicLayerFilter.Num());
+    for (const FString& F : SchematicLayerFilter)
+        LayerFilter.emplace_back(TCHAR_TO_UTF8(*F));
+    SchematicLayer->SetFilters(LayerFilter, SchematicDepthFilter);
+    if (bSchematicFocus && bHaveFocusBox)
+        SchematicLayer->SetFocus(true, { BMinX, BMinY }, { BMaxX, BMaxY });
+    else
+        SchematicLayer->SetFocus(false, { 0.0, 0.0 }, { 1.0, 1.0 });
+}
+
+// Redesign: rebuild the schematic filter row (Phase 3). Depth radio chips
+// (All/Front/Base/Back) drive the depth class filter; one toggle chip per
+// base-preset layer (colored by its depth class — amber/grey/cyan, the same
+// encoding as the glyphs) drives the layer multi-select; Focus toggles the
+// zoom-to-fit lens; Clear resets everything. Every chip re-enters through the
+// widget's public filter methods, so the schematic repaint always mirrors
+// the row exactly.
+void UFaceParallaxEditorWidget::RebuildSchematicFilterRow()
+{
+    if (!SchematicFilterBox.IsValid()) return;
+    SchematicFilterBox->ClearChildren();
+    auto Chip = [this](const FString& Label, FLinearColor Bg, bool bActive,
+        TFunction<void()> OnClick, const FString& Tip) -> TSharedRef<SWidget>
+    {
+        const FLinearColor Fg = bActive
+            ? FLinearColor(1.0f, 1.0f, 1.0f)
+            : FLinearColor(0.75f, 0.75f, 0.78f);
+        return SNew(SButton)
+            .ButtonStyle(&FCoreStyle::Get().GetWidgetStyle<FButtonStyle>("NoBorder"))
+            .ContentPadding(FMargin(3, 1))
+            .OnClicked_Lambda([OnClick]() { OnClick(); return FReply::Handled(); })
+            .ToolTipText(FText::FromString(Tip))
+            [SNew(SBorder)
+                .BorderImage(FCoreStyle::Get().GetBrush("NoBorder"))
+                .BorderBackgroundColor(bActive ? Bg : Bg * 0.45f)
+                .Padding(FMargin(5, 2))
+                [SNew(STextBlock)
+                    .Text(FText::FromString(Label))
+                    .Font(FCoreStyle::GetDefaultFontStyle(bActive ? "Bold" : "Regular", 8))
+                    .ColorAndOpacity(Fg)]];
+    };
+    static const FLinearColor Amber(1.0f, 0.72f, 0.25f);   // Front
+    static const FLinearColor Grey(0.5f, 0.5f, 0.55f);     // Base
+    static const FLinearColor Cyan(0.35f, 0.85f, 1.0f);    // Back
+
+    SchematicFilterBox->AddSlot().Padding(FMargin(1))[MakeLbl(TEXT("Filter:"), 8, FLinearColor(0.6f,0.6f,0.6f))];
+    const TFunction<void(int32)> DepthClick = [this](int32 D) { SetSchematicDepthFilter(D); };
+    SchematicFilterBox->AddSlot().Padding(FMargin(1))[
+        Chip(TEXT("All"), Grey, SchematicDepthFilter == 0, [this]() { SetSchematicDepthFilter(0); },
+            TEXT("All: show every depth class"))];
+    SchematicFilterBox->AddSlot().Padding(FMargin(1))[
+        Chip(TEXT("Front"), Amber, SchematicDepthFilter == 1, [DepthClick]() { DepthClick(1); },
+            TEXT("Front: only layers that move WITH yaw (amber)"))];
+    SchematicFilterBox->AddSlot().Padding(FMargin(1))[
+        Chip(TEXT("Base"), Grey, SchematicDepthFilter == 2, [DepthClick]() { DepthClick(2); },
+            TEXT("Base: only anchored layers (grey)"))];
+    SchematicFilterBox->AddSlot().Padding(FMargin(1))[
+        Chip(TEXT("Back"), Cyan, SchematicDepthFilter == 3, [DepthClick]() { DepthClick(3); },
+            TEXT("Back: only layers that move AGAINST yaw (cyan)"))];
+    SchematicFilterBox->AddSlot().Padding(FMargin(1))[
+        Chip(TEXT("|"), Grey, false, []() {}, TEXT(""))];
+    for (const std::string& Tag : FPSchematic::FPSchematicLayerSet())
+    {
+        const FString Label = UTF8_TO_TCHAR(Tag.c_str());
+        const FLinearColor Col = FPSchematic::FPDepthClassForTag(Tag.c_str()) == FPSchematic::FPDepthClass::Front
+            ? Amber : (FPSchematic::FPDepthClassForTag(Tag.c_str()) == FPSchematic::FPDepthClass::Back ? Cyan : Grey);
+        const bool bActive = SchematicLayerFilter.Contains(Label);
+        SchematicFilterBox->AddSlot().Padding(FMargin(1))[
+            Chip(Label, Col, bActive, [this, Label]() { ToggleSchematicLayerFilter(Label); },
+                FString::Printf(TEXT("Toggle '%s' in the schematic filter (empty = all layers)"), *Label))];
+    }
+    SchematicFilterBox->AddSlot().Padding(FMargin(1))[
+        Chip(TEXT("Focus"), Amber, bSchematicFocus, [this]() { ToggleSchematicFocus(); },
+            TEXT("Focus: zoom-to-fit the selected layer's glyphs"))];
+    SchematicFilterBox->AddSlot().Padding(FMargin(1))[
+        Chip(TEXT("Clear"), Grey, false, [this]() { ClearSchematicFilters(); },
+            TEXT("Clear: reset the depth radio and all layer chips"))];
 }
 
 // Rebuild the 13 anatomical part chips (Phase 1). Chip color reflects the
@@ -1994,9 +2351,96 @@ void UFaceParallaxEditorWidget::BuildPanelSlotProps(const TSharedRef<SVerticalBo
                     .Image(FCoreStyle::Get().GetBrush("NoBorder"));
                 Thumb->SetColorAndOpacity(FLinearColor(0.08f,0.08f,0.08f));
                 ThumbOut = Thumb;
+                const FString L = Label;
                 Col->AddSlot().AutoHeight().Padding(FMargin(2))
-                    [SNew(SBox).WidthOverride(72).HeightOverride(72)[Thumb]];
-                FString L = Label;
+                    [SNew(SFaceDropTarget)
+                        .OnFaceDragOver_Lambda([](const FGeometry&, const FDragDropEvent& Evt) -> FReply
+                        {
+                            if (Evt.GetOperationAs<FAssetDragDropOp>().IsValid()) return FReply::Handled();
+                            if (Evt.GetOperationAs<FContentBrowserDataDragDropOp>().IsValid()) return FReply::Handled();
+                            TSharedPtr<FExternalDragOperation> FileOp = Evt.GetOperationAs<FExternalDragOperation>();
+                            if (FileOp.IsValid() && FileOp->HasFiles())
+                            {
+                                for (const FString& File : FileOp->GetFiles())
+                                {
+                                    if (IsDroppableImageFile(File)) return FReply::Handled();
+                                }
+                            }
+                            return FReply::Unhandled();
+                        })
+                        .OnFaceDrop_Lambda([this, L](const FGeometry&, const FDragDropEvent& Evt) -> FReply
+                        {
+                            if (!SelectedLayerName.IsValid())
+                            {
+                                SetStatus(TEXT("Drop ignored: no layer selected"), FLinearColor::Yellow);
+                                return FReply::Handled();
+                            }
+
+                            UTexture2D* DroppedTex = nullptr;
+                            if (TSharedPtr<FAssetDragDropOp> AssetOp = Evt.GetOperationAs<FAssetDragDropOp>())
+                            {
+                                for (const FAssetData& Asset : AssetOp->GetAssets())
+                                {
+                                    DroppedTex = Cast<UTexture2D>(Asset.GetAsset());
+                                    if (DroppedTex) break;
+                                }
+                            }
+                            else if (TSharedPtr<FContentBrowserDataDragDropOp> DataOp = Evt.GetOperationAs<FContentBrowserDataDragDropOp>())
+                            {
+                                for (const FAssetData& Asset : DataOp->GetAssets())
+                                {
+                                    DroppedTex = Cast<UTexture2D>(Asset.GetAsset());
+                                    if (DroppedTex) break;
+                                }
+                            }
+
+                            if (DroppedTex)
+                            {
+                                FWidgetUndoScope UndoScope(this, TEXT("Assign Dropped Texture"));
+                                FFaceTextureSet Cur = GetSlotTextures(ActiveViewState, SelectedLayerName);
+                                if (L == TEXT("Albedo")) Cur.Albedo = DroppedTex;
+                                else if (L == TEXT("Normal")) Cur.Normal = DroppedTex;
+                                else if (L == TEXT("Depth")) Cur.Depth = DroppedTex;
+                                SetSlotTextures(ActiveViewState, SelectedLayerName, Cur);
+                                if (bAutoFitOnAssign) ApplyAutoFit(ActiveViewState, SelectedLayerName);
+                                RefreshUI();
+                                SetStatus(FString::Printf(TEXT("Dropped %s -> %s"), *DroppedTex->GetName(), *L),
+                                    FLinearColor(0.3f, 1.0f, 0.3f));
+                                return FReply::Handled();
+                            }
+
+                            TSharedPtr<FExternalDragOperation> FileOp = Evt.GetOperationAs<FExternalDragOperation>();
+                            if (FileOp.IsValid() && FileOp->HasFiles())
+                            {
+                                TArray<FString> Matching;
+                                for (const FString& File : FileOp->GetFiles())
+                                {
+                                    if (IsDroppableImageFile(File)) Matching.Add(File);
+                                }
+                                if (Matching.Num() > 0)
+                                {
+                                    TArray<UTexture2D*> Imported = ImportTexturesFromFiles(Matching);
+                                    int32 Assigned = 0;
+                                    if (Imported.Num() > 0)
+                                    {
+                                        FWidgetUndoScope UndoScope(this, TEXT("Assign Dropped Texture Files"));
+                                        for (UTexture2D* Tex : Imported)
+                                        {
+                                            if (ChannelFromTextureName(Tex->GetName()) == L)
+                                            {
+                                                if (AssignTextureToSlot(Tex, ActiveViewState, SelectedLayerName, L)) ++Assigned;
+                                            }
+                                        }
+                                    }
+                                    SetStatus(FString::Printf(TEXT("Dropped %d file(s): imported %d, assigned %d to %s"),
+                                        Matching.Num(), Imported.Num(), Assigned, *L), FLinearColor(0.3f, 1.0f, 0.3f));
+                                    RefreshUI();
+                                    return FReply::Handled();
+                                }
+                            }
+                            return FReply::Unhandled();
+                        })
+                        [SNew(SBox).WidthOverride(72).HeightOverride(72)[Thumb]]];
                 Col->AddSlot().AutoHeight().Padding(FMargin(2))
                     [MakeBtn(FString::Printf(TEXT("Pick %s"), *Label),
                         [this, L]()
@@ -2201,16 +2645,32 @@ void UFaceParallaxEditorWidget::BuildPanelSlotProps(const TSharedRef<SVerticalBo
                     [MakeBtn(TEXT("Clear Overrides"), [this](){ ClearAllOverridesForSlot(ActiveViewState, SelectedLayerName); RefreshUI(); }, FLinearColor(1.0f,0.6f,0.6f))];
                 SaBox->AddSlot().AutoHeight()[OvRow];
 
+                // Phase D: the sync row is one grouped control - an explicit
+                // Transform / Textures / Both op selector plus the apply
+                // buttons. "Sync -> Selected" applies the chosen op to the
+                // views picked on the state strip; "Sync Both -> All" stays
+                // the canonical everything-everywhere quick action.
                 TSharedRef<SHorizontalBox> SyncRow = SNew(SHorizontalBox);
-                SyncRow->AddSlot().Padding(FMargin(0,2)).AutoWidth()
-                    [MakeLbl(TEXT("Sync layer to:"), 9, FLinearColor(0.6f,0.8f,1.0f))];
-                TSharedRef<SCheckBox> SyncTexCheck = SNew(SCheckBox)
-                    .IsChecked(ECheckBoxState::Checked);
-                SyncTexCheck->SetToolTipText(FText::FromString(TEXT("Also copy albedo/normal/depth textures to the destination views")));
-                CheckSyncTextures = SyncTexCheck;
-                SyncRow->AddSlot().Padding(FMargin(8,2)).AutoWidth()[SyncTexCheck];
-                SyncRow->AddSlot().Padding(FMargin(2,2)).AutoWidth()
-                    [MakeLbl(TEXT("Tex"), 8, FLinearColor(0.7f,0.7f,0.7f))];
+                TSharedRef<STextBlock> SyncLbl = MakeLbl(TEXT("Sync layer to:"), 9, FLinearColor(0.6f,0.8f,1.0f));
+                SyncLbl->SetToolTipText(FText::FromString(TEXT("Choose what to copy (Transform / Textures / Both), then apply to the "
+                    "views picked on the state strip or to all views.")));
+                SyncRow->AddSlot().Padding(FMargin(0,2)).AutoWidth()[SyncLbl];
+                for (int32 O = 0; O < 3; ++O)
+                {
+                    const int32 OO = O;
+                    SyncRow->AddSlot().Padding(FMargin(6,2)).AutoWidth()
+                        [SNew(SButton)
+                            .ButtonColorAndOpacity_Lambda([this, OO]()
+                            {
+                                return SyncOp == OO ? AccentBlue() : FLinearColor(0.13f, 0.13f, 0.15f);
+                            })
+                            .OnClicked_Lambda([this, OO](){ SyncOp = OO; return FReply::Handled(); })
+                            .Content()
+                            [SNew(STextBlock)
+                                .Text(FText::FromString(UTF8_TO_TCHAR(FPLayout::SyncOpLabel(OO))))
+                                .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+                                .ColorAndOpacity(FLinearColor(0.85f, 0.85f, 0.85f))]];
+                }
                 SyncRow->AddSlot().Padding(FMargin(4,2)).FillWidth(1.0f);
                 SyncRow->AddSlot().Padding(FMargin(2,2)).AutoWidth()
                     [MakeBtn(TEXT("Sync -> Selected"), [this]()
@@ -2222,8 +2682,12 @@ void UFaceParallaxEditorWidget::BuildPanelSlotProps(const TSharedRef<SVerticalBo
                             if (SyncViewCheckBoxes[i].IsValid() && SyncViewCheckBoxes[i]->IsChecked())
                                 Dests.Add((EFaceAngleState)i);
                         }
-                        const bool bTex = CheckSyncTextures.IsValid() && CheckSyncTextures->IsChecked();
-                        SyncLayerToSelectedViews(ActiveViewState, SelectedLayerName, Dests, bTex);
+                        const bool bTr = FPLayout::SyncOpHasTransform(SyncOp);
+                        const bool bTex = FPLayout::SyncOpHasTextures(SyncOp);
+                        if (bTr)
+                            SyncLayerToSelectedViews(ActiveViewState, SelectedLayerName, Dests, bTex);
+                        else
+                            SyncTexturesToSelectedViews(ActiveViewState, SelectedLayerName, Dests);
                         RefreshUI();
                     }, FLinearColor(0.6f,0.8f,1.0f))];
                 SyncRow->AddSlot().Padding(FMargin(2,2)).AutoWidth()
@@ -2247,7 +2711,8 @@ void UFaceParallaxEditorWidget::BuildPanelSlotProps(const TSharedRef<SVerticalBo
                     .IsChecked(bLinkAcrossViews ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
                     .OnCheckStateChanged_Lambda([this](ECheckBoxState S)
                     { bLinkAcrossViews = (S == ECheckBoxState::Checked); });
-                LinkCheck->SetToolTipText(FText::FromString(TEXT("Edits in this state are broadcast to all other states (Phase B)")));
+                LinkCheck->SetToolTipText(FText::FromString(TEXT("Edits in this state are broadcast live to the views picked on the "
+                    "state strip; when none are picked, to all other states (Phase D)")));
                 LinkRow->AddSlot().Padding(FMargin(0,2)).AutoWidth()[LinkCheck];
                 LinkRow->AddSlot().Padding(FMargin(4,2)).AutoWidth()
                     [MakeLbl(TEXT("Link transform across views"), 9, FLinearColor(0.6f,0.8f,1.0f))];
@@ -2679,12 +3144,15 @@ void UFaceParallaxEditorWidget::BuildPanelRailContainers(const TSharedRef<SVerti
     PropTabContent.Reset();
     PropTabContent.Add(SlotPropsBox);        // [0] right pane
     PropTabContent.Add(RailContent[0]);      // [1] Layers
-    PropTabContent.Add(RailContent[1]);      // [2] Transform
-    PropTabContent.Add(RailContent[2]);      // [3] Camera
-    PropTabContent.Add(RailContent[3]);      // [4] Debug
-    PropTabContent.Add(RailContent[4]);      // [5] Advanced
-    PropTabContent.Add(RailContent[5]);      // [6] Assign
-    DebugAccordion = SNew(SFaceAccordion);
+    PropTabContent.Add(RailContent[1]);      // [2] Art
+    PropTabContent.Add(RailContent[2]);      // [3] Animated
+    PropTabContent.Add(RailContent[3]);      // [4] NestedPins
+    PropTabContent.Add(RailContent[4]);      // [5] Camera
+    PropTabContent.Add(RailContent[5]);      // [6] Advanced
+
+    ArtAccordion = SNew(SFaceAccordion);
+    AnimatedAccordion = SNew(SFaceAccordion);
+    NestedAccordion = SNew(SFaceAccordion);
     AdvancedAccordion = SNew(SFaceAccordion);
 
 }
@@ -2745,7 +3213,7 @@ void UFaceParallaxEditorWidget::BuildPanelLayers(const TSharedRef<SVerticalBox>&
 
 }
 
-void UFaceParallaxEditorWidget::BuildPanelTransformRail()
+void UFaceParallaxEditorWidget::BuildPanelArtRail()
 {
             // Quick actions (batch operations) - the canonical pinned actions
             // (Import Art... / Sync All -> All / Auto-Fit All / Clear All
@@ -2903,10 +3371,62 @@ void UFaceParallaxEditorWidget::BuildPanelTransformRail()
                 RegisterRailSection(1, TEXT("Cross-View Transform"), XvSection);
             }
 
-}
 
-void UFaceParallaxEditorWidget::BuildPanelDebugRail()
-{
+        // Import + Outline -> Depth: accordion-collapsed sections (P16)
+        // on the Art rail; Import open by default.
+        {
+            TSharedRef<SVerticalBox> ImportBox = SNew(SVerticalBox);
+            TSharedRef<SHorizontalBox> ImpRow = SNew(SHorizontalBox);
+            ImpRow->AddSlot().Padding(FMargin(0,2)).AutoWidth()
+                [MakeBtn(TEXT("Import & Assign"), [this]()
+                {
+                    TArray<FString> OutFiles;
+                    IDesktopPlatform* Platform = FDesktopPlatformModule::Get();
+                    if (!Platform || !SelectedLayerName.IsValid()) return;
+                    FString DefaultPath = FEditorDirectories::Get().GetLastDirectory(ELastDirectory::UNR);
+                    if (DefaultPath.IsEmpty()) DefaultPath = FPaths::ProjectContentDir();
+                    uint32 FilterFlags = 0;
+                    if (Platform->OpenFileDialog(nullptr, TEXT("Import Texture"),
+                        DefaultPath, TEXT(""),
+                        TEXT("Image files (*.png, *.jpg, *.tga)|*.png;*.jpg;*.tga|All files (*.*)|*.*"),
+                        FilterFlags, OutFiles) && OutFiles.Num() > 0)
+                    {
+                        FEditorDirectories::Get().SetLastDirectory(ELastDirectory::UNR, FPaths::GetPath(OutFiles[0]));
+                        TArray<UTexture2D*> Imported = ImportTexturesFromFiles(OutFiles);
+                        int32 Assigned = 0;
+                        for (UTexture2D* Tex : Imported)
+                        {
+                            const FString Channel = ChannelFromTextureName(Tex->GetName());
+                            if (AssignTextureToSlot(Tex, ActiveViewState, SelectedLayerName, Channel))
+                            {
+                                ++Assigned;
+                            }
+                        }
+                        SetStatus(FString::Printf(TEXT("Imported %d, assigned %d to %s:%s by channel suffix"),
+                            Imported.Num(), Assigned, *SelectedLayerName.ToString(),
+                            *StaticEnum<EFaceAngleState>()->GetNameStringByValue((int64)ActiveViewState)),
+                            FLinearColor(0.3f, 1.0f, 0.3f));
+                    }
+                }, FLinearColor(0.6f,1.0f,0.6f))];
+            ImpRow->AddSlot().Padding(FMargin(4,2)).AutoWidth()
+                [MakeBtn(TEXT("Assign CB Selection"), [this]()
+                {
+                    if (!SelectedLayerName.IsValid()) return;
+                    UTexture2D* Tex = GetSelectedContentBrowserTexture();
+                    if (Tex)
+                    {
+                        AssignTextureToSlot(Tex, ActiveViewState, SelectedLayerName,
+                            ChannelFromTextureName(Tex->GetName()));
+                    }
+                    else
+                    {
+                        SetStatus(TEXT("No texture selected in Content Browser"), FLinearColor::Yellow);
+                    }
+                })];
+            ImpRow->AddSlot().Padding(FMargin(4,2)).FillWidth(1.0f);
+            ImportBox->AddSlot().AutoHeight()[ImpRow];
+            ArtAccordion->AddSection(TEXT("Import"), ImportBox);
+
             // Outline → depth
             {
                 TSharedRef<SVerticalBox> OdBox = SNew(SVerticalBox);
@@ -3022,286 +3542,243 @@ void UFaceParallaxEditorWidget::BuildPanelDebugRail()
                         RefreshOutlineViewChecks();
                     })];
                 OdBox->AddSlot().AutoHeight()[OvRows];
-                DebugAccordion->AddSection(TEXT("Outline -> Depth"), OdBox);
+                ArtAccordion->AddSection(TEXT("Outline -> Depth"), OdBox);
             }
+            ArtAccordion->SetExpanded(0, true); // Import section open by default
+            RailContent[1]->AddSlot().AutoHeight()[ArtAccordion.ToSharedRef()];
+            RegisterAccordionSections(1, ArtAccordion);
+        }
 
-        // ============ DEBUG RAIL (import + config) ============
+        // Bulk Assign + Assign Ops (moved from the old Assign rail)
+    // Bulk Assign grid: 10 state columns x 3 layer rows, plus row labels and
+    // the coverage summary. Cells mirror FPLayout::AssignCellState (2 full,
+    // 1 partial, 0 empty); the coverage label mirrors AssignCoverageText.
+    {
+        struct { EFaceAngleState S; const TCHAR* T; } States[] = {
+            {EFaceAngleState::Front, TEXT("Front")},
+            {EFaceAngleState::ThreeQuarterRight, TEXT("3/4R")},
+            {EFaceAngleState::RightProfile, TEXT("ProfR")},
+            {EFaceAngleState::BackRight, TEXT("BackR")},
+            {EFaceAngleState::Back, TEXT("Back")},
+            {EFaceAngleState::BackLeft, TEXT("BackL")},
+            {EFaceAngleState::LeftProfile, TEXT("ProfL")},
+            {EFaceAngleState::ThreeQuarterLeft, TEXT("3/4L")},
+            {EFaceAngleState::Top, TEXT("Top")},
+            {EFaceAngleState::Bottom, TEXT("Bot")},
+        };
+        const int32 NumRows = 3;
+
+        TSharedRef<SVerticalBox> GB = SNew(SVerticalBox);
+        TSharedRef<SHorizontalBox> Header = SNew(SHorizontalBox);
+        for (auto& St : States)
         {
-            TSharedRef<SVerticalBox> T1 = SNew(SVerticalBox);
+            Header->AddSlot().AutoWidth().Padding(FMargin(0, 2))
+                [SNew(SBox).WidthOverride(16)
+                    [SNew(STextBlock)
+                        .Text(FText::FromString(St.T))
+                        .Font(FCoreStyle::GetDefaultFontStyle("Regular", 7))
+                        .Justification(ETextJustify::Center)
+                        .ColorAndOpacity(FLinearColor(0.55f, 0.55f, 0.6f))]];
+        }
+        GB->AddSlot().AutoHeight()[Header];
 
-            TSharedRef<SVerticalBox> ImportBox = SNew(SVerticalBox);
-            TSharedRef<SHorizontalBox> ImpRow = SNew(SHorizontalBox);
-            ImpRow->AddSlot().Padding(FMargin(0,2)).AutoWidth()
-                [MakeBtn(TEXT("Import & Assign"), [this]()
-                {
-                    TArray<FString> OutFiles;
-                    IDesktopPlatform* Platform = FDesktopPlatformModule::Get();
-                    if (!Platform || !SelectedLayerName.IsValid()) return;
-                    FString DefaultPath = FEditorDirectories::Get().GetLastDirectory(ELastDirectory::UNR);
-                    if (DefaultPath.IsEmpty()) DefaultPath = FPaths::ProjectContentDir();
-                    uint32 FilterFlags = 0;
-                    if (Platform->OpenFileDialog(nullptr, TEXT("Import Texture"),
-                        DefaultPath, TEXT(""),
-                        TEXT("Image files (*.png, *.jpg, *.tga)|*.png;*.jpg;*.tga|All files (*.*)|*.*"),
-                        FilterFlags, OutFiles) && OutFiles.Num() > 0)
-                    {
-                        FEditorDirectories::Get().SetLastDirectory(ELastDirectory::UNR, FPaths::GetPath(OutFiles[0]));
-                        TArray<UTexture2D*> Imported = ImportTexturesFromFiles(OutFiles);
-                        int32 Assigned = 0;
-                        for (UTexture2D* Tex : Imported)
-                        {
-                            const FString Channel = ChannelFromTextureName(Tex->GetName());
-                            if (AssignTextureToSlot(Tex, ActiveViewState, SelectedLayerName, Channel))
-                            {
-                                ++Assigned;
-                            }
-                        }
-                        SetStatus(FString::Printf(TEXT("Imported %d, assigned %d to %s:%s by channel suffix"),
-                            Imported.Num(), Assigned, *SelectedLayerName.ToString(),
-                            *StaticEnum<EFaceAngleState>()->GetNameStringByValue((int64)ActiveViewState)),
-                            FLinearColor(0.3f, 1.0f, 0.3f));
-                    }
-                }, FLinearColor(0.6f,1.0f,0.6f))];
-            ImpRow->AddSlot().Padding(FMargin(4,2)).AutoWidth()
-                [MakeBtn(TEXT("Assign CB Selection"), [this]()
-                {
-                    if (!SelectedLayerName.IsValid()) return;
-                    UTexture2D* Tex = GetSelectedContentBrowserTexture();
-                    if (Tex)
-                    {
-                        AssignTextureToSlot(Tex, ActiveViewState, SelectedLayerName,
-                            ChannelFromTextureName(Tex->GetName()));
-                    }
-                    else
-                    {
-                        SetStatus(TEXT("No texture selected in Content Browser"), FLinearColor::Yellow);
-                    }
-                })];
-            ImpRow->AddSlot().Padding(FMargin(4,2)).FillWidth(1.0f);
-            ImportBox->AddSlot().AutoHeight()[ImpRow];
-            DebugAccordion->AddSection(TEXT("Import"), ImportBox);
-
-            // Config checks
+        AssignCells.Reset();
+        for (int32 Ri = 0; Ri < NumRows; ++Ri)
+        {
+            const FName Tag = LayerNames.IsValidIndex(Ri) ? LayerNames[Ri] : FName();
+            TSharedRef<SHorizontalBox> Row = SNew(SHorizontalBox);
+            for (int32 Ci = 0; Ci < 10; ++Ci)
             {
-                CfgBox = SNew(SVerticalBox);
-
-                auto AddConfigCheck = [&](const FString& Label, bool bDef,
-                    TSharedPtr<SCheckBox>& CheckOut,
-                    TFunction<void(bool)>&& Fn)
-                {
-                    TSharedRef<SCheckBox> Ch = SNew(SCheckBox)
-                        .IsChecked(bDef ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
-                        .OnCheckStateChanged_Lambda([Fn = MoveTemp(Fn)](ECheckBoxState S)
-                        { Fn(S == ECheckBoxState::Checked); });
-                    CheckOut = Ch;
-                    TSharedRef<SHorizontalBox> R = SNew(SHorizontalBox);
-                    R->AddSlot().Padding(FMargin(0,2)).AutoWidth()[Ch];
-                    R->AddSlot().Padding(FMargin(4,2)).AutoWidth()
-                        [MakeLbl(Label, 9)];
-                    CfgBox->AddSlot().AutoHeight()[R];
-                };
-
-                UFaceParallaxComponent* Comp2 = GetParallaxComponent();
-                bool bBlink = Comp2 ? Comp2->GetBlinkingEnabled() : false;
-                bool bSw = Comp2 ? Comp2->GetSwooshEnabled() : false;
-                bool bNA = Comp2 ? Comp2->GetNestedArtEnabled() : false;
-                bool bPar = Comp2 ? Comp2->GetParamsEnabled() : false;
-                bool bShowTex = bLocalShowTextures, bDepthMesh = bLocalShowDepthMesh;
-                bool bWire = bLocalShowWireframe, bColor = bLocalColorByDepth;
-
-                AddConfigCheck(TEXT("Blinking"), bBlink, CheckBlinking,
-                    [this](bool b){ SetBlinkingEnabled(b); });
-                AddConfigCheck(TEXT("Swoosh"), bSw, CheckSwoosh,
-                    [this](bool b){ SetSwooshEnabled(b); });
-                AddConfigCheck(TEXT("Nested Art"), bNA, CheckNestedArt,
-                    [this](bool b){ SetNestedArtEnabled(b); });
-                AddConfigCheck(TEXT("Params"), bPar, CheckParams,
-                    [this](bool b){ SetParamsEnabled(b); });
-                AddConfigCheck(TEXT("Show Textures"), bShowTex, CheckShowTextures,
-                    [this](bool b){ ShowTextures(b); });
-                AddConfigCheck(TEXT("Depth Mesh"), bDepthMesh, CheckDepthMesh,
-                    [this](bool b){ ShowDepthMesh(b); });
-                AddConfigCheck(TEXT("Wireframe"), bWire, CheckWireframe,
-                    [this](bool b){ ShowWireframe(b); });
-                AddConfigCheck(TEXT("Color by Depth"), bColor, CheckColorByDepth,
-                    [this](bool b){ ColorByDepth(b); });
-
-                // Phase 4b: progressive disclosure - the 8 config checks collapse
-                // into a summary line ("K of 8 on") until the header is clicked.
-                ConfigDisclosure = SNew(SFaceDisclosure);
-                ConfigDisclosure->SetTitle(TEXT("Config"));
-                ConfigDisclosure->SetBody(CfgBox.ToSharedRef());
-                DebugAccordion->AddSection(TEXT("Config"), ConfigDisclosure.ToSharedRef());
-                UpdateDisclosureSummaries();
-            }
-
-            // Edge analysis (edge overlay + luminance histogram)
-            {
-                TSharedRef<SVerticalBox> EdBox = SNew(SVerticalBox);
-                TSharedRef<SHorizontalBox> EdRow = SNew(SHorizontalBox);
-                CheckEdgeOverlay = SNew(SCheckBox)
-                    .IsChecked(bEdgeOverlayVisible ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
-                    .OnCheckStateChanged_Lambda([this](ECheckBoxState S)
+                const EFaceAngleState S = (EFaceAngleState)Ci;
+                TSharedRef<SImage> Cell = SNew(SImage)
+                    .Image(FCoreStyle::Get().GetBrush("WhiteBrush"));
+                Cell->SetColorAndOpacity(FLinearColor(0.12f, 0.12f, 0.14f));
+                AssignCells.Add(Cell);
+                TSharedRef<SButton> CellBtn = SNew(SButton)
+                    .ButtonColorAndOpacity(FLinearColor(0.0f, 0.0f, 0.0f, 0.0f))
+                    .OnClicked_Lambda([this, S, Tag]()
                     {
-                        bEdgeOverlayVisible = (S == ECheckBoxState::Checked);
-                        if (bEdgeOverlayVisible) BuildEdgeOverlay();
+                        if (!Tag.IsValid()) return FReply::Handled();
+                        SetActiveViewState(S);
+                        SelectedLayerName = Tag;
                         RefreshUI();
-                    });
-                EdRow->AddSlot().Padding(FMargin(0,2)).AutoWidth()[CheckEdgeOverlay.ToSharedRef()];
-                EdRow->AddSlot().Padding(FMargin(2,2)).AutoWidth()
-                    [MakeLbl(TEXT("Edge Overlay"), 9)];
-                CheckHistogram = SNew(SCheckBox)
-                    .IsChecked(bHistogramVisible ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
-                    .OnCheckStateChanged_Lambda([this](ECheckBoxState S)
-                    {
-                        bHistogramVisible = (S == ECheckBoxState::Checked);
-                        if (bHistogramVisible) BuildEdgeOverlay();
-                        RefreshUI();
-                    });
-                EdRow->AddSlot().Padding(FMargin(8,2)).AutoWidth()[CheckHistogram.ToSharedRef()];
-                EdRow->AddSlot().Padding(FMargin(2,2)).AutoWidth()
-                    [MakeLbl(TEXT("Histogram"), 9)];
-                EdRow->AddSlot().Padding(FMargin(6,2)).AutoWidth()
-                    [MakeBtn(TEXT("Rebuild"), [this]()
-                    {
-                        BuildEdgeOverlay();
-                        SetStatus(TEXT("Edge overlay + histogram rebuilt"), FLinearColor(0.6f,1.0f,0.6f));
-                    })];
-                EdRow->AddSlot().FillWidth(1.0f);
-                EdBox->AddSlot().AutoHeight()[EdRow];
-                HistogramBox = SNew(SVerticalBox);
-                TextHistogramStats = SNew(STextBlock)
-                    .Text(FText::FromString(TEXT("")))
-                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
-                    .ColorAndOpacity(FLinearColor(0.6f,0.6f,0.6f))
-                    .AutoWrapText(true);
-                EdBox->AddSlot().AutoHeight().Padding(FMargin(2))
-                    [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("NoBorder"))
-                        .BorderBackgroundColor(FLinearColor(0.1f,0.1f,0.1f))
-                        .Padding(FMargin(4,2))
-                        [SNew(SVerticalBox)
-                            + SVerticalBox::Slot().AutoHeight()
-                                [HistogramBox.ToSharedRef()]
-                            + SVerticalBox::Slot().AutoHeight().Padding(FMargin(0,2,0,0))
-                                [TextHistogramStats.ToSharedRef()]]];
-                DebugAccordion->AddSection(TEXT("Edge Analysis"), EdBox);
+                        if (TextStatus.IsValid())
+                            TextStatus->SetText(FText::FromString(FString::Printf(
+                                TEXT("Assign grid: %s / %s"),
+                                *StaticEnum<EFaceAngleState>()->GetNameStringByValue((int64)S),
+                                *Tag.ToString())));
+                        return FReply::Handled();
+                    })[Cell];
+                Row->AddSlot().AutoWidth().Padding(FMargin(0, 1))
+                    [SNew(SBox).WidthOverride(16).HeightOverride(16)[CellBtn]];
             }
+            GB->AddSlot().AutoHeight()[Row];
+        }
 
-            // Depth debug visualizer knobs
+        TSharedRef<SHorizontalBox> RowLbls = SNew(SHorizontalBox);
+        for (int32 Ri = 0; Ri < NumRows; ++Ri)
+        {
+            const FName Tag = LayerNames.IsValidIndex(Ri) ? LayerNames[Ri] : FName();
+            const FString Label = Tag.IsValid() ? Tag.ToString() : TEXT("(no layer)");
+            RowLbls->AddSlot().AutoWidth().Padding(FMargin(0, 2))
+                [SNew(SBox).WidthOverride(60)
+                    [MakeLbl(*Label, 7, FLinearColor(0.6f, 0.6f, 0.7f))]];
+        }
+        TextAssignCoverage = MakeLbl(TEXT("Filled 0/30"), 8, FLinearColor(0.7f, 0.9f, 0.7f));
+        RowLbls->AddSlot().Padding(FMargin(4, 2)).AutoWidth()[TextAssignCoverage.ToSharedRef()];
+        GB->AddSlot().AutoHeight()[RowLbls];
+
+        TSharedRef<SWidget> GridSection = MakeSectionBox(TEXT("Bulk Assign"), GB);
+        RailContent[1]->AddSlot().AutoHeight().Padding(FMargin(2, 1, 2, 1))[GridSection];
+        RegisterRailSection(1, TEXT("Bulk Assign"), GridSection);
+        RefreshAssignGrid();
+    }
+
+    // Assign Ops: fill-missing / clear-row / slot-to-all bulk actions, plus
+    // the performance tier and camera source combos (P3).
+    {
+        TSharedRef<SVerticalBox> OB = SNew(SVerticalBox);
+        TSharedRef<SHorizontalBox> Row0 = SNew(SHorizontalBox);
+        Row0->AddSlot().Padding(FMargin(0, 2)).AutoWidth()
+            [MakeBtn(TEXT("Fill Missing"), [this]()
             {
-                TSharedRef<SVerticalBox> DdBox = SNew(SVerticalBox);
-                auto AddDebugSlider = [&](const FString& Label, float Def, float Mn, float Mx,
-                    TFunction<void(float)>&& Fn, TSharedPtr<SSlider>& SliderOut, TSharedPtr<STextBlock>& LabelOut)
+                FillMissingViewsFromActiveSlot();
+                RefreshUI();
+            }, FLinearColor(0.6f, 1.0f, 0.6f))];
+        Row0->AddSlot().Padding(FMargin(4, 2)).AutoWidth()
+            [MakeBtn(TEXT("Clear Row"), [this]()
+            {
+                if (!SelectedLayerName.IsValid()) return;
+                FWidgetUndoScope UndoScope(this, TEXT("Clear Row"));
+                for (int32 i = 0; i <= (int32)EFaceAngleState::Bottom; ++i)
+                    ClearAllOverridesForSlot((EFaceAngleState)i, SelectedLayerName);
+                RefreshUI();
+            }, FLinearColor(1.0f, 0.6f, 0.6f))];
+        Row0->AddSlot().Padding(FMargin(4, 2)).AutoWidth()
+            [MakeBtn(TEXT("Slot -> All"), [this]()
+            {
+                if (!SelectedLayerName.IsValid() || !ActivePreset) return;
+                FWidgetUndoScope UndoScope(this, TEXT("Slot -> All States"));
+                const FFaceArtSlot Src = ActivePreset->GetSlot(ActiveViewState, SelectedLayerName);
+                for (int32 i = 0; i <= (int32)EFaceAngleState::Bottom; ++i)
                 {
-                    TSharedRef<SHorizontalBox> R = SNew(SHorizontalBox);
-                    TSharedRef<STextBlock> ValLbl = MakeLbl(TEXT(""), 8, FLinearColor(0.7f,0.7f,0.7f));
-                    TSharedRef<SSlider> Sl = SNew(SSlider).Value(FMath::Clamp((Def - Mn) / (Mx - Mn), 0.0f, 1.0f))
-                        .OnValueChanged_Lambda([Fn = MoveTemp(Fn), Mn, Mx, ValLbl](float V)
-                        {
-                            const float Out = Mn + V * (Mx - Mn);
-                            ValLbl->SetText(FText::FromString(FString::Printf(TEXT("%.1f"), Out)));
-                            Fn(Out);
-                        });
-                    SliderOut = Sl;
-                    LabelOut = ValLbl;
-                    R->AddSlot().Padding(FMargin(0,2)).AutoWidth()[MakeLbl(Label, 9)];
-                    R->AddSlot().Padding(FMargin(4,2)).FillWidth(1.0f)[Sl];
-                    R->AddSlot().Padding(FMargin(4,2)).AutoWidth()[ValLbl];
-                    DdBox->AddSlot().AutoHeight()[R];
-                };
-                auto RebuildFromActiveDepth = [this]()
-                {
-                    UDepthDebugVisualizerComponent* Vis =
-                        ValidatePreviewActor() ? PreviewActor->DepthDebug : nullptr;
-                    if (!Vis) return;
-                    UTexture2D* DepthTex = nullptr;
-                    UFaceParallaxComponent* Comp = GetParallaxComponent();
-                    if (Comp) DepthTex = Comp->GetCurrentDepthTexture();
-                    if (!DepthTex && ValidatePreset() && SelectedLayerName.IsValid())
-                        DepthTex = ActivePreset->GetTexturesForSlot(ActiveViewState, SelectedLayerName).Depth;
-                    Vis->RebuildMeshFromDepthMap(DepthTex);
-                };
-                UDepthDebugVisualizerComponent* Vis0 =
-                    ValidatePreviewActor() ? PreviewActor->DepthDebug : nullptr;
-                AddDebugSlider(TEXT("Grid Res"), Vis0 ? (float)Vis0->GridResolution : 48.0f, 8.0f, 256.0f,
-                    [this, RebuildFromActiveDepth](float V)
-                    {
-                        UDepthDebugVisualizerComponent* Vis =
-                            ValidatePreviewActor() ? PreviewActor->DepthDebug : nullptr;
-                        if (Vis) { Vis->GridResolution = FMath::Clamp((int32)V, 8, 256); RebuildFromActiveDepth(); }
-                    }, SliderDebugGrid, TextDebugGrid);
-                AddDebugSlider(TEXT("Mesh Size"), Vis0 ? Vis0->MeshSize : 30.0f, 5.0f, 100.0f,
-                    [this, RebuildFromActiveDepth](float V)
-                    {
-                        UDepthDebugVisualizerComponent* Vis =
-                            ValidatePreviewActor() ? PreviewActor->DepthDebug : nullptr;
-                        if (Vis) { Vis->MeshSize = V; RebuildFromActiveDepth(); }
-                    }, SliderDebugMeshSize, TextDebugMeshSize);
-                AddDebugSlider(TEXT("Height Scale"), Vis0 ? Vis0->HeightScale : 10.0f, 0.5f, 30.0f,
-                    [this, RebuildFromActiveDepth](float V)
-                    {
-                        UDepthDebugVisualizerComponent* Vis =
-                            ValidatePreviewActor() ? PreviewActor->DepthDebug : nullptr;
-                        if (Vis) { Vis->HeightScale = V; RebuildFromActiveDepth(); }
-                    }, SliderDebugHeight, TextDebugHeight);
-                AddDebugSlider(TEXT("Offset Z"), Vis0 ? Vis0->LocalOffset.Z : 25.0f, -50.0f, 100.0f,
-                    [this, RebuildFromActiveDepth](float V)
-                    {
-                        UDepthDebugVisualizerComponent* Vis =
-                            ValidatePreviewActor() ? PreviewActor->DepthDebug : nullptr;
-                        if (Vis) { Vis->LocalOffset.Z = V; RebuildFromActiveDepth(); }
-                    }, SliderDebugOffset, TextDebugOffset);
+                    if (i == (int32)ActiveViewState) continue;
+                    ActivePreset->SetSlot((EFaceAngleState)i, SelectedLayerName, Src);
+                }
+                RefreshUI();
+            }, FLinearColor(0.8f, 0.9f, 1.0f))];
+        Row0->AddSlot().FillWidth(1.0f);
+        OB->AddSlot().AutoHeight()[Row0];
 
-                auto AddColorEdit = [&](const FString& Label, FLinearColor Def,
-                    TSharedPtr<SEditableTextBox>& EditOut, TFunction<void(FLinearColor)>&& Fn)
+        TSharedRef<SHorizontalBox> Row1 = SNew(SHorizontalBox);
+        Row1->AddSlot().Padding(FMargin(0, 2)).AutoWidth()
+            [MakeLbl(TEXT("Perf tier"), 8, FLinearColor(0.6f, 0.6f, 0.7f))];
+        PerfTierOptions.Reset();
+        PerfTierOptions.Add(MakeShared<FString>(TEXT("Low")));
+        PerfTierOptions.Add(MakeShared<FString>(TEXT("Medium")));
+        PerfTierOptions.Add(MakeShared<FString>(TEXT("High")));
+        PerfTierSelection = PerfTierOptions[FMath::Clamp(PerformanceTier, 0, 2)];
+        TSharedRef<SComboBox<TSharedPtr<FString>>> PerfCombo =
+            SNew(SComboBox<TSharedPtr<FString>>)
+            .OptionsSource(&PerfTierOptions)
+            .OnGenerateWidget_Lambda([](TSharedPtr<FString> Item)
+            {
+                return SNew(STextBlock)
+                    .Text(FText::FromString(*Item))
+                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9));
+            })
+            .OnSelectionChanged_Lambda([this](TSharedPtr<FString> Item, ESelectInfo::Type)
+            {
+                if (!Item.IsValid()) return;
+                PerfTierSelection = Item;
+                const int32 Tier = FMath::Clamp(Item->Equals(TEXT("Low")) ? 0
+                    : (Item->Equals(TEXT("High")) ? 2 : 1), 0, 2);
+                PerformanceTier = Tier;
+                if (UFaceParallaxComponent* Comp = GetParallaxComponent())
+                    Comp->MaxAsyncTextureCacheSize = FPLayout::PerformanceTierCacheSize(Tier);
+                if (TextStatus.IsValid())
+                    TextStatus->SetText(FText::FromString(FString::Printf(
+                        TEXT("Performance tier: %s (cache %d)"),
+                        *(*Item), FPLayout::PerformanceTierCacheSize(Tier))));
+            })
+            [SNew(STextBlock)
+                .Text_Lambda([this]()
                 {
-                    TSharedRef<SHorizontalBox> R = SNew(SHorizontalBox);
-                    TSharedRef<SEditableTextBox> Edit = SNew(SEditableTextBox)
-                        .Text(FText::FromString(Def.ToFColor(true).ToHex()))
-                        .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
-                        .OnTextCommitted_Lambda([Fn = MoveTemp(Fn)](const FText& T, ETextCommit::Type)
-                        {
-                            const FColor C = FColor::FromHex(T.ToString());
-                            Fn(FLinearColor(C));
-                        });
-                    EditOut = Edit;
-                    R->AddSlot().Padding(FMargin(0,2)).AutoWidth()[MakeLbl(Label, 9)];
-                    R->AddSlot().Padding(FMargin(4,2)).AutoWidth()
-                        [SNew(SBox).WidthOverride(70)[Edit]];
-                    R->AddSlot().FillWidth(1.0f);
-                    DdBox->AddSlot().AutoHeight()[R];
-                };
-                AddColorEdit(TEXT("Low Color"), Vis0 ? Vis0->LowColor : FLinearColor(0,0,0.8f),
-                    EditDebugLowColor, [this, RebuildFromActiveDepth](FLinearColor C)
-                    {
-                        UDepthDebugVisualizerComponent* Vis =
-                            ValidatePreviewActor() ? PreviewActor->DepthDebug : nullptr;
-                        if (Vis) { Vis->LowColor = C; RebuildFromActiveDepth(); }
-                    });
-                AddColorEdit(TEXT("High Color"), Vis0 ? Vis0->HighColor : FLinearColor(0.8f,0,0),
-                    EditDebugHighColor, [this, RebuildFromActiveDepth](FLinearColor C)
-                    {
-                        UDepthDebugVisualizerComponent* Vis =
-                            ValidatePreviewActor() ? PreviewActor->DepthDebug : nullptr;
-                        if (Vis) { Vis->HighColor = C; RebuildFromActiveDepth(); }
-                    });
+                    return PerfTierSelection.IsValid()
+                        ? FText::FromString(*PerfTierSelection)
+                        : FText::FromString(TEXT("Medium"));
+                })
+                .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))];
+        Row1->AddSlot().Padding(FMargin(4, 2)).AutoWidth()
+            [SNew(SBox).WidthOverride(70)[PerfCombo]];
 
-                TSharedRef<SHorizontalBox> DdRow = SNew(SHorizontalBox);
-                DdRow->AddSlot().Padding(FMargin(0,2)).AutoWidth()
-                    [MakeBtn(TEXT("Rebuild Mesh"), [this, RebuildFromActiveDepth]()
+        Row1->AddSlot().Padding(FMargin(8, 2)).AutoWidth()
+            [MakeLbl(TEXT("Camera source"), 8, FLinearColor(0.6f, 0.6f, 0.7f))];
+        CameraSourceOptions.Reset();
+        for (const std::string& Lbl : FPLayout::CameraSourceLabels())
+            CameraSourceOptions.Add(MakeShared<FString>(UTF8_TO_TCHAR(Lbl.c_str())));
+        UFaceParallaxComponent* Comp = GetParallaxComponent();
+        const int32 CurSrcIdx = Comp ? (int32)Comp->CameraSource : 0;
+        CameraSourceSelection = CameraSourceOptions[FMath::Clamp(CurSrcIdx, 0, 5)];
+        TSharedRef<SComboBox<TSharedPtr<FString>>> CamCombo =
+            SNew(SComboBox<TSharedPtr<FString>>)
+            .OptionsSource(&CameraSourceOptions)
+            .OnGenerateWidget_Lambda([](TSharedPtr<FString> Item)
+            {
+                return SNew(STextBlock)
+                    .Text(FText::FromString(*Item))
+                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9));
+            })
+            .OnSelectionChanged_Lambda([this](TSharedPtr<FString> Item, ESelectInfo::Type)
+            {
+                if (!Item.IsValid()) return;
+                CameraSourceSelection = Item;
+                for (int32 i = 0; i < (int32)CameraSourceOptions.Num(); ++i)
+                {
+                    if (CameraSourceOptions[i].IsValid()
+                        && CameraSourceOptions[i]->Equals(*Item))
                     {
-                        RebuildFromActiveDepth();
-                        SetStatus(TEXT("Depth debug mesh rebuilt"), FLinearColor(0.6f,1.0f,0.6f));
-                    }, FLinearColor(0.6f,0.8f,1.0f))];
-                DdRow->AddSlot().Padding(FMargin(6,2)).AutoWidth()
-                    [MakeBtn(TEXT("Color by Depth"), [this]()
-                    {
-                        if (ValidatePreviewActor() && PreviewActor->DepthDebug)
-                            ColorByDepth(true);
-                    })];
-                DdRow->AddSlot().FillWidth(1.0f);
-                DdBox->AddSlot().AutoHeight()[DdRow];
-                DebugAccordion->AddSection(TEXT("Depth Debug"), DdBox);
+                        if (UFaceParallaxComponent* C = GetParallaxComponent())
+                            C->SetCameraSource((ECameraSource)i);
+                        break;
+                    }
+                }
+                RefreshUI();
+            })
+            [SNew(STextBlock)
+                .Text_Lambda([this]()
+                {
+                    return CameraSourceSelection.IsValid()
+                        ? FText::FromString(*CameraSourceSelection)
+                        : FText::FromString(TEXT("PlayerCamera0"));
+                })
+                .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))];
+        Row1->AddSlot().Padding(FMargin(4, 2)).AutoWidth()
+            [SNew(SBox).WidthOverride(100)[CamCombo]];
+        OB->AddSlot().AutoHeight()[Row1];
+
+        TSharedRef<SWidget> OpsSection = MakeSectionBox(TEXT("Assign Ops"), OB);
+        RailContent[1]->AddSlot().AutoHeight().Padding(FMargin(2, 1, 2, 1))[OpsSection];
+        RegisterRailSection(1, TEXT("Assign Ops"), OpsSection);
+    }
+}
+
+void UFaceParallaxEditorWidget::BuildPanelAnimatedRail()
+{
+            // Viseme frames grid (Phase E) - fits the disclosure body as-is:
+            // no vertical scroll bar (P17 fit-first).
+            {
+                TSharedRef<SVerticalBox> VgBox = SNew(SVerticalBox);
+                VisemeGridBox = SNew(SVerticalBox);
+                RebuildVisemeGrid();
+                VgBox->AddSlot().AutoHeight()[VisemeGridBox.ToSharedRef()];
+                // Phase 4b: progressive disclosure - the grid collapses into a
+                // "N viseme rows" summary line until the header is clicked.
+                VisemeDisclosure = SNew(SFaceDisclosure);
+                VisemeDisclosure->SetTitle(TEXT("Viseme Frames"));
+                VisemeDisclosure->SetBody(VgBox);
+                AnimatedAccordion->AddSection(
+                    TEXT("Viseme Frames (click filled cell = play)"), VisemeDisclosure.ToSharedRef());
             }
 
             // Hull review (orbit 3D preview controls + 10 state thumbnails)
@@ -3330,45 +3807,11 @@ void UFaceParallaxEditorWidget::BuildPanelDebugRail()
                 RefreshHullThumbnails();
                 HrBox->AddSlot().AutoHeight().Padding(FMargin(0,4,0,0))
                     [HullThumbBox.ToSharedRef()];
-                DebugAccordion->AddSection(TEXT("Hull Review (click thumb = jump)"), HrBox);
+                AnimatedAccordion->AddSection(TEXT("Hull Review (click thumb = jump)"), HrBox);
             }
 
-            // Viseme frames grid (Phase E) - fits the disclosure body as-is:
-            // no vertical scroll bar (P17 fit-first).
-            {
-                TSharedRef<SVerticalBox> VgBox = SNew(SVerticalBox);
-                VisemeGridBox = SNew(SVerticalBox);
-                RebuildVisemeGrid();
-                VgBox->AddSlot().AutoHeight()[VisemeGridBox.ToSharedRef()];
-                // Phase 4b: progressive disclosure - the grid collapses into a
-                // "N viseme rows" summary line until the header is clicked.
-                VisemeDisclosure = SNew(SFaceDisclosure);
-                VisemeDisclosure->SetTitle(TEXT("Viseme Frames"));
-                VisemeDisclosure->SetBody(VgBox);
-                DebugAccordion->AddSection(
-                    TEXT("Viseme Frames (click filled cell = play)"), VisemeDisclosure.ToSharedRef());
-            }
-
-            // Problems panel (Phase F) - the issue rows flip through carousel
-            // pages inside the Issues section (P18); the panel itself is a
-            // fit-packed stack, so no vertical scroll bar (P17).
-            {
-                TSharedRef<SVerticalBox> PrBox = SNew(SVerticalBox);
-                ProblemsPanelBox = SNew(SVerticalBox);
-                RebuildProblemsPanel();
-                PrBox->AddSlot().AutoHeight()[ProblemsPanelBox.ToSharedRef()];
-                DebugAccordion->AddSection(TEXT("Problems (click row = jump)"), PrBox);
-                RefreshProblemsSummary();
-            }
-
-            DebugAccordion->SetExpanded(1, true); // Import section open by default
-            T1->AddSlot().AutoHeight()[DebugAccordion.ToSharedRef()];
-            RailContent[3]->AddSlot()[T1];
-            // Phase 4b: register all accordion sections for chips + search jump
-            // (titles/order mirrored by FPLayout::RailSectionTitles()).
-            RegisterAccordionSections(3, DebugAccordion);
-        }
-
+        RailContent[2]->AddSlot().AutoHeight()[AnimatedAccordion.ToSharedRef()];
+        RegisterAccordionSections(2, AnimatedAccordion);
 }
 
 void UFaceParallaxEditorWidget::BuildPanelCameraRail()
@@ -3390,14 +3833,14 @@ void UFaceParallaxEditorWidget::BuildPanelCameraRail()
                     [MakeBtn(TEXT("Snap Camera"), [this](){ SnapCameraToActiveView(); })];
                 CfBox->AddSlot().AutoHeight()[CfRow];
                 TSharedRef<SWidget> CfSection = MakeSectionBox(TEXT("Camera Follow"), CfBox);
-                RailContent[2]->AddSlot().AutoHeight()
+                RailContent[4]->AddSlot().AutoHeight()
                     [CfSection];
-                RegisterRailSection(2, TEXT("Camera Follow"), CfSection);
+                RegisterRailSection(4, TEXT("Camera Follow"), CfSection);
             }
 
         // ============ CAMERA RAIL ============
         {
-            TSharedRef<SVerticalBox> T2 = RailContent[2].ToSharedRef();
+            TSharedRef<SVerticalBox> T2 = RailContent[4].ToSharedRef();
 
             // Camera section
             {
@@ -3475,10 +3918,29 @@ void UFaceParallaxEditorWidget::BuildPanelCameraRail()
                 AddZoneEdit(0); AddZoneEdit(1); AddZoneEdit(2); AddZoneEdit(3);
                 Cam->AddSlot().AutoHeight()[ZoneRow];
 
+                // Preview FOV slider
+                TSharedRef<SHorizontalBox> FOVRow = SNew(SHorizontalBox);
+                FOVRow->AddSlot().Padding(FMargin(0,2)).AutoWidth()
+                    [MakeLbl(TEXT("FOV"), 9, FLinearColor(0.6f,0.8f,1.0f))];
+                TSharedRef<STextBlock> FOVLabel = MakeLbl(
+                    FString::Printf(TEXT("%.0f"), FMath::Clamp(GetPreviewFOV(), 10.0f, 90.0f)),
+                    9, FLinearColor(0.8f,0.8f,0.8f));
+                FOVRow->AddSlot().Padding(FMargin(4,2)).FillWidth(1.0f)
+                    [SNew(SSlider).Value((FMath::Clamp(GetPreviewFOV(), 10.0f, 90.0f) - 10.0f) / 80.0f)
+                        .OnValueChanged_Lambda([this, FOVLabel](float V)
+                        {
+                            float FOV = FMath::Clamp(V * 80.0f + 10.0f, 10.0f, 90.0f);
+                            FOVLabel->SetText(FText::FromString(FString::Printf(TEXT("%.0f"), FOV)));
+                            SetPreviewFOV(FOV);
+                        })];
+                FOVRow->AddSlot().Padding(FMargin(2,2)).AutoWidth()
+                    [FOVLabel];
+                Cam->AddSlot().AutoHeight()[FOVRow];
+
                 TSharedRef<SWidget> CamSection = MakeSectionBox(TEXT("Camera"), Cam);
                 T2->AddSlot().AutoHeight()
                     [CamSection];
-                RegisterRailSection(2, TEXT("Camera"), CamSection);
+                RegisterRailSection(4, TEXT("Camera"), CamSection);
             }
 
             // Blend preview section
@@ -3519,128 +3981,53 @@ void UFaceParallaxEditorWidget::BuildPanelCameraRail()
                 TSharedRef<SWidget> BlendSection = MakeSectionBox(TEXT("Blend Preview"), BlendBox);
                 T2->AddSlot().AutoHeight()
                     [BlendSection];
-                RegisterRailSection(2, TEXT("Blend Preview"), BlendSection);
+                RegisterRailSection(4, TEXT("Blend Preview"), BlendSection);
             }
         }
 
 }
 
-void UFaceParallaxEditorWidget::BuildPanelAdvancedRail()
+
+void UFaceParallaxEditorWidget::BuildPanelNestedRail()
 {
-        // ============ ADVANCED RAIL ============
+        // ============ NESTED ELEMENTS & PINS RAIL (rail 3) ============
         {
-            TSharedRef<SVerticalBox> T3 = RailContent[4].ToSharedRef();
-
-            // Cross-layer overlay - the per-layer lines flip through carousel
-            // pages (P18) inside a fixed page viewport with a bottom reserve
-            // (P19); no vertical scroll bar (P17).
-            CrossLayerBox = SNew(SVerticalBox);
-            TextCrossLayer = SNew(STextBlock)
-                .Text(FText::FromString(TEXT("Select a layer to show overlay")))
-                .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
-                .ColorAndOpacity(FLinearColor(0.5f,0.5f,0.5f));
-            CrossLayerBox->AddSlot().AutoHeight().Padding(FMargin(2))
-                [TextCrossLayer.ToSharedRef()];
-            TSharedRef<SVerticalBox> ALBox = SNew(SVerticalBox);
-            ALBox->AddSlot().AutoHeight()
-                [SNew(SBox)
-                    .HeightOverride(FPLayout::CarouselViewportH)
-                    .Padding(FMargin(0, 0, 0, FPLayout::ScrollReserveBottom))
-                    [CrossLayerBox.ToSharedRef()]];
-            TSharedRef<SFaceCarouselNav> ALNav = SNew(SFaceCarouselNav)
-                .OnPrev_Lambda([this]()
-                {
-                    CrossLayerPageIndex = FMath::Max(0, CrossLayerPageIndex - 1);
-                    RebuildCrossLayerPanel();
-                    return FReply::Handled();
-                })
-                .OnNext_Lambda([this]()
-                {
-                    CrossLayerPageIndex = CrossLayerPageIndex + 1;
-                    RebuildCrossLayerPanel();
-                    return FReply::Handled();
-                });
-            CrossLayerPageLabel = ALNav->Label;
-            ALBox->AddSlot().AutoHeight().Padding(FMargin(4, 0, 4, 2))[ALNav];
-            AdvancedAccordion->AddSection(TEXT("All Layers (current state)"), ALBox);
-
-            // Param Reference section
-            {
-                TSharedRef<SVerticalBox> RefBox = SNew(SVerticalBox);
-                TSharedRef<SHorizontalBox> RefRow = SNew(SHorizontalBox);
-                EditParamRefName = SNew(SEditableTextBox)
-                    .Text(FText::FromString(TEXT("AlbedoTexture")))
-                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
-                    .HintText(FText::FromString(TEXT("Param name to search...")));
-                RefRow->AddSlot().Padding(FMargin(0,2)).FillWidth(1.0f)
-                    [SNew(SBox).WidthOverride(100)[EditParamRefName.ToSharedRef()]];
-                RefRow->AddSlot().Padding(FMargin(4,2)).AutoWidth()
-                    [MakeBtn(TEXT("Find"), [this]()
-                    {
-                        if (!EditParamRefName.IsValid()) return;
-                        FName PName(*EditParamRefName->GetText().ToString());
-                        TArray<FString> Results = FindParamUsages(PName);
-                        if (TextParamRefResults.IsValid())
-                        {
-                            if (Results.Num() == 0)
-                                TextParamRefResults->SetText(FText::FromString(TEXT("No references found.")));
-                            else
-                            {
-                                FString Joined;
-                                for (int32 i = 0; i < Results.Num(); ++i)
-                                {
-                                    Joined += Results[i];
-                                    if (i < Results.Num() - 1) Joined += TEXT("\n");
-                                }
-                                TextParamRefResults->SetText(FText::FromString(Joined));
-                            }
-                        }
-                    }, FLinearColor(0.6f,0.8f,1.0f))];
-                RefBox->AddSlot().AutoHeight()[RefRow];
-                TextParamRefResults = SNew(STextBlock)
-                    .Text(FText::FromString(TEXT("Enter a param name and click Find.")))
-                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
-                    .ColorAndOpacity(FLinearColor(0.5f,0.8f,0.5f))
-                    .AutoWrapText(true);
-                RefBox->AddSlot().AutoHeight().Padding(FMargin(2,2))
-                    [TextParamRefResults.ToSharedRef()];
-                AdvancedAccordion->AddSection(TEXT("Param Reference"), RefBox);
-            }
-
-            // Param bindings table (Phase E)
-            {
-                TSharedRef<SVerticalBox> PbBox = SNew(SVerticalBox);
-                TSharedRef<SHorizontalBox> AddRow = SNew(SHorizontalBox);
-                EditParamAddName = SNew(SEditableTextBox)
-                    .Text(FText::FromString(TEXT("ParamName")))
-                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
-                    .HintText(FText::FromString(TEXT("Param name...")));
-                AddRow->AddSlot().Padding(FMargin(0,2)).FillWidth(1.0f)
-                    [SNew(SBox).WidthOverride(90)[EditParamAddName.ToSharedRef()]];
-                AddRow->AddSlot().Padding(FMargin(4,2)).AutoWidth()
-                    [MakeBtn(TEXT("Add"), [this]()
-                    {
-                        UFaceParallaxComponent* Comp = GetParallaxComponent();
-                        if (!Comp || !SelectedLayerName.IsValid() || !EditParamAddName.IsValid()) return;
-                        TArray<FFaceParamBinding> All = GetParamBindings(ActiveViewState, SelectedLayerName);
-                        FFaceParamBinding NewB;
-                        NewB.ParamName = FName(*EditParamAddName->GetText().ToString());
-                        if (NewB.ParamName.IsNone()) NewB.ParamName = FName(TEXT("Param"));
-                        All.Add(NewB);
-                        SetParamBindings(ActiveViewState, SelectedLayerName, All);
-                        RefreshUI();
-                    }, FLinearColor(0.6f,1.0f,0.6f), FLinearColor(0.1f,0.1f,0.1f))];
-                PbBox->AddSlot().AutoHeight()[AddRow];
-                ParamTableBox = SNew(SVerticalBox);
-                RebuildParamTable();
-                PbBox->AddSlot().AutoHeight().Padding(FMargin(0,2,0,0))
-                    [ParamTableBox.ToSharedRef()];
-                AdvancedAccordion->AddSection(TEXT("Param Bindings (state + layer)"), PbBox);
-            }
+            TSharedRef<SVerticalBox> T3 = RailContent[3].ToSharedRef();
 
             // Nested Art / Pin section
             {
                 TSharedRef<SVerticalBox> Pin = SNew(SVerticalBox);
+
+                // Phase E: pane switcher — [Elements] shows the per-element
+                // pin controls + outliner, [Pins] shows the pin manager (one
+                // row per pinned item across the layer).
+                {
+                    TSharedRef<SHorizontalBox> ModeRow = SNew(SHorizontalBox);
+                    for (int32 M = 0; M < 2; ++M)
+                    {
+                        const int32 MM = M;
+                        ModeRow->AddSlot().Padding(FMargin(1)).AutoWidth()
+                            [SNew(SBox).WidthOverride(64).HeightOverride(18)
+                                [SNew(SButton)
+                                    .ButtonColorAndOpacity_Lambda([this, MM]()
+                                    {
+                                        return NestedPaneMode == MM ? AccentBlue() : FLinearColor(0.13f, 0.13f, 0.15f);
+                                    })
+                                    .OnClicked_Lambda([this, MM]()
+                                    {
+                                        SetNestedPaneMode(MM);
+                                        return FReply::Handled();
+                                    })
+                                    .Content()
+                                    [SNew(STextBlock)
+                                        .Text(FText::FromString(MM == 0 ? TEXT("Elements") : TEXT("Pins")))
+                                        .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+                                        .ColorAndOpacity(FLinearColor(0.85f, 0.85f, 0.85f))]]];
+                    }
+                    Pin->AddSlot().AutoHeight()[ModeRow];
+                }
+
+                TSharedRef<SVerticalBox> EditPane = SNew(SVerticalBox);
 
                 // Element selector stepper
                 {
@@ -3663,7 +4050,7 @@ void UFaceParallaxEditorWidget::BuildPanelAdvancedRail()
                             if (SelectedNestedElementIndex + 1 < N) ++SelectedNestedElementIndex;
                             RefreshUI();
                         })];
-                    Pin->AddSlot().AutoHeight()[StepRow];
+                    EditPane->AddSlot().AutoHeight()[StepRow];
                 }
 
                 // bPinned toggle (reads actual state via RefreshPinControls)
@@ -3720,7 +4107,7 @@ void UFaceParallaxEditorWidget::BuildPanelAdvancedRail()
                     R->AddSlot().Padding(FMargin(0,2)).AutoWidth()[MakeLbl(Label, 9)];
                     R->AddSlot().Padding(FMargin(4,2)).FillWidth(1.0f)[Sl];
                     R->AddSlot().Padding(FMargin(4,2)).AutoWidth()[ValLbl];
-                    Pin->AddSlot().AutoHeight()[R];
+                    EditPane->AddSlot().AutoHeight()[R];
                 };
 
                 FFaceNestedArt InitEl;
@@ -3892,22 +4279,113 @@ void UFaceParallaxEditorWidget::BuildPanelAdvancedRail()
                         }
                     });
 
-                Pin->AddSlot().AutoHeight().Padding(FMargin(0,2))
+                // Jiggle controls (nested elements only — layer pins have no
+                // jiggle). Writes go through the jiggle API so the component's
+                // JiggleStates re-apply with the new spring params.
+                auto SetJiggleField = [this](TFunction<void(FFaceJiggleSettings&)>&& Mutate)
+                {
+                    FFaceNestedArt El;
+                    int32 Count = 0;
+                    if (GetSelectedPinElement(El, Count))
+                    {
+                        FFaceJiggleSettings JS = GetNestedJiggleSettings(
+                            ActiveViewState, SelectedLayerName, SelectedNestedElementIndex);
+                        Mutate(JS);
+                        SetNestedJiggleSettings(
+                            ActiveViewState, SelectedLayerName, SelectedNestedElementIndex, JS);
+                        RefreshUI();
+                    }
+                };
+                {
+                    TSharedRef<SHorizontalBox> JigRow = SNew(SHorizontalBox);
+                    CheckJiggleEnabled = SNew(SCheckBox)
+                        .IsChecked(InitEl.bJiggleEnabled ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
+                        .OnCheckStateChanged_Lambda([this](ECheckBoxState S)
+                        {
+                            FFaceNestedArt El;
+                            int32 Count = 0;
+                            if (GetSelectedPinElement(El, Count))
+                            {
+                                SetNestedJiggleEnabled(ActiveViewState, SelectedLayerName,
+                                    SelectedNestedElementIndex, S == ECheckBoxState::Checked);
+                                RefreshUI();
+                            }
+                        });
+                    JigRow->AddSlot().Padding(FMargin(0,2)).AutoWidth()[CheckJiggleEnabled.ToSharedRef()];
+                    JigRow->AddSlot().Padding(FMargin(4,2)).AutoWidth()
+                        [MakeLbl(TEXT("Jiggle"), 9, FLinearColor(0.6f,0.8f,1.0f))];
+                    EditPane->AddSlot().AutoHeight()[JigRow];
+                }
+                AddPinSliderRow(TEXT("Jiggle Stiff"), 0.0f, 20.0f, InitEl.JiggleSettings.Stiffness, 2,
+                    SliderJiggleStiffness, TextJiggleStiffness,
+                    [SetJiggleField](float V) mutable
+                    {
+                        SetJiggleField([V](FFaceJiggleSettings& S) { S.Stiffness = V; });
+                    });
+                AddPinSliderRow(TEXT("Jiggle Damp"), 0.0f, 5.0f, InitEl.JiggleSettings.Damping, 2,
+                    SliderJiggleDamping, TextJiggleDamping,
+                    [SetJiggleField](float V) mutable
+                    {
+                        SetJiggleField([V](FFaceJiggleSettings& S) { S.Damping = V; });
+                    });
+                AddPinSliderRow(TEXT("Jiggle Imp"), 0.0f, 10.0f, InitEl.JiggleSettings.ImpulseScale, 2,
+                    SliderJiggleImpulse, TextJiggleImpulse,
+                    [SetJiggleField](float V) mutable
+                    {
+                        SetJiggleField([V](FFaceJiggleSettings& S) { S.ImpulseScale = V; });
+                    });
+                AddPinSliderRow(TEXT("Jiggle Mid"), 0.0f, 1.0f, InitEl.JiggleSettings.Midpoint, 2,
+                    SliderJiggleMidpoint, TextJiggleMidpoint,
+                    [SetJiggleField](float V) mutable
+                    {
+                        SetJiggleField([V](FFaceJiggleSettings& S) { S.Midpoint = V; });
+                    });
+                AddPinSliderRow(TEXT("End Stiff"), 0.0f, 20.0f, InitEl.JiggleSettings.EndStiffness, 2,
+                    SliderJiggleEndStiffness, TextJiggleEndStiffness,
+                    [SetJiggleField](float V) mutable
+                    {
+                        SetJiggleField([V](FFaceJiggleSettings& S) { S.EndStiffness = V; });
+                    });
+                AddPinSliderRow(TEXT("End Damp"), 0.0f, 5.0f, InitEl.JiggleSettings.EndDamping, 2,
+                    SliderJiggleEndDamping, TextJiggleEndDamping,
+                    [SetJiggleField](float V) mutable
+                    {
+                        SetJiggleField([V](FFaceJiggleSettings& S) { S.EndDamping = V; });
+                    });
+                AddPinSliderRow(TEXT("End Imp"), 0.0f, 10.0f, InitEl.JiggleSettings.EndImpulseScale, 2,
+                    SliderJiggleEndImpulse, TextJiggleEndImpulse,
+                    [SetJiggleField](float V) mutable
+                    {
+                        SetJiggleField([V](FFaceJiggleSettings& S) { S.EndImpulseScale = V; });
+                    });
+
+                EditPane->AddSlot().AutoHeight().Padding(FMargin(0,2))
                     [MakeBtn(TEXT("Detect Profile"), [this](){ DetectFaceProfile(); RefreshUI(); })];
-                Pin->AddSlot().AutoHeight().Padding(FMargin(0,4,0,0))
+                EditPane->AddSlot().AutoHeight().Padding(FMargin(0,4,0,0))
                     [MakeLbl(TEXT("Nested Elements"), 9, FLinearColor(0.6f,0.8f,1.0f))];
                 NestedOutlinerBox = SNew(SVerticalBox);
                 RebuildNestedOutliner();
-                Pin->AddSlot().AutoHeight().Padding(FMargin(0,2,0,0))
+                EditPane->AddSlot().AutoHeight().Padding(FMargin(0,2,0,0))
                     [NestedOutlinerBox.ToSharedRef()];
-                AdvancedAccordion->AddSection(TEXT("Nested Art / Pins"), Pin);
+
+                // Phase E: pin-manager pane (second pane of the switcher).
+                NestedPaneSwitcher = SNew(SWidgetSwitcher);
+                NestedPaneSwitcher->AddSlot()[EditPane];
+                PinManagerBox = SNew(SVerticalBox);
+                RebuildPinManager();
+                NestedPaneSwitcher->AddSlot()[PinManagerBox.ToSharedRef()];
+                NestedPaneSwitcher->SetActiveWidgetIndex(NestedPaneMode);
+                Pin->AddSlot().AutoHeight().Padding(FMargin(0,2,0,0))
+                    [NestedPaneSwitcher.ToSharedRef()];
+                NestedAccordion->AddSection(TEXT("Nested Art / Pins"), Pin);
 
                 RefreshPinControls();
             }
-            T3->AddSlot().AutoHeight()[AdvancedAccordion.ToSharedRef()];
+            T3->AddSlot().AutoHeight()[NestedAccordion.ToSharedRef()];
+            RegisterAccordionSections(3, NestedAccordion);
         }
-
 }
+
 
 void UFaceParallaxEditorWidget::BuildPanelTimeline(const TSharedRef<SVerticalBox>& Root)
 {
@@ -3959,21 +4437,45 @@ void UFaceParallaxEditorWidget::BuildPanelBottomBar(const TSharedRef<SVerticalBo
             [StatusSection];
         RegisterRailSection(0, TEXT("Status Detail"), StatusSection);
 
-        // Tag validator
-        TextTagValidator = SNew(STextBlock)
-            .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
-            .ColorAndOpacity(FLinearColor(0.8f,0.8f,0.8f));
-        BotArea->AddSlot().AutoHeight().Padding(FMargin(2,1))
-            [SNew(SBox).HeightOverride(20)[TextTagValidator.ToSharedRef()]];
-        RebuildTagValidator();
+        // All Layers (current state): per-layer cross-layer overlay rows flip
+        // through carousel pages (P18) inside a fixed page viewport with a
+        // bottom reserve (P19); no vertical scroll bar (P17).
+        CrossLayerBox = SNew(SVerticalBox);
+        TextCrossLayer = SNew(STextBlock)
+            .Text(FText::FromString(TEXT("Select a layer to show overlay")))
+            .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+            .ColorAndOpacity(FLinearColor(0.5f,0.5f,0.5f));
+        CrossLayerBox->AddSlot().AutoHeight().Padding(FMargin(2))
+            [TextCrossLayer.ToSharedRef()];
+        TSharedRef<SVerticalBox> ALBox = SNew(SVerticalBox);
+        ALBox->AddSlot().AutoHeight()
+            [SNew(SBox)
+                .HeightOverride(FPLayout::CarouselViewportH)
+                .Padding(FMargin(0, 0, 0, FPLayout::ScrollReserveBottom))
+                [CrossLayerBox.ToSharedRef()]];
+        TSharedRef<SFaceCarouselNav> ALNav = SNew(SFaceCarouselNav)
+            .OnPrev_Lambda([this]()
+            {
+                CrossLayerPageIndex = FMath::Max(0, CrossLayerPageIndex - 1);
+                RebuildCrossLayerPanel();
+                return FReply::Handled();
+            })
+            .OnNext_Lambda([this]()
+            {
+                CrossLayerPageIndex = CrossLayerPageIndex + 1;
+                RebuildCrossLayerPanel();
+                return FReply::Handled();
+            });
+        CrossLayerPageLabel = ALNav->Label;
+        ALBox->AddSlot().AutoHeight().Padding(FMargin(4, 0, 4, 2))[ALNav];
+TSharedRef<SWidget> AlSection = MakeSectionBox(TEXT("All Layers (current state)"), ALBox);
+RailContent[0]->AddSlot().AutoHeight().Padding(FMargin(2,1))
+[AlSection];
+RegisterRailSection(0, TEXT("All Layers (current state)"), AlSection);
 
-        // Material cross-referencer
-        TextMaterialCrossRef = SNew(STextBlock)
-            .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
-            .ColorAndOpacity(FLinearColor(0.8f,0.8f,0.8f));
-        BotArea->AddSlot().AutoHeight().Padding(FMargin(2,1))
-            [SNew(SBox).HeightOverride(20)[TextMaterialCrossRef.ToSharedRef()]];
-        RebuildMaterialCrossRef();
+
+        // Tag validator + material cross-referencer live in the Advanced rail
+        // (BuildPanelAdvancedRail) - the bottom bar holds only workflow actions.
 
         TSharedRef<SHorizontalBox> BotBar = SNew(SHorizontalBox);
         BotBar->AddSlot().Padding(FMargin(2)).AutoWidth()
@@ -4035,227 +4537,354 @@ void UFaceParallaxEditorWidget::BuildPanelBottomBar(const TSharedRef<SVerticalBo
                 [BotArea]];
     }
 
-    // Phase 4b: register the Advanced rail accordion sections (chips + search).
-    RegisterAccordionSections(4, AdvancedAccordion);
-
 }
 
-void UFaceParallaxEditorWidget::BuildPanelAssignRail()
+void UFaceParallaxEditorWidget::BuildPanelAdvancedRail()
 {
-    // ============ ASSIGN RAIL (rail 5) ============
-    TSharedRef<SVerticalBox> T5 = RailContent[5].ToSharedRef();
-
-    // Bulk Assign grid: 10 state columns x 3 layer rows, plus row labels and
-    // the coverage summary. Cells mirror FPLayout::AssignCellState (2 full,
-    // 1 partial, 0 empty); the coverage label mirrors AssignCoverageText.
-    {
-        struct { EFaceAngleState S; const TCHAR* T; } States[] = {
-            {EFaceAngleState::Front, TEXT("Front")},
-            {EFaceAngleState::ThreeQuarterRight, TEXT("3/4R")},
-            {EFaceAngleState::RightProfile, TEXT("ProfR")},
-            {EFaceAngleState::BackRight, TEXT("BackR")},
-            {EFaceAngleState::Back, TEXT("Back")},
-            {EFaceAngleState::BackLeft, TEXT("BackL")},
-            {EFaceAngleState::LeftProfile, TEXT("ProfL")},
-            {EFaceAngleState::ThreeQuarterLeft, TEXT("3/4L")},
-            {EFaceAngleState::Top, TEXT("Top")},
-            {EFaceAngleState::Bottom, TEXT("Bot")},
-        };
-        const int32 NumRows = 3;
-
-        TSharedRef<SVerticalBox> GB = SNew(SVerticalBox);
-        TSharedRef<SHorizontalBox> Header = SNew(SHorizontalBox);
-        for (auto& St : States)
+        // ============ ADVANCED RAIL (rail 5) ============
         {
-            Header->AddSlot().AutoWidth().Padding(FMargin(0, 2))
-                [SNew(SBox).WidthOverride(16)
-                    [SNew(STextBlock)
-                        .Text(FText::FromString(St.T))
-                        .Font(FCoreStyle::GetDefaultFontStyle("Regular", 7))
-                        .Justification(ETextJustify::Center)
-                        .ColorAndOpacity(FLinearColor(0.55f, 0.55f, 0.6f))]];
-        }
-        GB->AddSlot().AutoHeight()[Header];
+            TSharedRef<SVerticalBox> T5 = RailContent[5].ToSharedRef();
 
-        AssignCells.Reset();
-        for (int32 Ri = 0; Ri < NumRows; ++Ri)
-        {
-            const FName Tag = LayerNames.IsValidIndex(Ri) ? LayerNames[Ri] : FName();
-            TSharedRef<SHorizontalBox> Row = SNew(SHorizontalBox);
-            for (int32 Ci = 0; Ci < 10; ++Ci)
+            // Config checks
             {
-                const EFaceAngleState S = (EFaceAngleState)Ci;
-                TSharedRef<SImage> Cell = SNew(SImage)
-                    .Image(FCoreStyle::Get().GetBrush("WhiteBrush"));
-                Cell->SetColorAndOpacity(FLinearColor(0.12f, 0.12f, 0.14f));
-                AssignCells.Add(Cell);
-                TSharedRef<SButton> CellBtn = SNew(SButton)
-                    .ButtonColorAndOpacity(FLinearColor(0.0f, 0.0f, 0.0f, 0.0f))
-                    .OnClicked_Lambda([this, S, Tag]()
-                    {
-                        if (!Tag.IsValid()) return FReply::Handled();
-                        SetActiveViewState(S);
-                        SelectedLayerName = Tag;
-                        RefreshUI();
-                        if (TextStatus.IsValid())
-                            TextStatus->SetText(FText::FromString(FString::Printf(
-                                TEXT("Assign grid: %s / %s"),
-                                *StaticEnum<EFaceAngleState>()->GetNameStringByValue((int64)S),
-                                *Tag.ToString())));
-                        return FReply::Handled();
-                    })[Cell];
-                Row->AddSlot().AutoWidth().Padding(FMargin(0, 1))
-                    [SNew(SBox).WidthOverride(16).HeightOverride(16)[CellBtn]];
+                CfgBox = SNew(SVerticalBox);
+
+                auto AddConfigCheck = [&](const FString& Label, bool bDef,
+                    TSharedPtr<SCheckBox>& CheckOut,
+                    TFunction<void(bool)>&& Fn)
+                {
+                    TSharedRef<SCheckBox> Ch = SNew(SCheckBox)
+                        .IsChecked(bDef ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
+                        .OnCheckStateChanged_Lambda([Fn = MoveTemp(Fn)](ECheckBoxState S)
+                        { Fn(S == ECheckBoxState::Checked); });
+                    CheckOut = Ch;
+                    TSharedRef<SHorizontalBox> R = SNew(SHorizontalBox);
+                    R->AddSlot().Padding(FMargin(0,2)).AutoWidth()[Ch];
+                    R->AddSlot().Padding(FMargin(4,2)).AutoWidth()
+                        [MakeLbl(Label, 9)];
+                    CfgBox->AddSlot().AutoHeight()[R];
+                };
+
+                UFaceParallaxComponent* Comp2 = GetParallaxComponent();
+                bool bBlink = Comp2 ? Comp2->GetBlinkingEnabled() : false;
+                bool bSw = Comp2 ? Comp2->GetSwooshEnabled() : false;
+                bool bNA = Comp2 ? Comp2->GetNestedArtEnabled() : false;
+                bool bPar = Comp2 ? Comp2->GetParamsEnabled() : false;
+                bool bShowTex = bLocalShowTextures, bDepthMesh = bLocalShowDepthMesh;
+                bool bWire = bLocalShowWireframe, bColor = bLocalColorByDepth;
+
+                AddConfigCheck(TEXT("Blinking"), bBlink, CheckBlinking,
+                    [this](bool b){ SetBlinkingEnabled(b); });
+                AddConfigCheck(TEXT("Swoosh"), bSw, CheckSwoosh,
+                    [this](bool b){ SetSwooshEnabled(b); });
+                AddConfigCheck(TEXT("Nested Art"), bNA, CheckNestedArt,
+                    [this](bool b){ SetNestedArtEnabled(b); });
+                AddConfigCheck(TEXT("Params"), bPar, CheckParams,
+                    [this](bool b){ SetParamsEnabled(b); });
+                AddConfigCheck(TEXT("Show Textures"), bShowTex, CheckShowTextures,
+                    [this](bool b){ ShowTextures(b); });
+                AddConfigCheck(TEXT("Depth Mesh"), bDepthMesh, CheckDepthMesh,
+                    [this](bool b){ ShowDepthMesh(b); });
+                AddConfigCheck(TEXT("Wireframe"), bWire, CheckWireframe,
+                    [this](bool b){ ShowWireframe(b); });
+                AddConfigCheck(TEXT("Color by Depth"), bColor, CheckColorByDepth,
+                    [this](bool b){ ColorByDepth(b); });
+
+                // Phase 4b: progressive disclosure - the 8 config checks collapse
+                // into a summary line ("K of 8 on") until the header is clicked.
+                ConfigDisclosure = SNew(SFaceDisclosure);
+                ConfigDisclosure->SetTitle(TEXT("Config"));
+                ConfigDisclosure->SetBody(CfgBox.ToSharedRef());
+                AdvancedAccordion->AddSection(TEXT("Config"), ConfigDisclosure.ToSharedRef());
+                UpdateDisclosureSummaries();
             }
-            GB->AddSlot().AutoHeight()[Row];
-        }
 
-        TSharedRef<SHorizontalBox> RowLbls = SNew(SHorizontalBox);
-        for (int32 Ri = 0; Ri < NumRows; ++Ri)
-        {
-            const FName Tag = LayerNames.IsValidIndex(Ri) ? LayerNames[Ri] : FName();
-            const FString Label = Tag.IsValid() ? Tag.ToString() : TEXT("(no layer)");
-            RowLbls->AddSlot().AutoWidth().Padding(FMargin(0, 2))
-                [SNew(SBox).WidthOverride(60)
-                    [MakeLbl(*Label, 7, FLinearColor(0.6f, 0.6f, 0.7f))]];
-        }
-        TextAssignCoverage = MakeLbl(TEXT("Filled 0/30"), 8, FLinearColor(0.7f, 0.9f, 0.7f));
-        RowLbls->AddSlot().Padding(FMargin(4, 2)).AutoWidth()[TextAssignCoverage.ToSharedRef()];
-        GB->AddSlot().AutoHeight()[RowLbls];
-
-        TSharedRef<SWidget> GridSection = MakeSectionBox(TEXT("Bulk Assign"), GB);
-        T5->AddSlot().AutoHeight().Padding(FMargin(2, 1, 2, 1))[GridSection];
-        RegisterRailSection(5, TEXT("Bulk Assign"), GridSection);
-        RefreshAssignGrid();
-    }
-
-    // Assign Ops: fill-missing / clear-row / slot-to-all bulk actions, plus
-    // the performance tier and camera source combos (P3).
-    {
-        TSharedRef<SVerticalBox> OB = SNew(SVerticalBox);
-        TSharedRef<SHorizontalBox> Row0 = SNew(SHorizontalBox);
-        Row0->AddSlot().Padding(FMargin(0, 2)).AutoWidth()
-            [MakeBtn(TEXT("Fill Missing"), [this]()
+            // Param Reference (dev tool; Advanced rail - params live with the
+            // diagnostics per the review grouping, removed from the pin flow)
             {
-                FillMissingViewsFromActiveSlot();
-                RefreshUI();
-            }, FLinearColor(0.6f, 1.0f, 0.6f))];
-        Row0->AddSlot().Padding(FMargin(4, 2)).AutoWidth()
-            [MakeBtn(TEXT("Clear Row"), [this]()
-            {
-                if (!SelectedLayerName.IsValid()) return;
-                FWidgetUndoScope UndoScope(this, TEXT("Clear Row"));
-                for (int32 i = 0; i <= (int32)EFaceAngleState::Bottom; ++i)
-                    ClearAllOverridesForSlot((EFaceAngleState)i, SelectedLayerName);
-                RefreshUI();
-            }, FLinearColor(1.0f, 0.6f, 0.6f))];
-        Row0->AddSlot().Padding(FMargin(4, 2)).AutoWidth()
-            [MakeBtn(TEXT("Slot -> All"), [this]()
-            {
-                if (!SelectedLayerName.IsValid() || !ActivePreset) return;
-                FWidgetUndoScope UndoScope(this, TEXT("Slot -> All States"));
-                const FFaceArtSlot Src = ActivePreset->GetSlot(ActiveViewState, SelectedLayerName);
-                for (int32 i = 0; i <= (int32)EFaceAngleState::Bottom; ++i)
-                {
-                    if (i == (int32)ActiveViewState) continue;
-                    ActivePreset->SetSlot((EFaceAngleState)i, SelectedLayerName, Src);
-                }
-                RefreshUI();
-            }, FLinearColor(0.8f, 0.9f, 1.0f))];
-        Row0->AddSlot().FillWidth(1.0f);
-        OB->AddSlot().AutoHeight()[Row0];
-
-        TSharedRef<SHorizontalBox> Row1 = SNew(SHorizontalBox);
-        Row1->AddSlot().Padding(FMargin(0, 2)).AutoWidth()
-            [MakeLbl(TEXT("Perf tier"), 8, FLinearColor(0.6f, 0.6f, 0.7f))];
-        PerfTierOptions.Reset();
-        PerfTierOptions.Add(MakeShared<FString>(TEXT("Low")));
-        PerfTierOptions.Add(MakeShared<FString>(TEXT("Medium")));
-        PerfTierOptions.Add(MakeShared<FString>(TEXT("High")));
-        PerfTierSelection = PerfTierOptions[FMath::Clamp(PerformanceTier, 0, 2)];
-        TSharedRef<SComboBox<TSharedPtr<FString>>> PerfCombo =
-            SNew(SComboBox<TSharedPtr<FString>>)
-            .OptionsSource(&PerfTierOptions)
-            .OnGenerateWidget_Lambda([](TSharedPtr<FString> Item)
-            {
-                return SNew(STextBlock)
-                    .Text(FText::FromString(*Item))
-                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9));
-            })
-            .OnSelectionChanged_Lambda([this](TSharedPtr<FString> Item, ESelectInfo::Type)
-            {
-                if (!Item.IsValid()) return;
-                PerfTierSelection = Item;
-                const int32 Tier = FMath::Clamp(Item->Equals(TEXT("Low")) ? 0
-                    : (Item->Equals(TEXT("High")) ? 2 : 1), 0, 2);
-                PerformanceTier = Tier;
-                if (UFaceParallaxComponent* Comp = GetParallaxComponent())
-                    Comp->MaxAsyncTextureCacheSize = FPLayout::PerformanceTierCacheSize(Tier);
-                if (TextStatus.IsValid())
-                    TextStatus->SetText(FText::FromString(FString::Printf(
-                        TEXT("Performance tier: %s (cache %d)"),
-                        *(*Item), FPLayout::PerformanceTierCacheSize(Tier))));
-            })
-            [SNew(STextBlock)
-                .Text_Lambda([this]()
-                {
-                    return PerfTierSelection.IsValid()
-                        ? FText::FromString(*PerfTierSelection)
-                        : FText::FromString(TEXT("Medium"));
-                })
-                .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))];
-        Row1->AddSlot().Padding(FMargin(4, 2)).AutoWidth()
-            [SNew(SBox).WidthOverride(70)[PerfCombo]];
-
-        Row1->AddSlot().Padding(FMargin(8, 2)).AutoWidth()
-            [MakeLbl(TEXT("Camera source"), 8, FLinearColor(0.6f, 0.6f, 0.7f))];
-        CameraSourceOptions.Reset();
-        for (const std::string& Lbl : FPLayout::CameraSourceLabels())
-            CameraSourceOptions.Add(MakeShared<FString>(UTF8_TO_TCHAR(Lbl.c_str())));
-        UFaceParallaxComponent* Comp = GetParallaxComponent();
-        const int32 CurSrcIdx = Comp ? (int32)Comp->CameraSource : 0;
-        CameraSourceSelection = CameraSourceOptions[FMath::Clamp(CurSrcIdx, 0, 5)];
-        TSharedRef<SComboBox<TSharedPtr<FString>>> CamCombo =
-            SNew(SComboBox<TSharedPtr<FString>>)
-            .OptionsSource(&CameraSourceOptions)
-            .OnGenerateWidget_Lambda([](TSharedPtr<FString> Item)
-            {
-                return SNew(STextBlock)
-                    .Text(FText::FromString(*Item))
-                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9));
-            })
-            .OnSelectionChanged_Lambda([this](TSharedPtr<FString> Item, ESelectInfo::Type)
-            {
-                if (!Item.IsValid()) return;
-                CameraSourceSelection = Item;
-                for (int32 i = 0; i < (int32)CameraSourceOptions.Num(); ++i)
-                {
-                    if (CameraSourceOptions[i].IsValid()
-                        && CameraSourceOptions[i]->Equals(*Item))
+                TSharedRef<SVerticalBox> RefBox = SNew(SVerticalBox);
+                TSharedRef<SHorizontalBox> RefRow = SNew(SHorizontalBox);
+                EditParamRefName = SNew(SEditableTextBox)
+                    .Text(FText::FromString(TEXT("AlbedoTexture")))
+                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+                    .HintText(FText::FromString(TEXT("Param name to search...")));
+                RefRow->AddSlot().Padding(FMargin(0,2)).FillWidth(1.0f)
+                    [SNew(SBox).WidthOverride(100)[EditParamRefName.ToSharedRef()]];
+                RefRow->AddSlot().Padding(FMargin(4,2)).AutoWidth()
+                    [MakeBtn(TEXT("Find"), [this]()
                     {
-                        if (UFaceParallaxComponent* C = GetParallaxComponent())
-                            C->SetCameraSource((ECameraSource)i);
-                        break;
-                    }
-                }
-                RefreshUI();
-            })
-            [SNew(STextBlock)
-                .Text_Lambda([this]()
-                {
-                    return CameraSourceSelection.IsValid()
-                        ? FText::FromString(*CameraSourceSelection)
-                        : FText::FromString(TEXT("PlayerCamera0"));
-                })
-                .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))];
-        Row1->AddSlot().Padding(FMargin(4, 2)).AutoWidth()
-            [SNew(SBox).WidthOverride(100)[CamCombo]];
-        OB->AddSlot().AutoHeight()[Row1];
+                        if (!EditParamRefName.IsValid()) return;
+                        FName PName(*EditParamRefName->GetText().ToString());
+                        TArray<FString> Results = FindParamUsages(PName);
+                        if (TextParamRefResults.IsValid())
+                        {
+                            if (Results.Num() == 0)
+                                TextParamRefResults->SetText(FText::FromString(TEXT("No references found.")));
+                            else
+                            {
+                                FString Joined;
+                                for (int32 i = 0; i < Results.Num(); ++i)
+                                {
+                                    Joined += Results[i];
+                                    if (i < Results.Num() - 1) Joined += TEXT("\n");
+                                }
+                                TextParamRefResults->SetText(FText::FromString(Joined));
+                            }
+                        }
+                    }, FLinearColor(0.6f,0.8f,1.0f))];
+                RefBox->AddSlot().AutoHeight()[RefRow];
+                TextParamRefResults = SNew(STextBlock)
+                    .Text(FText::FromString(TEXT("Enter a param name and click Find.")))
+                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+                    .ColorAndOpacity(FLinearColor(0.5f,0.8f,0.5f))
+                    .AutoWrapText(true);
+                RefBox->AddSlot().AutoHeight().Padding(FMargin(2,2))
+                    [TextParamRefResults.ToSharedRef()];
+                AdvancedAccordion->AddSection(TEXT("Param Reference"), RefBox);
+            }
 
-        TSharedRef<SWidget> OpsSection = MakeSectionBox(TEXT("Assign Ops"), OB);
-        T5->AddSlot().AutoHeight().Padding(FMargin(2, 1, 2, 1))[OpsSection];
-        RegisterRailSection(5, TEXT("Assign Ops"), OpsSection);
-    }
+            // Param bindings table (Phase E; Advanced rail)
+            {
+                TSharedRef<SVerticalBox> PbBox = SNew(SVerticalBox);
+                TSharedRef<SHorizontalBox> AddRow = SNew(SHorizontalBox);
+                EditParamAddName = SNew(SEditableTextBox)
+                    .Text(FText::FromString(TEXT("ParamName")))
+                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+                    .HintText(FText::FromString(TEXT("Param name...")));
+                AddRow->AddSlot().Padding(FMargin(0,2)).FillWidth(1.0f)
+                    [SNew(SBox).WidthOverride(90)[EditParamAddName.ToSharedRef()]];
+                AddRow->AddSlot().Padding(FMargin(4,2)).AutoWidth()
+                    [MakeBtn(TEXT("Add"), [this]()
+                    {
+                        UFaceParallaxComponent* Comp = GetParallaxComponent();
+                        if (!Comp || !SelectedLayerName.IsValid() || !EditParamAddName.IsValid()) return;
+                        TArray<FFaceParamBinding> All = GetParamBindings(ActiveViewState, SelectedLayerName);
+                        FFaceParamBinding NewB;
+                        NewB.ParamName = FName(*EditParamAddName->GetText().ToString());
+                        if (NewB.ParamName.IsNone()) NewB.ParamName = FName(TEXT("Param"));
+                        All.Add(NewB);
+                        SetParamBindings(ActiveViewState, SelectedLayerName, All);
+                        RebuildParamTable();
+                        SetStatus(TEXT("Param binding added"), FLinearColor(0.6f,1.0f,0.6f));
+                        RefreshUI();
+                    }, FLinearColor(0.6f,1.0f,0.6f), FLinearColor(0.1f,0.1f,0.1f))];
+                PbBox->AddSlot().AutoHeight()[AddRow];
+                ParamTableBox = SNew(SVerticalBox);
+                RebuildParamTable();
+                PbBox->AddSlot().AutoHeight().Padding(FMargin(0,2,0,0))
+                    [ParamTableBox.ToSharedRef()];
+                AdvancedAccordion->AddSection(TEXT("Param Bindings (state + layer)"), PbBox);
+            }
+
+            // Edge analysis (edge overlay + luminance histogram)
+            {
+                TSharedRef<SVerticalBox> EdBox = SNew(SVerticalBox);
+                TSharedRef<SHorizontalBox> EdRow = SNew(SHorizontalBox);
+                CheckEdgeOverlay = SNew(SCheckBox)
+                    .IsChecked(bEdgeOverlayVisible ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
+                    .OnCheckStateChanged_Lambda([this](ECheckBoxState S)
+                    {
+                        bEdgeOverlayVisible = (S == ECheckBoxState::Checked);
+    if (bEdgeOverlayVisible) BuildEdgeOverlay();
+    if (bDepthOverlayVisible) BuildDepthOverlay();
+                        RefreshUI();
+                    });
+                EdRow->AddSlot().Padding(FMargin(0,2)).AutoWidth()[CheckEdgeOverlay.ToSharedRef()];
+                EdRow->AddSlot().Padding(FMargin(2,2)).AutoWidth()
+                    [MakeLbl(TEXT("Edge Overlay"), 9)];
+                CheckHistogram = SNew(SCheckBox)
+                    .IsChecked(bHistogramVisible ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
+                    .OnCheckStateChanged_Lambda([this](ECheckBoxState S)
+                    {
+                        bHistogramVisible = (S == ECheckBoxState::Checked);
+                        if (bHistogramVisible) BuildEdgeOverlay();
+                        RefreshUI();
+                    });
+                EdRow->AddSlot().Padding(FMargin(8,2)).AutoWidth()[CheckHistogram.ToSharedRef()];
+                EdRow->AddSlot().Padding(FMargin(2,2)).AutoWidth()
+                    [MakeLbl(TEXT("Histogram"), 9)];
+                EdRow->AddSlot().Padding(FMargin(6,2)).AutoWidth()
+                    [MakeBtn(TEXT("Rebuild"), [this]()
+                    {
+                        BuildEdgeOverlay();
+                        SetStatus(TEXT("Edge overlay + histogram rebuilt"), FLinearColor(0.6f,1.0f,0.6f));
+                    })];
+                EdRow->AddSlot().FillWidth(1.0f);
+                EdBox->AddSlot().AutoHeight()[EdRow];
+                HistogramBox = SNew(SVerticalBox);
+                TextHistogramStats = SNew(STextBlock)
+                    .Text(FText::FromString(TEXT("")))
+                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+                    .ColorAndOpacity(FLinearColor(0.6f,0.6f,0.6f))
+                    .AutoWrapText(true);
+                EdBox->AddSlot().AutoHeight().Padding(FMargin(2))
+                    [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("NoBorder"))
+                        .BorderBackgroundColor(FLinearColor(0.1f,0.1f,0.1f))
+                        .Padding(FMargin(4,2))
+                        [SNew(SVerticalBox)
+                            + SVerticalBox::Slot().AutoHeight()
+                                [HistogramBox.ToSharedRef()]
+                            + SVerticalBox::Slot().AutoHeight().Padding(FMargin(0,2,0,0))
+                                [TextHistogramStats.ToSharedRef()]]];
+                AdvancedAccordion->AddSection(TEXT("Edge Analysis"), EdBox);
+            }
+
+            // Depth debug visualizer knobs
+            {
+                TSharedRef<SVerticalBox> DdBox = SNew(SVerticalBox);
+                auto AddDebugSlider = [&](const FString& Label, float Def, float Mn, float Mx,
+                    TFunction<void(float)>&& Fn, TSharedPtr<SSlider>& SliderOut, TSharedPtr<STextBlock>& LabelOut)
+                {
+                    TSharedRef<SHorizontalBox> R = SNew(SHorizontalBox);
+                    TSharedRef<STextBlock> ValLbl = MakeLbl(TEXT(""), 8, FLinearColor(0.7f,0.7f,0.7f));
+                    TSharedRef<SSlider> Sl = SNew(SSlider).Value(FMath::Clamp((Def - Mn) / (Mx - Mn), 0.0f, 1.0f))
+                        .OnValueChanged_Lambda([Fn = MoveTemp(Fn), Mn, Mx, ValLbl](float V)
+                        {
+                            const float Out = Mn + V * (Mx - Mn);
+                            ValLbl->SetText(FText::FromString(FString::Printf(TEXT("%.1f"), Out)));
+                            Fn(Out);
+                        });
+                    SliderOut = Sl;
+                    LabelOut = ValLbl;
+                    R->AddSlot().Padding(FMargin(0,2)).AutoWidth()[MakeLbl(Label, 9)];
+                    R->AddSlot().Padding(FMargin(4,2)).FillWidth(1.0f)[Sl];
+                    R->AddSlot().Padding(FMargin(4,2)).AutoWidth()[ValLbl];
+                    DdBox->AddSlot().AutoHeight()[R];
+                };
+                auto RebuildFromActiveDepth = [this]()
+                {
+                    UDepthDebugVisualizerComponent* Vis =
+                        ValidatePreviewActor() ? PreviewActor->DepthDebug : nullptr;
+                    if (!Vis) return;
+                    UTexture2D* DepthTex = nullptr;
+                    UFaceParallaxComponent* Comp = GetParallaxComponent();
+                    if (Comp) DepthTex = Comp->GetCurrentDepthTexture();
+                    if (!DepthTex && ValidatePreset() && SelectedLayerName.IsValid())
+                        DepthTex = ActivePreset->GetTexturesForSlot(ActiveViewState, SelectedLayerName).Depth;
+                    Vis->RebuildMeshFromDepthMap(DepthTex);
+                };
+                UDepthDebugVisualizerComponent* Vis0 =
+                    ValidatePreviewActor() ? PreviewActor->DepthDebug : nullptr;
+                AddDebugSlider(TEXT("Grid Res"), Vis0 ? (float)Vis0->GridResolution : 48.0f, 8.0f, 256.0f,
+                    [this, RebuildFromActiveDepth](float V)
+                    {
+                        UDepthDebugVisualizerComponent* Vis =
+                            ValidatePreviewActor() ? PreviewActor->DepthDebug : nullptr;
+                        if (Vis) { Vis->GridResolution = FMath::Clamp((int32)V, 8, 256); RebuildFromActiveDepth(); }
+                    }, SliderDebugGrid, TextDebugGrid);
+                AddDebugSlider(TEXT("Mesh Size"), Vis0 ? Vis0->MeshSize : 30.0f, 5.0f, 100.0f,
+                    [this, RebuildFromActiveDepth](float V)
+                    {
+                        UDepthDebugVisualizerComponent* Vis =
+                            ValidatePreviewActor() ? PreviewActor->DepthDebug : nullptr;
+                        if (Vis) { Vis->MeshSize = V; RebuildFromActiveDepth(); }
+                    }, SliderDebugMeshSize, TextDebugMeshSize);
+                AddDebugSlider(TEXT("Height Scale"), Vis0 ? Vis0->HeightScale : 10.0f, 0.5f, 30.0f,
+                    [this, RebuildFromActiveDepth](float V)
+                    {
+                        UDepthDebugVisualizerComponent* Vis =
+                            ValidatePreviewActor() ? PreviewActor->DepthDebug : nullptr;
+                        if (Vis) { Vis->HeightScale = V; RebuildFromActiveDepth(); }
+                    }, SliderDebugHeight, TextDebugHeight);
+                AddDebugSlider(TEXT("Offset Z"), Vis0 ? Vis0->LocalOffset.Z : 25.0f, -50.0f, 100.0f,
+                    [this, RebuildFromActiveDepth](float V)
+                    {
+                        UDepthDebugVisualizerComponent* Vis =
+                            ValidatePreviewActor() ? PreviewActor->DepthDebug : nullptr;
+                        if (Vis) { Vis->LocalOffset.Z = V; RebuildFromActiveDepth(); }
+                    }, SliderDebugOffset, TextDebugOffset);
+
+                auto AddColorEdit = [&](const FString& Label, FLinearColor Def,
+                    TSharedPtr<SEditableTextBox>& EditOut, TFunction<void(FLinearColor)>&& Fn)
+                {
+                    TSharedRef<SHorizontalBox> R = SNew(SHorizontalBox);
+                    TSharedRef<SEditableTextBox> Edit = SNew(SEditableTextBox)
+                        .Text(FText::FromString(Def.ToFColor(true).ToHex()))
+                        .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+                        .OnTextCommitted_Lambda([Fn = MoveTemp(Fn)](const FText& T, ETextCommit::Type)
+                        {
+                            const FColor C = FColor::FromHex(T.ToString());
+                            Fn(FLinearColor(C));
+                        });
+                    EditOut = Edit;
+                    R->AddSlot().Padding(FMargin(0,2)).AutoWidth()[MakeLbl(Label, 9)];
+                    R->AddSlot().Padding(FMargin(4,2)).AutoWidth()
+                        [SNew(SBox).WidthOverride(70)[Edit]];
+                    R->AddSlot().FillWidth(1.0f);
+                    DdBox->AddSlot().AutoHeight()[R];
+                };
+                AddColorEdit(TEXT("Low Color"), Vis0 ? Vis0->LowColor : FLinearColor(0,0,0.8f),
+                    EditDebugLowColor, [this, RebuildFromActiveDepth](FLinearColor C)
+                    {
+                        UDepthDebugVisualizerComponent* Vis =
+                            ValidatePreviewActor() ? PreviewActor->DepthDebug : nullptr;
+                        if (Vis) { Vis->LowColor = C; RebuildFromActiveDepth(); }
+                    });
+                AddColorEdit(TEXT("High Color"), Vis0 ? Vis0->HighColor : FLinearColor(0.8f,0,0),
+                    EditDebugHighColor, [this, RebuildFromActiveDepth](FLinearColor C)
+                    {
+                        UDepthDebugVisualizerComponent* Vis =
+                            ValidatePreviewActor() ? PreviewActor->DepthDebug : nullptr;
+                        if (Vis) { Vis->HighColor = C; RebuildFromActiveDepth(); }
+                    });
+
+                TSharedRef<SHorizontalBox> DdRow = SNew(SHorizontalBox);
+                DdRow->AddSlot().Padding(FMargin(0,2)).AutoWidth()
+                    [MakeBtn(TEXT("Rebuild Mesh"), [this, RebuildFromActiveDepth]()
+                    {
+                        RebuildFromActiveDepth();
+                        SetStatus(TEXT("Depth debug mesh rebuilt"), FLinearColor(0.6f,1.0f,0.6f));
+                    }, FLinearColor(0.6f,0.8f,1.0f))];
+                DdRow->AddSlot().Padding(FMargin(6,2)).AutoWidth()
+                    [MakeBtn(TEXT("Color by Depth"), [this]()
+                    {
+                        if (ValidatePreviewActor() && PreviewActor->DepthDebug)
+                            ColorByDepth(true);
+                    })];
+                DdRow->AddSlot().FillWidth(1.0f);
+                DdBox->AddSlot().AutoHeight()[DdRow];
+                AdvancedAccordion->AddSection(TEXT("Depth Debug"), DdBox);
+            }
+
+            // Problems panel (Phase F) - the issue rows flip through carousel
+            // pages inside the Issues section (P18); the panel itself is a
+            // fit-packed stack, so no vertical scroll bar (P17).
+            {
+                TSharedRef<SVerticalBox> PrBox = SNew(SVerticalBox);
+                ProblemsPanelBox = SNew(SVerticalBox);
+                RebuildProblemsPanel();
+                PrBox->AddSlot().AutoHeight()[ProblemsPanelBox.ToSharedRef()];
+                AdvancedAccordion->AddSection(TEXT("Problems (click row = jump)"), PrBox);
+                RefreshProblemsSummary();
+            }
+
+        // Tag validator (dev tool; Advanced rail so the bottom bar stays to workflow)
+        {
+            TSharedRef<SVerticalBox> TV = SNew(SVerticalBox);
+            TextTagValidator = SNew(STextBlock)
+                .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+                .ColorAndOpacity(FLinearColor(0.8f,0.8f,0.8f));
+            TV->AddSlot().AutoHeight().Padding(FMargin(2,1))
+                [TextTagValidator.ToSharedRef()];
+            RebuildTagValidator();
+            AdvancedAccordion->AddSection(TEXT("Tag Validator"), TV);
+        }
+
+        // Material cross-referencer (dev tool; Advanced rail)
+        {
+            TSharedRef<SVerticalBox> MC = SNew(SVerticalBox);
+            TextMaterialCrossRef = SNew(STextBlock)
+                .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))
+                .ColorAndOpacity(FLinearColor(0.8f,0.8f,0.8f));
+            MC->AddSlot().AutoHeight().Padding(FMargin(2,1))
+                [TextMaterialCrossRef.ToSharedRef()];
+            RebuildMaterialCrossRef();
+            AdvancedAccordion->AddSection(TEXT("Material Cross-Reference"), MC);
+        }
+
+            T5->AddSlot().AutoHeight()[AdvancedAccordion.ToSharedRef()];
+            RegisterAccordionSections(5, AdvancedAccordion);
+        }
 }
 
 void UFaceParallaxEditorWidget::RefreshAssignGrid()

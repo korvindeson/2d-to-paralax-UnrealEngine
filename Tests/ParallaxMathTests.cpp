@@ -16,6 +16,10 @@
 // Phase H: the layout design-contract manifest (pure C++, no UE deps).
 #include "../FaceParallaxLayoutSpec.h"
 
+// Central-canvas redesign: part schematic glyphs + front/base/back yaw rules
+// (pure C++, no UE deps — the same header the runtime component consults).
+#include "../FaceParallaxSchematic.h"
+
 // --- Minimal math types matching our UE types ---
 struct FVector2D {
     double X, Y;
@@ -6264,20 +6268,20 @@ void TestPhaseHUIDesign() {
 
     // Positive contract: the real manifest must be clean.
     const std::vector<FPLayout::FPLayoutNode> Spec = FPLayout::BuildSpec();
-    TEST("Phase H: manifest builds (500 nodes)", Spec.size() == 500u);
+    TEST("Phase H: manifest builds (507 nodes)", Spec.size() == 507u);
     TEST("Phase H: every node reachable from root", FPLayout::CountReachable(Spec) == (int)Spec.size());
     const int RootIdx = FPLayout::FindRootIndex(Spec);
     TEST("Phase H: single root is the last node", RootIdx == (int)Spec.size() - 1);
     const std::vector<FPLayout::FPRect> Rects = FPLayout::ResolveLayout(Spec);
-    TEST("Phase H: root rect matches design (1089x884)",
-        Rects[(size_t)RootIdx].W == 1089.0 && Rects[(size_t)RootIdx].H == 884.0);
+    TEST("Phase H: root rect matches design (1089x866)",
+        Rects[(size_t)RootIdx].W == 1089.0 && Rects[(size_t)RootIdx].H == 866.0);
     const std::vector<FPLayout::FPViolation> V = FPLayout::ValidateDesign(Spec);
     TEST("Phase H: zero design violations (P1..P21)", V.empty());
 
     // Scroll-viewport contract: the 6 rails are fixed 180x560 clipped viewports,
     // so their content can never overlap other panels or leave the screen.
     {
-        const char* RailNames[6] = { "RL-Layers", "RL-Transform", "RL-Camera", "RL-Debug", "RL-Advanced", "RL-Assign" };
+        const char* RailNames[6] = { "RL-ViewLayer", "RL-Art", "RL-Animated", "RL-NestedPins", "RL-CameraPrev", "RL-Advanced" };
         bool bViewports = true;
         for (const char* nm : RailNames)
         {
@@ -6312,14 +6316,73 @@ void TestPhaseHUIDesign() {
     };
     TEST("Phase H: Toolbar present", Has("Toolbar"));
     TEST("Phase H: RAIL-Switcher present", Has("RAIL-Switcher"));
-    TEST("Phase H: RL-Layers present", Has("RL-Layers"));
+    TEST("Phase H: RL-ViewLayer present", Has("RL-ViewLayer"));
     TEST("Phase H: RL-Advanced present", Has("RL-Advanced"));
-    TEST("Phase H: RL-Assign present", Has("RL-Assign"));
+    TEST("Phase H: RL-Art present", Has("RL-Art"));
     TEST("Phase H: AG-Grid present", Has("AG-Grid"));
     TEST("Phase H: AO-PerfCombo present", Has("AO-PerfCombo"));
     TEST("Phase H: PR-ThumbCol0 present", Has("PR-ThumbCol0"));
     TEST("Phase H: TB-ClearStale present", Has("TB-ClearStale"));
     TEST("Phase H: BA-BotBar present", Has("BA-BotBar"));
+    {
+        // Phase B: the labeled 6-group tab bar replaces the icon rail column.
+        // It is a Root row between PinnedStrip and MainRow, exactly 7 nodes
+        // (6 tabs + spacer), fixed height TabBarHeight.
+        const FPLayout::FPLayoutNode* RootNode = nullptr;
+        const FPLayout::FPLayoutNode* Tabs = nullptr;
+        for (const FPLayout::FPLayoutNode& n : Spec)
+        {
+            if (std::string(n.Name) == "Root") RootNode = &n;
+            if (std::string(n.Name) == "TopTabs") Tabs = &n;
+        }
+        bool bTabs = Tabs && Tabs->Children.size() == 7 && Tabs->FixedH == FPLayout::TabBarHeight;
+        if (bTabs)
+            for (int i = 0; i < 6; ++i)
+                if (std::string(Spec[(size_t)Tabs->Children[(size_t)i]].Name) !=
+                        std::string("TT-Tab") + char('0' + i))
+                    bTabs = false;
+        int TabIdx = -1, StripIdx = -1;
+        if (RootNode && Tabs)
+            for (size_t i = 0; i < Spec.size(); ++i)
+            {
+                if (&Spec[i] == Tabs) TabIdx = (int)i;
+                if (std::string(Spec[i].Name) == "PinnedStrip") StripIdx = (int)i;
+            }
+        TEST("Phase H: TopTabs is a 7-node fixed-height tab row (Phase B)",
+            bTabs && RootNode && RootNode->Children.size() == 10
+            && RootNode->Children[3] == StripIdx && RootNode->Children[4] == TabIdx
+            && std::string(Spec[(size_t)RootNode->Children[5]].Name) == "MainRow");
+    }
+    {
+        // Dev tools relocated (A5): Tag Validator + Material Cross-Reference
+        // are Advanced-rail accordion sections, NOT bottom-bar leaves. Their
+        // leaves must be children of the Advanced rail, not of BotArea.
+        const FPLayout::FPLayoutNode* BotArea = nullptr;
+        const FPLayout::FPLayoutNode* Adv = nullptr;
+        for (const FPLayout::FPLayoutNode& n : Spec)
+        {
+            if (std::string(n.Name) == "BotArea") BotArea = &n;
+            if (std::string(n.Name) == "RL-Advanced") Adv = &n;
+        }
+        bool bTagInBottom = false, bMCInBottom = false;
+        bool bTagInAdv = false, bMCInAdv = false;
+        if (BotArea)
+        {
+            for (int c : BotArea->Children)
+                if (std::string(Spec[(size_t)c].Name) == "BA-TagValidator") bTagInBottom = true;
+            for (int c : BotArea->Children)
+                if (std::string(Spec[(size_t)c].Name) == "BA-MatCrossRef") bMCInBottom = true;
+        }
+        if (Adv)
+        {
+            for (int c : Adv->Children)
+                if (std::string(Spec[(size_t)c].Name) == "Sec-TagValidator") bTagInAdv = true;
+            for (int c : Adv->Children)
+                if (std::string(Spec[(size_t)c].Name) == "Sec-MatCrossRef") bMCInAdv = true;
+        }
+        TEST("Phase H: TagValidator moved out of bottom bar (A5)", !bTagInBottom && !bMCInBottom);
+        TEST("Phase H: TagValidator is an Advanced accordion section (A5)", bTagInAdv && bMCInAdv);
+    }
 
     // Negative controls: every principle must fire on a planted violation.
     auto Violates = [](const std::vector<FPLayout::FPLayoutNode>& nodes, FPLayout::DesignRule rule) {
@@ -6482,12 +6545,15 @@ void TestPhaseHUIDesign() {
             !Violates(B.N, FPLayout::DesignRule::DensityOverflow));
     }
     {
-        // Real manifest: the dense rails must be accordion-marked. The props
-        // sections were converted to carousel pages (P18) - one visible at a
-        // time - so they no longer need accordion collapse.
-        const char* DebugSections[] = { "Sec-Import", "Sec-Config", "Sec-EdgeAnalysis",
-            "Sec-OutlineDepth", "Sec-DepthDebug", "Sec-HullReview", "Sec-VisemeGrid", "Sec-Problems" };
-        const char* AdvancedSections[] = { "Sec-AllLayers", "Sec-ParamRef", "Sec-ParamTable", "Sec-NestedPins" };
+        // Real manifest: the dense rails must be accordion-marked. Phase B
+        // regroup: Import + OutlineDepth (Art), Viseme + Hull (Animated),
+        // all of Nested & Pins, and all six Advanced sections are accordions.
+        // The props sections were converted to carousel pages (P18) - one
+        // visible at a time - so they no longer need accordion collapse.
+        const char* AccordionSections[] = { "Sec-Import", "Sec-OutlineDepth",
+            "Sec-VisemeGrid", "Sec-HullReview", "Sec-ParamRef", "Sec-ParamTable", "Sec-NestedPins",
+            "Sec-Config", "Sec-EdgeAnalysis", "Sec-DepthDebug", "Sec-Problems",
+            "Sec-TagValidator", "Sec-MatCrossRef" };
         bool bAccordionOk = true;
         auto CheckAcc = [&](const char* nm)
         {
@@ -6496,9 +6562,8 @@ void TestPhaseHUIDesign() {
                 if (std::string(n.Name) == nm) { found = &n; break; }
             if (!found || !found->bAccordion) bAccordionOk = false;
         };
-        for (const char* nm : DebugSections) CheckAcc(nm);
-        for (const char* nm : AdvancedSections) CheckAcc(nm);
-        TEST("Phase H: Debug/Advanced sections are accordions (P16)", bAccordionOk);
+        for (const char* nm : AccordionSections) CheckAcc(nm);
+        TEST("Phase H: grouped accordion sections are accordions (P16)", bAccordionOk);
     }
     {
         // State-strip pick button replaces the old props-pane sync picker row.
@@ -6612,9 +6677,9 @@ void TestPhaseIUITesting() {
 
     // --- Step 1 fit-first: the real rails pack without vertical scroll ---
     const std::vector<FPLayout::FPLayoutNode> Spec = FPLayout::BuildSpec();
-    TEST("UI: manifest builds (500 nodes)", Spec.size() == 500u);
+    TEST("UI: manifest builds (507 nodes)", Spec.size() == 507u);
     {
-        const char* RailNames[6] = { "RL-Layers", "RL-Transform", "RL-Camera", "RL-Debug", "RL-Advanced", "RL-Assign" };
+        const char* RailNames[6] = { "RL-ViewLayer", "RL-Art", "RL-Animated", "RL-NestedPins", "RL-CameraPrev", "RL-Advanced" };
         bool bNoV = true;
         for (const char* nm : RailNames)
         {
@@ -7806,51 +7871,54 @@ void TestAccessibilityMirrors() {
     // ---- Rail section registry (chips + search jump source of truth) ----
     const std::vector<std::vector<std::string>>& Titles = FPLayout::RailSectionTitles();
     TEST("Registry: 6 rails", Titles.size() == 6);
-    TEST("Registry: rail 0 Layers + Status Detail", Titles[0].size() == 2
-        && Titles[0][0] == "Layers" && Titles[0][1] == "Status Detail");
-    TEST("Registry: rail 1 Transform 2 sections", Titles[1].size() == 2
-        && Titles[1][0] == "Quick Actions" && Titles[1][1] == "Cross-View Transform");
-    TEST("Registry: rail 2 Camera 3 sections", Titles[2].size() == 3
-        && Titles[2][0] == "Camera Follow" && Titles[2][1] == "Camera"
-        && Titles[2][2] == "Blend Preview");
-    TEST("Registry: rail 3 Debug 8 sections", Titles[3].size() == 8
-        && Titles[3][0] == "Outline -> Depth" && Titles[3][1] == "Import"
-        && Titles[3][2] == "Config" && Titles[3][3] == "Edge Analysis"
-        && Titles[3][4] == "Depth Debug" && Titles[3][5] == "Hull Review (click thumb = jump)"
-        && Titles[3][6] == "Viseme Frames (click filled cell = play)"
-        && Titles[3][7] == "Problems (click row = jump)");
-    TEST("Registry: rail 4 Advanced 4 sections", Titles[4].size() == 4
-        && Titles[4][0] == "All Layers (current state)" && Titles[4][1] == "Param Reference"
-        && Titles[4][2] == "Param Bindings (state + layer)" && Titles[4][3] == "Nested Art / Pins");
-    TEST("Registry: rail 5 Assign 2 sections", Titles[5].size() == 2
-        && Titles[5][0] == "Bulk Assign" && Titles[5][1] == "Assign Ops");
+    TEST("Registry: rail 0 View & Layer 3 sections", Titles[0].size() == 3
+        && Titles[0][0] == "Layers" && Titles[0][1] == "Status Detail"
+        && Titles[0][2] == "All Layers (current state)");
+    TEST("Registry: rail 1 Art 6 sections", Titles[1].size() == 6
+        && Titles[1][0] == "Quick Actions" && Titles[1][1] == "Cross-View Transform"
+        && Titles[1][2] == "Import" && Titles[1][3] == "Outline -> Depth"
+        && Titles[1][4] == "Bulk Assign" && Titles[1][5] == "Assign Ops");
+    TEST("Registry: rail 2 Animated 2 sections", Titles[2].size() == 2
+        && Titles[2][0] == "Viseme Frames (click filled cell = play)"
+        && Titles[2][1] == "Hull Review (click thumb = jump)");
+    TEST("Registry: rail 3 Nested & Pins 1 section", Titles[3].size() == 1
+        && Titles[3][0] == "Nested Art / Pins");
+    TEST("Registry: rail 4 Camera/Preview 3 sections", Titles[4].size() == 3
+        && Titles[4][0] == "Camera Follow" && Titles[4][1] == "Camera"
+        && Titles[4][2] == "Blend Preview");
+    TEST("Registry: rail 5 Advanced 8 sections", Titles[5].size() == 8
+        && Titles[5][0] == "Config" && Titles[5][1] == "Param Reference"
+        && Titles[5][2] == "Param Bindings (state + layer)"
+        && Titles[5][3] == "Edge Analysis" && Titles[5][4] == "Depth Debug"
+        && Titles[5][5] == "Problems (click row = jump)"
+        && Titles[5][6] == "Tag Validator" && Titles[5][7] == "Material Cross-Reference");
 
     // ---- Cross-rail search jump (mirror of OnRailSearchCommitted) ----
     int OutRail = -1, OutIdx = -1;
-    TEST("Search: 'config' -> Debug/Config",
+    TEST("Search: 'config' -> Advanced/Config",
         FPLayout::FindRailSectionByTitle("config", OutRail, OutIdx) == 0
-        && OutRail == 3 && OutIdx == 2);
+        && OutRail == 5 && OutIdx == 0);
     TEST("Search: 'CONFIG' case-insensitive",
         FPLayout::FindRailSectionByTitle("CONFIG", OutRail, OutIdx) == 0
-        && OutRail == 3 && OutIdx == 2);
-    TEST("Search: 'viseme' -> Debug/Viseme",
+        && OutRail == 5 && OutIdx == 0);
+    TEST("Search: 'viseme' -> Animated/Viseme",
         FPLayout::FindRailSectionByTitle("viseme", OutRail, OutIdx) == 0
-        && OutRail == 3 && OutIdx == 6);
-    TEST("Search: 'quick' -> Transform/Quick Actions",
+        && OutRail == 2 && OutIdx == 0);
+    TEST("Search: 'quick' -> Art/Quick Actions",
         FPLayout::FindRailSectionByTitle("quick", OutRail, OutIdx) == 0
         && OutRail == 1 && OutIdx == 0);
-    TEST("Search: 'camera' first match is rail 2",
+    TEST("Search: 'camera' first match is rail 4",
         FPLayout::FindRailSectionByTitle("camera", OutRail, OutIdx) == 0
-        && OutRail == 2 && OutIdx == 0);
-    TEST("Search: 'blend' -> rail 2 idx 2",
+        && OutRail == 4 && OutIdx == 0);
+    TEST("Search: 'blend' -> rail 4 idx 2",
         FPLayout::FindRailSectionByTitle("blend", OutRail, OutIdx) == 0
-        && OutRail == 2 && OutIdx == 2);
+        && OutRail == 4 && OutIdx == 2);
     TEST("Search: 'status' -> rail 0 Status Detail",
         FPLayout::FindRailSectionByTitle("status", OutRail, OutIdx) == 0
         && OutRail == 0 && OutIdx == 1);
-    TEST("Search: 'problem' -> rail 3 Problems",
+    TEST("Search: 'problem' -> rail 5 Problems",
         FPLayout::FindRailSectionByTitle("problem", OutRail, OutIdx) == 0
-        && OutRail == 3 && OutIdx == 7);
+        && OutRail == 5 && OutIdx == 5);
     TEST("Search: 'xyzzy' no match -> -1",
         FPLayout::FindRailSectionByTitle("xyzzy", OutRail, OutIdx) == -1);
     TEST("Search: empty query -> no match",
@@ -7941,9 +8009,9 @@ void TestPinnedActionsRule() {
     TEST("P21: strip holds exactly the 4 canonical actions, flagged", bStripOk);
     TEST("P21: strip is a direct root child above the main row",
         RootNode && StripIdx >= 0
-        && (int)RootNode->Children.size() == 9
+        && (int)RootNode->Children.size() == 10
         && RootNode->Children[3] == StripIdx
-        && std::string(Spec[(size_t)RootNode->Children[4]].Name) == "MainRow");
+        && std::string(Spec[(size_t)RootNode->Children[5]].Name) == "MainRow");
 
     auto Violates = [](const std::vector<FPLayout::FPLayoutNode>& nodes, FPLayout::DesignRule rule) {
         for (const FPLayout::FPViolation& v : FPLayout::ValidateDesign(nodes))
@@ -8295,6 +8363,605 @@ void TestPhaseP3Mirrors() {
     }
 }
 
+// --- Phase C (remediation): canvas selection + unified inspect mode. All
+// helpers are pure FPLayout functions consumed 1:1 by SFaceHotspotLayer and
+// the widget (canvas quad hit-test + selection outline + right/ctrl cycling,
+// and the 5-segment inspect row derived from the Advanced rail Config checks).
+void TestPhaseCIntegration() {
+    printf("\n=== Phase C Integration (canvas selection + inspect mode) ===\n");
+
+    // ---- Inspect-mode labels ----
+    {
+        TEST("inspect labels: five canonical",
+            FPLayout::InspectModeLabel(0) == std::string("Textured")
+            && FPLayout::InspectModeLabel(1) == std::string("Outline")
+            && FPLayout::InspectModeLabel(2) == std::string("Depth")
+            && FPLayout::InspectModeLabel(3) == std::string("Wireframe")
+            && FPLayout::InspectModeLabel(4) == std::string("Heatmap"));
+        TEST("inspect labels: custom fallback", FPLayout::InspectModeLabel(9) == std::string("Custom"));
+    }
+
+    // ---- DeriveInspectMode (five source toggles -> exclusive mode) ----
+    {
+        TEST("inspect derive: textured", FPLayout::DeriveInspectMode(true, false, false, false, false) == 0);
+        TEST("inspect derive: outline", FPLayout::DeriveInspectMode(true, false, false, true, false) == 1);
+        TEST("inspect derive: depth", FPLayout::DeriveInspectMode(false, true, false, false, false) == 2);
+        TEST("inspect derive: wireframe", FPLayout::DeriveInspectMode(false, false, true, false, false) == 3);
+        TEST("inspect derive: depth heatmap", FPLayout::DeriveInspectMode(false, true, false, false, true) == 4);
+        TEST("inspect derive: legacy split is custom", FPLayout::DeriveInspectMode(true, true, false, false, false) == -1);
+        TEST("inspect derive: all off is custom", FPLayout::DeriveInspectMode(false, false, false, false, false) == -1);
+        TEST("inspect derive: textures+wireframe custom", FPLayout::DeriveInspectMode(true, false, true, false, false) == -1);
+    }
+
+    // ---- InspectComboForMode round-trips into DeriveInspectMode ----
+    {
+        for (int M = 0; M <= 4; ++M)
+        {
+            const FPLayout::FPInspectCombo B = FPLayout::InspectComboForMode(M);
+            const std::string Name = std::string("inspect combo round-trip ") + std::to_string(M);
+            TEST(Name.c_str(),
+                FPLayout::DeriveInspectMode(B.T, B.D, B.W, B.O, B.C) == M);
+        }
+        const FPLayout::FPInspectCombo Bad = FPLayout::InspectComboForMode(9);
+        TEST("inspect combo: unknown mode clears all", !Bad.T && !Bad.D && !Bad.W && !Bad.O && !Bad.C);
+        const FPLayout::FPInspectCombo Out = FPLayout::InspectComboForMode(1);
+        TEST("inspect combo: outline = textures + overlay", Out.T && Out.O && !Out.D && !Out.W && !Out.C);
+        const FPLayout::FPInspectCombo Hm = FPLayout::InspectComboForMode(4);
+        TEST("inspect combo: heatmap = depth + colorby", Hm.D && Hm.C && !Hm.T && !Hm.W && !Hm.O);
+    }
+
+    // ---- Layer quad from the effective transform (cross-view constraint) ----
+    {
+        const FPLayout::FPLayerQuad Id = FPLayout::FLayerQuadFromTransform(0, 0, 1, 1, 0);
+        TEST("quad identity: unit square corners",
+            Id.C[0].X == 0.0 && Id.C[0].Y == 0.0 && Id.C[1].X == 1.0 && Id.C[1].Y == 0.0
+            && Id.C[2].X == 1.0 && Id.C[2].Y == 1.0 && Id.C[3].X == 0.0 && Id.C[3].Y == 1.0);
+        const FPLayout::FPLayerQuad Q = FPLayout::FLayerQuadFromTransform(0.25, 0.125, 1, 1, 0);
+        TEST("quad translate: corners shift by position",
+            Q.C[0].X == 0.25 && Q.C[0].Y == 0.125 && Q.C[2].X == 1.25 && Q.C[2].Y == 1.125);
+        // 90 degrees clockwise about the UV center maps (0,0)->(1,0),
+        // (1,0)->(1,1), (1,1)->(0,1), (0,1)->(0,0) (y-down rotation).
+        const FPLayout::FPLayerQuad R = FPLayout::FLayerQuadFromTransform(0, 0, 1, 1, 90);
+        TEST("quad rotate 90: corners swing clockwise",
+            FPLayout::FPPointInQuad(1.0, 0.0, R) && FPLayout::FPPointInQuad(0.0, 1.0, R));
+        TEST("quad rotate 90: rotated corner exact",
+            fabs(R.C[0].X - 1.0) < 1e-9 && fabs(R.C[0].Y) < 1e-9);
+        // Quad corners match the master-material point transform 1:1.
+        const FPLayout::FPHotspotPoint P0 = FPLayout::FPHotspotTransformPoint({ 0.0, 0.0 }, 0.05, -0.04, 0.9, 1.1, 12.0);
+        const FPLayout::FPLayerQuad S = FPLayout::FLayerQuadFromTransform(0.05, -0.04, 0.9, 1.1, 12.0);
+        TEST("quad corner equals transformed point",
+            S.C[0].X == P0.X && S.C[0].Y == P0.Y);
+    }
+
+    // ---- Point-in-quad (boundary inclusive) ----
+    {
+        const FPLayout::FPLayerQuad Id = FPLayout::FLayerQuadFromTransform(0, 0, 1, 1, 0);
+        TEST("quad hit: center inside", FPLayout::FPPointInQuad(0.5, 0.5, Id));
+        TEST("quad hit: corner inside (inclusive)", FPLayout::FPPointInQuad(1.0, 1.0, Id));
+        TEST("quad hit: edge inside (inclusive)", FPLayout::FPPointInQuad(0.5, 0.0, Id));
+        TEST("quad hit: outside", !FPLayout::FPPointInQuad(1.5, 0.5, Id));
+        TEST("quad hit: far outside", !FPLayout::FPPointInQuad(-0.1, 0.5, Id));
+    }
+
+    // ---- Topmost hit + cycling through overlapping layers ----
+    {
+        // A spans 0..1, B spans 0.5..1.5 -> overlap band 0.5..1.
+        const std::vector<FPLayout::FPLayerQuad> Quads = {
+            FPLayout::FLayerQuadFromTransform(0, 0, 1, 1, 0),
+            FPLayout::FLayerQuadFromTransform(0.5, 0.5, 1, 1, 0),
+        };
+        TEST("topmost: overlap picks last (top) layer", FPLayout::FPHitTopmostQuad(0.75, 0.75, Quads) == 1);
+        TEST("topmost: exclusive band of A", FPLayout::FPHitTopmostQuad(0.25, 0.25, Quads) == 0);
+        TEST("topmost: exclusive band of B", FPLayout::FPHitTopmostQuad(1.25, 1.25, Quads) == 1);
+        TEST("topmost: outside everything", FPLayout::FPHitTopmostQuad(2.0, 2.0, Quads) == -1);
+        TEST("topmost: empty list", FPLayout::FPHitTopmostQuad(0.5, 0.5, {}) == -1);
+
+        const std::vector<int> Hits = { 0, 2, 5 };
+        TEST("cycle: advances to next hit", FPLayout::FPCycleQuadHit(Hits, 0) == 2);
+        TEST("cycle: wraps past last", FPLayout::FPCycleQuadHit(Hits, 5) == 0);
+        TEST("cycle: selection not in hits starts at topmost", FPLayout::FPCycleQuadHit(Hits, 7) == 0);
+        TEST("cycle: middle hit advances", FPLayout::FPCycleQuadHit(Hits, 2) == 5);
+        TEST("cycle: empty hits -> -1", FPLayout::FPCycleQuadHit({}, 0) == -1);
+    }
+}
+
+void TestPhaseDSyncIntegration() {
+    printf("\n=== PhaseDSyncIntegration ===\n");
+
+    // ---- FSyncOp labels ----
+    TEST("sync-op label: Transform", std::string(FPLayout::SyncOpLabel(FPLayout::SyncOpTransform)) == "Transform");
+    TEST("sync-op label: Textures", std::string(FPLayout::SyncOpLabel(FPLayout::SyncOpTextures)) == "Textures");
+    TEST("sync-op label: Both", std::string(FPLayout::SyncOpLabel(FPLayout::SyncOpBoth)) == "Both");
+    TEST("sync-op label: invalid high -> Both", std::string(FPLayout::SyncOpLabel(9)) == "Both");
+    TEST("sync-op label: invalid low -> Both", std::string(FPLayout::SyncOpLabel(-3)) == "Both");
+
+    // ---- SyncOpHasTransform / SyncOpHasTextures truth table ----
+    TEST("op Transform has transform, not textures",
+        FPLayout::SyncOpHasTransform(FPLayout::SyncOpTransform) && !FPLayout::SyncOpHasTextures(FPLayout::SyncOpTransform));
+    TEST("op Textures has textures, not transform",
+        FPLayout::SyncOpHasTextures(FPLayout::SyncOpTextures) && !FPLayout::SyncOpHasTransform(FPLayout::SyncOpTextures));
+    TEST("op Both has both channels", FPLayout::SyncOpHasTransform(FPLayout::SyncOpBoth)
+        && FPLayout::SyncOpHasTextures(FPLayout::SyncOpBoth));
+    TEST("op invalid -> Both channels", FPLayout::SyncOpHasTransform(5) && FPLayout::SyncOpHasTextures(5));
+
+    // ---- FPLinkDestCount ----
+    const int NV = 10;
+    TEST("link count: no picks -> all other views", FPLayout::FPLinkDestCount({0,0,0,0,0,0,0,0,0,0}, 0, NV) == 9);
+    TEST("link count: picks {3,7} active 0 -> 2", FPLayout::FPLinkDestCount({0,0,0,1,0,0,0,1,0,0}, 0, NV) == 2);
+    TEST("link count: only active picked -> fallback all",
+        FPLayout::FPLinkDestCount({0,0,0,0,0,0,0,0,0,0}, 3, NV) == 9);
+    TEST("link count: active in picks excluded", FPLayout::FPLinkDestCount({1,0,0,1,0,0,0,0,0,0}, 0, NV) == 1);
+    TEST("link count: zero views -> 0", FPLayout::FPLinkDestCount({1,1}, 0, 0) == 0);
+
+    // ---- FPLinkDestIsPicked ----
+    TEST("link dest: active view never a destination", !FPLayout::FPLinkDestIsPicked({0,0,0,0,0,0,0,0,0,0}, 2, 2));
+    TEST("link dest: fallback sends to every other view",
+        FPLayout::FPLinkDestIsPicked({0,0,0,0,0,0,0,0,0,0}, 2, 0)
+        && FPLayout::FPLinkDestIsPicked({0,0,0,0,0,0,0,0,0,0}, 2, 9));
+    TEST("link dest: picked view is a destination", FPLayout::FPLinkDestIsPicked({0,0,0,1,0,0,0,0,0,0}, 2, 3));
+    TEST("link dest: unpicked view is not a destination", !FPLayout::FPLinkDestIsPicked({0,0,0,1,0,0,0,0,0,0}, 2, 4));
+    TEST("link dest: out-of-range view excluded", !FPLayout::FPLinkDestIsPicked({0,0,0,0,0,0,0,0,0,0}, 2, 12));
+    TEST("link dest: fallback set == Phase B GetLinkTargets contract", []()
+    {
+        const std::vector<int> NoPicks(10, 0);
+        for (int Active = 0; Active < 10; ++Active)
+            for (int V = 0; V < 10; ++V)
+                if (FPLayout::FPLinkDestIsPicked(NoPicks, Active, V) != (V != Active)) return false;
+        return true;
+    }());
+    TEST("link dest: active excluded even when picked", !FPLayout::FPLinkDestIsPicked({0,1,0,0,0,0,0,0,0,0}, 1, 1));
+    TEST("link dest: picks include active -> others still honored",
+        FPLayout::FPLinkDestIsPicked({1,1,0,1,0,0,0,0,0,0}, 1, 3)
+        && !FPLayout::FPLinkDestIsPicked({1,1,0,1,0,0,0,0,0,0}, 1, 4));
+}
+
+void TestPhaseLayerBadgeMirrors() {
+    printf("\n=== PhaseLayerBadgeMirrors ===\n");
+
+    TEST("badge label: assigned", std::string(FPLayout::AssignCellLabel(2)) == "Assigned");
+    TEST("badge label: partial", std::string(FPLayout::AssignCellLabel(1)) == "Partial");
+    TEST("badge label: missing", std::string(FPLayout::AssignCellLabel(0)) == "Missing");
+    TEST("badge label: invalid high -> Missing", std::string(FPLayout::AssignCellLabel(9)) == "Missing");
+    TEST("badge label: invalid low -> Missing", std::string(FPLayout::AssignCellLabel(-1)) == "Missing");
+
+    // The badge mirrors AssignCellState: full set -> Assigned etc.
+    TEST("badge: full set -> Assigned", std::string(FPLayout::AssignCellLabel(
+        FPLayout::AssignCellState(true, true, true))) == "Assigned");
+    TEST("badge: single channel -> Partial", std::string(FPLayout::AssignCellLabel(
+        FPLayout::AssignCellState(true, false, false))) == "Partial");
+    TEST("badge: empty -> Missing", std::string(FPLayout::AssignCellLabel(
+        FPLayout::AssignCellState(false, false, false))) == "Missing");
+}
+
+void TestPhasePinMgrMirrors() {
+    printf("\n=== PhasePinMgrMirrors ===\n");
+
+    // ---- FPPinnedRowCount ----
+    TEST("pin rows: nothing pinned -> 0", FPLayout::FPPinnedRowCount(false, {0,0}, {}) == 0);
+    TEST("pin rows: layer pin only -> 1", FPLayout::FPPinnedRowCount(true, {0,0}, {}) == 1);
+    TEST("pin rows: one element pinned -> 1", FPLayout::FPPinnedRowCount(false, {1,0}, {}) == 1);
+    TEST("pin rows: layer + two elements -> 3", FPLayout::FPPinnedRowCount(true, {1,1}, {}) == 3);
+    TEST("pin rows: child pin counts", FPLayout::FPPinnedRowCount(false, {1,0},
+        {{0,1},{0}}) == 2);
+    TEST("pin rows: all sources -> 6", FPLayout::FPPinnedRowCount(true, {1,0,1},
+        {{1,0},{1},{0,0,1}}) == 6);
+    TEST("pin rows: unpinned children excluded", FPLayout::FPPinnedRowCount(false, {0,0},
+        {{0,0},{0}}) == 0);
+
+    // ---- UndoShortcutAction ----
+    TEST("shortcut: plain Z with ctrl -> undo", FPLayout::UndoShortcutAction(true, false, true, false)
+        == FPLayout::FUndoShortcutUndo);
+    TEST("shortcut: ctrl+shift+Z -> redo", FPLayout::UndoShortcutAction(true, true, true, false)
+        == FPLayout::FUndoShortcutRedo);
+    TEST("shortcut: ctrl+Y -> redo", FPLayout::UndoShortcutAction(true, false, false, true)
+        == FPLayout::FUndoShortcutRedo);
+    TEST("shortcut: no ctrl -> none", FPLayout::UndoShortcutAction(false, false, true, false)
+        == FPLayout::FUndoShortcutNone);
+    TEST("shortcut: ctrl+other key -> none", FPLayout::UndoShortcutAction(true, false, false, false)
+        == FPLayout::FUndoShortcutNone);
+    TEST("shortcut: ctrl+shift+Y still redo", FPLayout::UndoShortcutAction(true, true, false, true)
+        == FPLayout::FUndoShortcutRedo);
+}
+
+// --- Central canvas redesign: default-view part schematic (17 glyphs) ---
+void TestSchematicParts() {
+    printf("\n=== SchematicParts ===\n");
+    using namespace FPSchematic;
+    const std::vector<FPSchematicPart> Parts = DefaultPartSchematics();
+
+    TEST("schematic: 17 parts (13 anatomical + Bangs/Hair/BackHair/Head)",
+        Parts.size() == 17);
+    TEST("schematic: names unique", [&]() {
+        for (size_t i = 0; i < Parts.size(); ++i)
+            for (size_t j = i + 1; j < Parts.size(); ++j)
+                if (Parts[i].Name && Parts[j].Name &&
+                    std::string(Parts[i].Name) == std::string(Parts[j].Name))
+                    return false;
+        return true;
+    }());
+    TEST("schematic: every part has >= 3 points in [0,1]^2 with valid class", [&]() {
+        for (const FPSchematicPart& P : Parts)
+        {
+            if (!P.Name || !P.Name[0]) return false;
+            if (P.Outline.size() < 3) return false;
+            if ((int)P.DepthClass >= (int)FPDepthClass::MAX) return false;
+            for (const FPSchematicPoint& Pt : P.Outline)
+            {
+                if (Pt.X < 0.0 || Pt.X > 1.0 || Pt.Y < 0.0 || Pt.Y > 1.0) return false;
+            }
+        }
+        return true;
+    }());
+
+    // User rule: Bangs/Nose move with yaw (Front), Head is anchored (Base),
+    // BackHair/Ears sit on the far side (Back).
+    TEST("schematic: Bangs is Front", FPSchematicFindPart(Parts, "Bangs") &&
+        FPSchematicFindPart(Parts, "Bangs")->DepthClass == FPDepthClass::Front);
+    TEST("schematic: Nose is Front", FPSchematicFindPart(Parts, "Nose") &&
+        FPSchematicFindPart(Parts, "Nose")->DepthClass == FPDepthClass::Front);
+    TEST("schematic: Head is Base", FPSchematicFindPart(Parts, "Head") &&
+        FPSchematicFindPart(Parts, "Head")->DepthClass == FPDepthClass::Base);
+    TEST("schematic: BackHair is Back", FPSchematicFindPart(Parts, "BackHair") &&
+        FPSchematicFindPart(Parts, "BackHair")->DepthClass == FPDepthClass::Back);
+    TEST("schematic: Ears are Back", FPSchematicFindPart(Parts, "EarL") &&
+        FPSchematicFindPart(Parts, "EarR") &&
+        FPSchematicFindPart(Parts, "EarL")->DepthClass == FPDepthClass::Back &&
+        FPSchematicFindPart(Parts, "EarR")->DepthClass == FPDepthClass::Back);
+    // Phase 2: glyph classes follow the layer they resolve to — cheeks belong
+    // to the Cheeks layer (Front), the chin to the Head layer (Base).
+    TEST("schematic: Cheeks are Front (Cheeks layer)", FPSchematicFindPart(Parts, "CheekL") &&
+        FPSchematicFindPart(Parts, "CheekR") &&
+        FPSchematicFindPart(Parts, "CheekL")->DepthClass == FPDepthClass::Front &&
+        FPSchematicFindPart(Parts, "CheekR")->DepthClass == FPDepthClass::Front);
+    TEST("schematic: Chin is Base (Head layer)", FPSchematicFindPart(Parts, "Chin") &&
+        FPSchematicFindPart(Parts, "Chin")->DepthClass == FPDepthClass::Base);
+    TEST("schematic: every front feature moves with yaw (Front class)", [&]() {
+        for (const FPSchematicPart& P : Parts)
+            if (P.DepthClass != FPDepthClass::Front &&
+                P.DepthClass != FPDepthClass::Base &&
+                P.DepthClass != FPDepthClass::Back)
+                return false;
+        return true;
+    }());
+
+    // Probe table: one interior point per part. Probe points are chosen so the
+    // 13 anatomical probes also agree with the hotspot-region hit-testing
+    // (click parity with the parts strip); the four silhouette parts have no
+    // region, so their probes must hit the schematic only.
+    struct Probe { const char* Name; double X; double Y; };
+    static const Probe Probes[] = {
+        { "BrowL", 0.24, 0.14 }, { "BrowR", 0.76, 0.14 },
+        { "EyeL", 0.25, 0.24 },  { "EyeR", 0.75, 0.24 },
+        { "Nose", 0.50, 0.376 }, { "CheekL", 0.1367, 0.4333 },
+        { "CheekR", 0.8633, 0.4333 }, { "Mouth", 0.50, 0.61 },
+        { "Teeth", 0.50, 0.66 }, { "Chin", 0.50, 0.80 },
+        { "EarL", 0.06, 0.40 },  { "EarR", 0.94, 0.40 },
+        { "Neck", 0.50, 0.93 },  { "Bangs", 0.50, 0.10 },
+        { "Hair", 0.50, 0.04 },  { "BackHair", 0.30, 0.80 },
+        { "Head", 0.85, 0.70 },
+    };
+    for (const Probe& Pr : Probes)
+    {
+        const FPSchematicPart* Hit = FPSchematicPartAt(Parts, Pr.X, Pr.Y);
+        const std::string Msg = std::string("schematic probe hits ") + Pr.Name;
+        TEST(Msg.c_str(), Hit && std::string(Hit->Name) == Pr.Name);
+    }
+
+    // Click parity: for the 13 anatomical probes the region hit-test must
+    // agree with the schematic (or there is no region — the new parts).
+    for (const Probe& Pr : Probes)
+    {
+        const FPSchematicPart* Hit = FPSchematicPartAt(Parts, Pr.X, Pr.Y);
+        const char* RegionHit = FPLayout::FPHotspotHit(
+            FPLayout::DefaultHotspotRegions(), Pr.X, Pr.Y);
+        const std::string Msg = std::string("schematic/region parity at ") + Pr.Name;
+        TEST(Msg.c_str(), (!Hit) || !RegionHit || std::string(Hit->Name) == RegionHit);
+    }
+
+    // Boundary-inclusive semantics (same as the region hit-testing).
+    TEST("schematic: Bangs top edge is boundary-inclusive",
+        FPSchematicPartAt(Parts, 0.50, 0.05) &&
+        std::string(FPSchematicPartAt(Parts, 0.50, 0.05)->Name) == "Bangs");
+    TEST("schematic: just above the cap misses",
+        FPSchematicPartAt(Parts, 0.50, 0.01) == nullptr);
+    TEST("schematic: empty space at bottom-right corner misses",
+        FPSchematicPartAt(Parts, 0.98, 0.99) == nullptr);
+
+    // Named lookup.
+    TEST("schematic: FindPart finds EarL", FPSchematicFindPart(Parts, "EarL") != nullptr);
+    TEST("schematic: FindPart misses unknown", FPSchematicFindPart(Parts, "Scarf") == nullptr);
+
+    // Transformed glyphs stay hittable (the canvas transforms glyphs by the
+    // layer transform, mirroring FPLayout::FPHotspotTransformRegion).
+    TEST("schematic: transform mirror hits", [&]() {
+        int NoseIdx = -1;
+        for (size_t i = 0; i < Parts.size(); ++i)
+            if (Parts[i].Name && std::string(Parts[i].Name) == "Nose")
+            {
+                NoseIdx = (int)i;
+                break;
+            }
+        if (NoseIdx < 0) return false;
+        std::vector<FPSchematicPart> Moved = Parts;
+        FPSchematicPart& T = Moved[(size_t)NoseIdx];
+        T.Outline.clear();
+        for (const FPSchematicPoint& Pt : Parts[(size_t)NoseIdx].Outline)
+        {
+            const FPLayout::FPHotspotPoint H = FPLayout::FPHotspotTransformPoint(
+                FPLayout::FPHotspotPoint{ Pt.X, Pt.Y }, 0.1, 0.1, 1.0, 1.0, 0.0);
+            T.Outline.push_back({ H.X, H.Y });
+        }
+        const FPSchematicPart* Hit = FPSchematicPartAt(Moved, 0.6, 0.476);
+        return Hit && std::string(Hit->Name) == "Nose";
+    }());
+}
+
+// --- Central canvas redesign: part->layer coverage (Cheeks + aliases) ---
+void TestSchematicCoverage() {
+    printf("\n=== SchematicCoverage ===\n");
+    using namespace FPSchematic;
+    const std::vector<std::string>& Layers = FPSchematicLayerSet();
+
+    TEST("coverage: 10 base layers", Layers.size() == 10);
+    TEST("coverage: every layer has a class entry", [&]() {
+        for (const std::string& L : Layers)
+            if (FPTagClassForTag(L.c_str()) == nullptr) return false;
+        return true;
+    }());
+
+    // Derivation resolves the directional parts once the layers exist.
+    TEST("coverage: CheekL -> Cheeks",
+        std::string(FPLayout::FPHotspotLayerMatch(Layers, "CheekL")) == "Cheeks");
+    TEST("coverage: CheekR -> Cheeks",
+        std::string(FPLayout::FPHotspotLayerMatch(Layers, "CheekR")) == "Cheeks");
+    TEST("coverage: EarL -> Ears",
+        std::string(FPLayout::FPHotspotLayerMatch(Layers, "EarL")) == "Ears");
+    TEST("coverage: EarR -> Ears",
+        std::string(FPLayout::FPHotspotLayerMatch(Layers, "EarR")) == "Ears");
+    TEST("coverage: EyeL -> Eyes",
+        std::string(FPLayout::FPHotspotLayerMatch(Layers, "EyeL")) == "Eyes");
+    TEST("coverage: BrowL -> Brows",
+        std::string(FPLayout::FPHotspotLayerMatch(Layers, "BrowL")) == "Brows");
+    TEST("coverage: Teeth has no derivation (alias needed)",
+        FPLayout::FPHotspotLayerMatch(Layers, "Teeth") == nullptr);
+    TEST("coverage: Chin has no derivation (alias needed)",
+        FPLayout::FPHotspotLayerMatch(Layers, "Chin") == nullptr);
+    TEST("coverage: Neck has no derivation (alias needed)",
+        FPLayout::FPHotspotLayerMatch(Layers, "Neck") == nullptr);
+
+    // Aliases complete the remaining parts.
+    TEST("alias: Teeth -> Mouth", std::string(FPSchematicLayerAlias("Teeth")) == "Mouth");
+    TEST("alias: Chin -> Head", std::string(FPSchematicLayerAlias("Chin")) == "Head");
+    TEST("alias: Neck -> Head", std::string(FPSchematicLayerAlias("Neck")) == "Head");
+    TEST("alias: already-resolvable part -> none", FPSchematicLayerAlias("Eyes") == nullptr);
+    TEST("alias: empty -> none", FPSchematicLayerAlias("") == nullptr);
+
+    // The full contract: every one of the 17 schematic parts resolves to a
+    // base-preset layer (derivation, else alias).
+    static const char* Parts17[] = { "BrowL", "BrowR", "EyeL", "EyeR", "Nose",
+        "CheekL", "CheekR", "Teeth", "Mouth", "Chin", "EarL", "EarR", "Neck",
+        "Bangs", "Hair", "BackHair", "Head" };
+    for (const char* P : Parts17)
+    {
+        const char* M = FPLayout::FPHotspotLayerMatch(Layers, P);
+        const char* Resolved = M ? M : FPSchematicLayerAlias(P);
+        const std::string Msg = std::string("coverage: '") + P + "' resolves to a base layer";
+        TEST(Msg.c_str(), Resolved && Resolved[0]);
+    }
+    TEST("coverage: resolved layers are all in the base set", [&]() {
+        for (const char* P : Parts17)
+        {
+            const char* M = FPLayout::FPHotspotLayerMatch(Layers, P);
+            const char* Resolved = M ? M : FPSchematicLayerAlias(P);
+            if (!Resolved || !Resolved[0]) return false;
+            bool bInSet = false;
+            for (const std::string& L : Layers)
+                if (L == Resolved) { bInSet = true; break; }
+            if (!bInSet) return false;
+        }
+        return true;
+    }());
+}
+
+// --- Central canvas redesign: hair system contract ---
+void TestHairSystem() {
+    printf("\n=== HairSystem ===\n");
+    using namespace FPSchematic;
+
+    TEST("hair: set has 3 layers", FPHairLayerSet().size() == 3);
+    TEST("hair: Bangs is hair", FPSchematicIsHairLayer("Bangs"));
+    TEST("hair: Hair is hair", FPSchematicIsHairLayer("Hair"));
+    TEST("hair: BackHair is hair", FPSchematicIsHairLayer("BackHair"));
+    TEST("hair: Ears is not hair", !FPSchematicIsHairLayer("Ears"));
+    TEST("hair: unrelated tag is not hair", !FPSchematicIsHairLayer("Scarf"));
+    TEST("hair: empty tag is not hair", !FPSchematicIsHairLayer(""));
+    TEST("hair: every hair layer is in the base class table",
+        FPTagClassForTag("Bangs") && FPTagClassForTag("Hair") && FPTagClassForTag("BackHair"));
+
+    // Motion contract: front hair moves WITH yaw, back hair AGAINST it.
+    TEST("hair: Bangs is Front (moves with yaw)",
+        FPDepthClassForTag("Bangs") == FPDepthClass::Front &&
+        FPYawRule::ApplyClass(FPDepthClass::Front, 0.5) > 0.0);
+    TEST("hair: Hair is Back (moves against yaw)",
+        FPDepthClassForTag("Hair") == FPDepthClass::Back &&
+        FPYawRule::ApplyClass(FPDepthClass::Back, 0.5) < 0.0);
+    TEST("hair: BackHair is Back (moves against yaw)",
+        FPDepthClassForTag("BackHair") == FPDepthClass::Back &&
+        FPYawRule::ApplyClass(FPDepthClass::Back, 0.5) < 0.0);
+    TEST("hair: back hair mirrors front hair exactly",
+        FPYawRule::ApplyClass(FPDepthClass::Front, 0.5) ==
+        -FPYawRule::ApplyClass(FPDepthClass::Back, 0.5));
+}
+
+// --- Hair integration (Phase 7): midpoint chain-split jiggle ramp ---
+void TestHairMidpointJiggle() {
+    printf("\n=== HairMidpointJiggle ===\n");
+    using namespace FPSchematic;
+
+    // Feature disabled by default: Midpoint >= 1.0 keeps the legacy spring.
+    TEST("jiggle: default midpoint disables the split",
+        FPHairSegmentRamp(1.0, 0.0) == 0.0 && FPHairSegmentRamp(1.0, 0.5) == 0.0 &&
+        FPHairSegmentRamp(1.0, 1.0) == 0.0);
+
+    // Below/at the midpoint the base spring params apply.
+    TEST("jiggle: at midpoint ramp is 0",
+        FPHairSegmentRamp(0.5, 0.5) == 0.0);
+    TEST("jiggle: root side of midpoint stays base",
+        FPHairSegmentRamp(0.5, 0.25) == 0.0 && FPHairSegmentRamp(0.5, 0.0) == 0.0);
+
+    // Tip fully blends.
+    TEST("jiggle: tip is fully blended", FPHairSegmentRamp(0.5, 1.0) == 1.0);
+
+    // Smoothstep: exactly half-way across the split zone = 0.5.
+    TEST("jiggle: midpoint of split zone ramps 0.5",
+        std::abs(FPHairSegmentRamp(0.5, 0.75) - 0.5) < 1e-9);
+
+    // Ramp is monotonic across the split zone.
+    TEST("jiggle: ramp is monotonic", [&]() {
+        double Prev = 0.0;
+        for (int i = 0; i <= 100; ++i)
+        {
+            const double R = FPHairSegmentRamp(0.25, 0.25 + 0.75 * (i / 100.0));
+            if (R < Prev) return false;
+            Prev = R;
+        }
+        return true;
+    }());
+
+    // Blend is a linear interpolation on the ramp.
+    TEST("jiggle: blend lerps on the ramp",
+        FPHairSegmentBlend(2.0, 10.0, 0.5) == 6.0 &&
+        FPHairSegmentBlend(2.0, 10.0, 0.0) == 2.0 &&
+        FPHairSegmentBlend(2.0, 10.0, 1.0) == 10.0);
+
+    // Defensive clamping of chain progress.
+    TEST("jiggle: chain progress clamps",
+        FPHairSegmentRamp(0.5, -0.5) == 0.0 && FPHairSegmentRamp(0.5, 1.5) == 1.0);
+
+    // End fields equal to the base fields keep the spring uniform everywhere
+    // (the "bigger hair-end swing" only kicks in when End* differs).
+    TEST("jiggle: equal end fields are identity", [&]() {
+        for (int i = 0; i <= 100; ++i)
+        {
+            const double R = FPHairSegmentRamp(0.5, i / 100.0);
+            if (FPHairSegmentBlend(5.0, 5.0, R) != 5.0) return false;
+        }
+        return true;
+    }());
+
+    // Hair-end swing recipe: lower end stiffness + stronger end impulse at the tip.
+    TEST("jiggle: tip spring is softer and swanglier than the root", [&]() {
+        const double RootStiff = FPHairSegmentBlend(5.0, 1.0, FPHairSegmentRamp(0.5, 0.0));
+        const double TipStiff = FPHairSegmentBlend(5.0, 1.0, FPHairSegmentRamp(0.5, 1.0));
+        const double TipImp = FPHairSegmentBlend(1.0, 3.0, FPHairSegmentRamp(0.5, 1.0));
+        return RootStiff == 5.0 && TipStiff == 1.0 && TipImp == 3.0;
+    }());
+}
+
+// --- Central canvas redesign: schematic filter row mirror ---
+void TestSchematicFilters() {
+    printf("\n=== SchematicFilters ===\n");
+    using namespace FPSchematic;
+    const std::vector<std::string> Empty;
+    const std::vector<std::string> EyesOnly = { "Eyes" };
+
+    // No filters = everything.
+    TEST("filter: empty filters allow all", FPSchematicFilterAllows(FPDepthClass::Front, "Eyes", Empty, 0));
+    TEST("filter: empty filters allow unmapped too", FPSchematicFilterAllows(FPDepthClass::Front, "", Empty, 0));
+
+    // Depth radio: 1 Front, 2 Base, 3 Back.
+    TEST("filter: depth Front allows Front", FPSchematicFilterAllows(FPDepthClass::Front, "Eyes", Empty, 1));
+    TEST("filter: depth Base allows Base", FPSchematicFilterAllows(FPDepthClass::Base, "Head", Empty, 2));
+    TEST("filter: depth Back allows Back", FPSchematicFilterAllows(FPDepthClass::Back, "Ears", Empty, 3));
+    TEST("filter: depth mismatch rejects", !FPSchematicFilterAllows(FPDepthClass::Front, "Eyes", Empty, 3));
+    TEST("filter: depth 0 bypasses the radio", FPSchematicFilterAllows(FPDepthClass::Back, "Ears", Empty, 0));
+
+    // Layer multi-select: the part's resolved layer must be listed.
+    TEST("filter: layer listed allows", FPSchematicFilterAllows(FPDepthClass::Front, "Eyes", EyesOnly, 0));
+    TEST("filter: other layer rejected", !FPSchematicFilterAllows(FPDepthClass::Front, "Mouth", EyesOnly, 0));
+    TEST("filter: unmapped rejected when layer filter active",
+        !FPSchematicFilterAllows(FPDepthClass::Front, "", EyesOnly, 0));
+    TEST("filter: two-layer set allows either", [&]() {
+        std::vector<std::string> Two;
+        Two.push_back("Eyes");
+        Two.push_back("Mouth");
+        return FPSchematicFilterAllows(FPDepthClass::Front, "Eyes", Two, 0) &&
+            FPSchematicFilterAllows(FPDepthClass::Front, "Mouth", Two, 0) &&
+            !FPSchematicFilterAllows(FPDepthClass::Front, "Ears", Two, 0);
+    }());
+
+    // AND semantics.
+    TEST("filter: AND combines", FPSchematicFilterAllows(FPDepthClass::Front, "Eyes", EyesOnly, 1));
+    TEST("filter: AND rejects on either dimension",
+        !FPSchematicFilterAllows(FPDepthClass::Back, "Eyes", EyesOnly, 1) &&
+        !FPSchematicFilterAllows(FPDepthClass::Front, "Mouth", EyesOnly, 1));
+
+    // All 17 parts pass the identity filter once resolved.
+    static const char* Parts17[] = { "BrowL", "BrowR", "EyeL", "EyeR", "Nose",
+        "CheekL", "CheekR", "Teeth", "Mouth", "Chin", "EarL", "EarR", "Neck",
+        "Bangs", "Hair", "BackHair", "Head" };
+    const std::vector<std::string>& Layers = FPSchematicLayerSet();
+    for (const char* P : Parts17)
+    {
+        const char* M = FPLayout::FPHotspotLayerMatch(Layers, P);
+        const char* Resolved = M ? M : FPSchematicLayerAlias(P);
+        const FPSchematicPart* Part = FPSchematicFindPart(DefaultPartSchematics(), P);
+        const std::string Msg = std::string("filter: '") + P + "' passes the all-filter";
+        TEST(Msg.c_str(), Part && Resolved &&
+            FPSchematicFilterAllows(Part->DepthClass, Resolved, Empty, 0));
+    }
+}
+
+// --- Central canvas redesign: front/base/back yaw-motion rule ---
+void TestYawRule() {
+    printf("\n=== YawRule ===\n");
+    using R = FPSchematic::FPYawRule;
+    using C = FPSchematic::FPDepthClass;
+
+    // Pure mirror of ComputeOffsetForState (non-vertical branch).
+    TEST("yaw: front config +0.5 -> +2.5", R::ComputeYawOffset(1.0, false, 0.5) == 2.5);
+    TEST("yaw: back config +0.5 -> -2.5", R::ComputeYawOffset(1.0, true, 0.5) == -2.5);
+    TEST("yaw: negative yaw mirrors sign", R::ComputeYawOffset(1.0, false, -0.5) == -2.5);
+    TEST("yaw: zero yaw -> zero", R::ComputeYawOffset(1.0, false, 0.0) == 0.0);
+    TEST("yaw: clamp above +1", R::ComputeYawOffset(1.0, false, 2.0) == 5.0);
+    TEST("yaw: clamp below -1", R::ComputeYawOffset(1.0, false, -2.0) == -5.0);
+    TEST("yaw: half depth halves offset", R::ComputeYawOffset(0.5, false, 1.0) == 2.5);
+
+    // Class config is data.
+    TEST("yaw: front scale 1.0, no invert",
+        R::DepthScaleForClass(C::Front) == 1.0 && !R::InvertsParallaxForClass(C::Front));
+    TEST("yaw: base anchored - scale below front",
+        R::DepthScaleForClass(C::Base) < R::DepthScaleForClass(C::Front));
+    TEST("yaw: back inverts parallax", R::InvertsParallaxForClass(C::Back));
+
+    // The rule itself.
+    TEST("yaw rule: front moves WITH yaw (positive offset)",
+        R::ApplyClass(C::Front, 0.5) > 0.0);
+    TEST("yaw rule: back moves AGAINST yaw (negative offset)",
+        R::ApplyClass(C::Back, 0.5) < 0.0);
+    TEST("yaw rule: front and back are exact mirrors",
+        R::ApplyClass(C::Front, 0.5) == -R::ApplyClass(C::Back, 0.5));
+    TEST("yaw rule: base anchored - |base| < |front| at full yaw",
+        std::abs(R::ApplyClass(C::Base, 1.0)) < std::abs(R::ApplyClass(C::Front, 1.0)));
+    TEST("yaw rule: base zero at center", R::ApplyClass(C::Base, 0.0) == 0.0);
+    TEST("yaw rule: front saturates at MaxOffset", R::ApplyClass(C::Front, 1.0) == 5.0);
+    TEST("yaw rule: back saturates at -MaxOffset", R::ApplyClass(C::Back, 1.0) == -5.0);
+
+    // Base-preset tag table (deploy.py LAYERS drives the same tags).
+    TEST("tag: Eyes -> Front", FPSchematic::FPDepthClassForTag("Eyes") == C::Front);
+    TEST("tag: Brows -> Front", FPSchematic::FPDepthClassForTag("Brows") == C::Front);
+    TEST("tag: Mouth -> Front", FPSchematic::FPDepthClassForTag("Mouth") == C::Front);
+    TEST("tag: Bangs -> Front", FPSchematic::FPDepthClassForTag("Bangs") == C::Front);
+    TEST("tag: Nose -> Front", FPSchematic::FPDepthClassForTag("Nose") == C::Front);
+    TEST("tag: Cheeks -> Front", FPSchematic::FPDepthClassForTag("Cheeks") == C::Front);
+    TEST("tag: Head -> Base", FPSchematic::FPDepthClassForTag("Head") == C::Base);
+    TEST("tag: Hair -> Back", FPSchematic::FPDepthClassForTag("Hair") == C::Back);
+    TEST("tag: BackHair -> Back", FPSchematic::FPDepthClassForTag("BackHair") == C::Back);
+    TEST("tag: Ears -> Back", FPSchematic::FPDepthClassForTag("Ears") == C::Back);
+    TEST("tag: unknown tag -> Base", FPSchematic::FPDepthClassForTag("Scarf") == C::Base);
+    TEST("tag: empty tag -> Base", FPSchematic::FPDepthClassForTag("") == C::Base);
+}
+
 int main() {
     printf("===== Face Parallax Math Tests =====\n\n");
 
@@ -8387,6 +9054,16 @@ int main() {
     TestUndoPreservesUntouchedViews();
     TestUndoStackCap();
     TestPhaseP3Mirrors();
+    TestPhaseCIntegration();
+    TestPhaseDSyncIntegration();
+    TestPhaseLayerBadgeMirrors();
+    TestPhasePinMgrMirrors();
+    TestSchematicParts();
+    TestSchematicCoverage();
+    TestHairSystem();
+    TestHairMidpointJiggle();
+    TestSchematicFilters();
+    TestYawRule();
 
     printf("\n===== Results: %d/%d passed (%d failed) =====\n",
         g_passed, g_total, g_total - g_passed);

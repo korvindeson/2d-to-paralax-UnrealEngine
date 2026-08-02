@@ -79,6 +79,9 @@ void UFaceParallaxEditorSubsystem::Initialize(FSubsystemCollectionBase& Collecti
     RegisterToolbar();
     ScheduleAutoOpen();
 
+    WorldCleanupHandle = FWorldDelegates::OnWorldCleanup.AddUObject(
+        this, &UFaceParallaxEditorSubsystem::HandleWorldCleanup);
+
     // Register a real console command (in addition to the UFUNCTION(Exec)) so
     // typing 'FaceParallaxOpenEditor' always dispatches. UFUNCTION(Exec) bindings
     // can silently go stale after Live Coding patches the module layout, which
@@ -106,6 +109,11 @@ void UFaceParallaxEditorSubsystem::Deinitialize()
         FEditorDelegates::OnEditorInitialized.Remove(EditorLoadedHandle);
         EditorLoadedHandle.Reset();
     }
+    if (WorldCleanupHandle.IsValid())
+    {
+        FWorldDelegates::OnWorldCleanup.Remove(WorldCleanupHandle);
+        WorldCleanupHandle.Reset();
+    }
     if (bTabSpawnerRegistered)
     {
         FGlobalTabmanager::Get()->UnregisterNomadTabSpawner(FaceParallaxEditorTabName);
@@ -118,6 +126,28 @@ void UFaceParallaxEditorSubsystem::Deinitialize()
     }
     UnregisterToolbar();
     Super::Deinitialize();
+}
+
+// =============================================================
+// WORLD-BOUND TAB LIFECYCLE
+// =============================================================
+
+void UFaceParallaxEditorSubsystem::HandleWorldCleanup(UWorld* World, bool bSessionEnded, bool bCleanupResources)
+{
+    if (!EditorWidgetInstance) return;
+    UWorld* WidgetWorld = EditorWidgetInstance->GetWorld();
+    if (WidgetWorld && World != WidgetWorld) return;   // e.g. PIE worlds: keep the tab
+    // The editor world hosting the widget + preview actor is being discarded
+    // (level switch, compile). Drop the strong ref and close the tab so the
+    // old world's package can be GC'd — otherwise the engine fatals with
+    // "World Memory Leaks".
+    EditorWidgetInstance = nullptr;
+    if (DockedTab.IsValid())
+    {
+        TSharedRef<SDockTab> TabRef = DockedTab.ToSharedRef();
+        DockedTab.Reset();
+        TabRef->RequestCloseTab();
+    }
 }
 
 // =============================================================
@@ -308,7 +338,28 @@ TSharedRef<SDockTab> UFaceParallaxEditorSubsystem::SpawnEditorTab(const FSpawnTa
         [this](TSharedRef<SDockTab> ClosedTab)
         {
             EditorWidgetInstance = nullptr;
+            if (DockedTab == ClosedTab) DockedTab.Reset();
         }));
+    // Phase F: grab keyboard focus when the tab is activated so Ctrl+Z /
+    // Ctrl+Shift+Z / Ctrl+Y reach the widget's NativeOnKeyDown (the editor's
+    // own global undo takes over whenever focus is elsewhere).
+    // Re-entrancy guard: SetKeyboardFocus on a widget inside the dock tab can
+    // itself re-trigger tab activation, which would re-enter this lambda and
+    // recurse to a stack overflow; the flag breaks that loop on the first
+    // re-entry (the focus change itself still completes).
+    TSharedRef<bool> bInsideTabActivation = MakeShared<bool>(false);
+    Tab->SetOnTabActivated(SDockTab::FOnTabActivatedCallback::CreateLambda(
+        [this, bInsideTabActivation](TSharedRef<SDockTab> ActivatedTab, ETabActivationCause InActivationCause)
+        {
+            if (*bInsideTabActivation) return;
+            if (EditorWidgetInstance && EditorWidgetInstance->GetCachedWidget().IsValid())
+            {
+                *bInsideTabActivation = true;
+                FSlateApplication::Get().SetKeyboardFocus(EditorWidgetInstance->GetCachedWidget());
+                *bInsideTabActivation = false;
+            }
+        }));
+    DockedTab = Tab;
     return Tab;
 }
 

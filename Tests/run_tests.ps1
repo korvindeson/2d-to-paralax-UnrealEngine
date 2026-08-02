@@ -154,7 +154,7 @@ public class FaceParallaxEditor : ModuleRules
 		PrivateDependencyModuleNames.AddRange(new string[] {
 			"Core", "CoreUObject", "Engine", "InputCore",
 			"UnrealEd", "Slate", "SlateCore", "UMG", "UMGEditor",
-			"ToolMenus", "LevelEditor", "ContentBrowser", "AssetTools", "AssetRegistry",
+			"ToolMenus", "LevelEditor", "ContentBrowser", "ContentBrowserData", "AssetTools", "AssetRegistry",
 			"EditorScriptingUtilities", "EditorSubsystem", "WorkspaceMenuStructure",
 			"FaceParallax", "ProceduralMeshComponent"
 		});
@@ -231,7 +231,7 @@ if ($doSync) {
     $editorPub  = Join-Path $pluginRoot "FaceParallaxEditor\Public"
     $editorPrv  = Join-Path $pluginRoot "FaceParallaxEditor\Private"
 
-    $runtimePublicFiles = @("FaceParallaxTypes.h","FaceParallaxComponent.h","FaceParallaxPreset.h","FaceParallaxPreviewActor.h","DepthDebugVisualizerComponent.h")
+    $runtimePublicFiles = @("FaceParallaxTypes.h","FaceParallaxComponent.h","FaceParallaxPreset.h","FaceParallaxPreviewActor.h","DepthDebugVisualizerComponent.h","FaceParallaxSchematic.h")
     $runtimePrivateFiles = @("FaceParallaxComponent.cpp","FaceParallaxPreset.cpp","FaceParallaxPreviewActor.cpp","DepthDebugVisualizerComponent.cpp","FaceParallaxModule.cpp")
     $editorPublicFiles = @("FaceParallaxEditorWidget.h","FaceParallaxEditorSubsystem.h")
     $editorPrivateFiles = @("FaceParallaxEditorWidget.cpp","FaceParallaxEditorSubsystem.cpp",

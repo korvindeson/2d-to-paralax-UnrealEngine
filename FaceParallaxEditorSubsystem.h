@@ -57,4 +57,13 @@ private:
     void ScheduleAutoOpen();
     void AutoOpenEditorLoaded(double Duration);
     FDelegateHandle EditorLoadedHandle;
+
+    // World-bound lifecycle: the widget and its preview actor live in the
+    // editor world. When that world is discarded (level switch, compile), the
+    // tab must close and the instance must be dropped — the subsystem's strong
+    // ref plus the open tab's Slate widget both pin the old world, which trips
+    // the engine's fatal "World Memory Leaks" check at world teardown.
+    void HandleWorldCleanup(UWorld* World, bool bSessionEnded, bool bCleanupResources);
+    FDelegateHandle WorldCleanupHandle;
+    TSharedPtr<class SDockTab> DockedTab;
 };

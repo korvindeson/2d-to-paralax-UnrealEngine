@@ -147,11 +147,11 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
     TSharedRef<SVerticalBox> CenterCol = BuildPanelCanvas(Root);
     TSharedRef<SVerticalBox> PropPanel = SNew(SVerticalBox);
     BuildPanelSlotProps(Root, PropPanel);
-    BuildPanelTransformRail();
-    BuildPanelDebugRail();
+    BuildPanelArtRail();
+    BuildPanelAnimatedRail();
     BuildPanelCameraRail();
+    BuildPanelNestedRail();
     BuildPanelAdvancedRail();
-    BuildPanelAssignRail();
     BuildPanelTimeline(Root);
     BuildPanelBottomBar(Root);
     // Phase 4b: rail chips are built after every panel builder has registered
@@ -196,44 +196,36 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
             [SNew(SBox).HeightOverride(FPLayout::PinnedStripHeight)[QB]];
     }
 
-    // --- Assemble main row: rail icons | rail switcher | canvas | slot props ---
+    // --- Top-level rail tab bar (TopTabs): labeled tabs replacing the old
+    // single-char icon column. Mirrors the manifest TopTabs row exactly
+    // (TT-Tab0..5 + TT-Spacer, fixed height FPLayout::TabBarHeight).
+    {
+        TSharedRef<SHorizontalBox> Tabs = SNew(SHorizontalBox);
+        struct { int32 I; const TCHAR* T; float W; } TabDefs[] = {
+            {0, TEXT("View & Layer"), 82.0f},
+            {1, TEXT("Art"), 34.0f},
+            {2, TEXT("Animated Variants"), 104.0f},
+            {3, TEXT("Nested Elements & Pins"), 122.0f},
+            {4, TEXT("Camera/Preview"), 82.0f},
+            {5, TEXT("Advanced"), 60.0f},
+        };
+        for (auto& Td : TabDefs)
+        {
+            const int32 RI = Td.I;
+            TSharedRef<SButton> TabBtn = MakeBtn(Td.T, [this, RI](){ SetActiveRailIndex(RI); },
+                ActiveRailIndex == RI ? AccentBlue() : FLinearColor(0.14f,0.14f,0.16f),
+                FLinearColor(0.08f,0.08f,0.08f));
+            Tabs->AddSlot().Padding(FMargin(2)).AutoWidth()
+                [SNew(SBox).WidthOverride(Td.W).HeightOverride(22)[TabBtn]];
+        }
+        Tabs->AddSlot().FillWidth(1.0f);    // TT-Spacer
+        Root->AddSlot().AutoHeight()
+            [SNew(SBox).HeightOverride(FPLayout::TabBarHeight)[Tabs]];
+    }
+
+    // --- Assemble main row: rail switcher | canvas | slot props ---
     {
         TSharedRef<SHorizontalBox> MainRow = SNew(SHorizontalBox);
-        // Rail icon column
-        TSharedRef<SVerticalBox> RailIcons = SNew(SVerticalBox);
-        struct { int32 I; const TCHAR* T; FLinearColor C; } RailDefs[] = {
-            {0, TEXT("L"), FLinearColor(0.6f,0.8f,1.0f)},        // Layers
-            {1, TEXT("T"), FLinearColor(0.6f,1.0f,0.6f)},        // Transform
-            {2, TEXT("C"), FLinearColor(1.0f,0.7f,0.5f)},        // Camera
-            {3, TEXT("D"), FLinearColor(1.0f,0.6f,0.8f)},        // Debug
-            {4, TEXT("A"), FLinearColor(0.8f,0.7f,1.0f)},        // Advanced
-            {5, TEXT("S"), FLinearColor(1.0f,0.9f,0.6f)},        // Assign
-        };
-        const TCHAR* RailTooltips[] = {
-            TEXT("Layers: layer list, add/remove, status matrix"),
-            TEXT("Transform: quick actions, copy-from, link, onion skin"),
-            TEXT("Camera: orbit controls, zone boundaries, blend preview"),
-            TEXT("Debug: import, config checks, outline->depth, visualizer"),
-            TEXT("Advanced: cross-layer overlay, param reference, nested art"),
-            TEXT("Assign: bulk-assign grid, fill/clear ops, performance tier, camera source"),
-        };
-        for (auto& Rd : RailDefs)
-        {
-            const int32 RI = Rd.I;
-            TSharedRef<SButton> IconBtn = MakeBtn(Rd.T, [this, RI](){ SetActiveRailIndex(RI); },
-                ActiveRailIndex == RI ? AccentBlue() : FLinearColor(0.12f,0.12f,0.14f),
-                FLinearColor(0.08f,0.08f,0.08f));
-            IconBtn->SetToolTipText(FText::FromString(RailTooltips[RI]));
-            RailIcons->AddSlot().Padding(FMargin(2,3)).AutoHeight()
-                [SNew(SBox).WidthOverride(30).HeightOverride(30)[IconBtn]];
-        }
-        RailIcons->AddSlot().FillHeight(1.0f);
-        MainRow->AddSlot().AutoWidth().VAlign(VAlign_Fill)
-            [SNew(SBox).WidthOverride(36)
-                [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("NoBorder"))
-                    .BorderBackgroundColor(FLinearColor(0.05f,0.05f,0.05f))
-                    .Padding(FMargin(2,4,0,4))
-                    [RailIcons]]];
         // Rail column: the rail switcher fills it; the pinned quick-actions
         // strip is a full-width Root row above the main row (never scrolled).
         TSharedRef<SVerticalBox> RailCol = SNew(SVerticalBox);

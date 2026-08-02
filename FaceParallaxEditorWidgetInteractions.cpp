@@ -52,8 +52,10 @@ void UFaceParallaxEditorWidget::SetSelectedLayer(const FString& LayerName)
 // Phase 4/1: a canvas hotspot region (or parts-strip chip) was clicked.
 // Resolve the region to a primary layer via the preset's explicit
 // HotspotLayerMap first, then FPLayout::FPHotspotLayerMatch derivation,
-// select that layer, and open the Import Folder Wizard preselected on the
-// part — one click goes from "zone" straight to assigning art to it.
+// select that layer, and — when the layer still has NO art — open the
+// Import Folder Wizard preselected on the part: one click goes from "zone"
+// straight to assigning art to it. Layers that already have art just get
+// selected (the live preview is the review surface).
 void UFaceParallaxEditorWidget::HandleHotspotClick(const FString& RegionName)
 {
     if (RegionName.IsEmpty()) return;
@@ -61,17 +63,107 @@ void UFaceParallaxEditorWidget::HandleHotspotClick(const FString& RegionName)
     if (LayerTag.IsValid())
     {
         SetSelectedLayer(LayerTag.ToString());
-        if (RailSwitcher.IsValid()) RailSwitcher->SetActiveWidgetIndex(1);   // Transform rail
+        SetActiveRailIndex(1);   // Art rail: import + tweak controls
+        if (LayerHasFrontArt(LayerTag))
+        {
+            SetStatus(FString::Printf(TEXT("Hotspot '%s' -> layer '%s' (art assigned — reviewing)"),
+                *RegionName, *LayerTag.ToString()), AccentBlue());
+            return;
+        }
         SetStatus(FString::Printf(TEXT("Hotspot '%s' -> layer '%s' — import art for this zone"),
             *RegionName, *LayerTag.ToString()), AccentBlue());
     }
     else
     {
+        SetSelectedLayer(FString());
         SetStatus(FString::Printf(
             TEXT("Hotspot '%s' is unmapped — right-click the chip to map it to a layer"),
             *RegionName), AccentBlue());
     }
     OpenImportFolderWizard(RegionName);
+}
+
+// Redesign: a schematic glyph on the canvas was clicked. Resolve the part to
+// its layer (same derivation as the parts strip), select it, and — when the
+// layer has no assigned art — open the Import Folder Wizard preselected on
+// exactly the part the user clicked. Layers with art are just selected for
+// review ("assigned art replaces the default outline").
+void UFaceParallaxEditorWidget::HandleSchematicPartClick(const FString& PartName)
+{
+    if (PartName.IsEmpty()) return;
+    const FName LayerTag = ResolveHotspotLayer(PartName);
+    if (LayerTag.IsValid())
+    {
+        SetSelectedLayer(LayerTag.ToString());
+        SetActiveRailIndex(1);   // Art rail: import + tweak controls
+        if (LayerHasFrontArt(LayerTag))
+        {
+            SetStatus(FString::Printf(TEXT("Part '%s' -> layer '%s' (art assigned — reviewing)"),
+                *PartName, *LayerTag.ToString()), AccentBlue());
+            return;
+        }
+        SetStatus(FString::Printf(TEXT("Part '%s' -> layer '%s' — import art for this part"),
+            *PartName, *LayerTag.ToString()), AccentBlue());
+    }
+    else
+    {
+        SetSelectedLayer(FString());
+        SetStatus(FString::Printf(TEXT("Part '%s' has no mapped layer — import art to assign one"),
+            *PartName), AccentBlue());
+    }
+    OpenImportFolderWizard(PartName);
+}
+
+// Redesign: does the layer's Front-state slot carry an albedo texture? The
+// schematic default view paints glyphs only for layers WITHOUT art, so this
+// is the "art replaces the outline" gate.
+bool UFaceParallaxEditorWidget::LayerHasFrontArt(FName LayerTag) const
+{
+    if (!ActivePreset || LayerTag.IsNone()) return false;
+    return ActivePreset->GetSlot(EFaceAngleState::Front, LayerTag).Textures.Albedo != nullptr;
+}
+
+// ===== CENTRAL CANVAS REDESIGN: FILTERS + FOCUS (Phase 3) =====
+
+// Layer chip clicked: add the layer to the multi-select, or remove it when
+// already active (toggle). The empty selection = "all layers".
+void UFaceParallaxEditorWidget::ToggleSchematicLayerFilter(const FString& LayerTag)
+{
+    if (LayerTag.IsEmpty()) return;
+    const int32 Found = SchematicLayerFilter.IndexOfByPredicate(
+        [&LayerTag](const FString& T) { return T == LayerTag; });
+    if (Found == INDEX_NONE)
+        SchematicLayerFilter.Add(LayerTag);
+    else
+        SchematicLayerFilter.RemoveAt(Found);
+    RebuildSchematicFilterRow();
+    RefreshSchematic();
+}
+
+// Depth radio: 0 = all classes, 1 = Front, 2 = Base, 3 = Back.
+void UFaceParallaxEditorWidget::SetSchematicDepthFilter(int32 Depth)
+{
+    SchematicDepthFilter = FMath::Clamp(Depth, 0, 3);
+    RebuildSchematicFilterRow();
+    RefreshSchematic();
+}
+
+// Clear chip: back to "everything shows".
+void UFaceParallaxEditorWidget::ClearSchematicFilters()
+{
+    SchematicDepthFilter = 0;
+    SchematicLayerFilter.Reset();
+    RebuildSchematicFilterRow();
+    RefreshSchematic();
+}
+
+// Focus toggle: zoom-to-fit the selected layer's glyphs (no-op without a
+// selection — the lens stays off until a layer is selected).
+void UFaceParallaxEditorWidget::ToggleSchematicFocus()
+{
+    bSchematicFocus = !bSchematicFocus;
+    RebuildSchematicFilterRow();
+    RefreshSchematic();
 }
 
 // Alt+click on a hotspot or parts chip: open the Import Folder Wizard
@@ -81,6 +173,58 @@ void UFaceParallaxEditorWidget::ImportHotspotRegion(const FString& RegionName)
     if (RegionName.IsEmpty()) return;
     OpenImportFolderWizard(RegionName);
     SetStatus(FString::Printf(TEXT("Import Art opened for hotspot '%s'"), *RegionName), AccentBlue());
+}
+
+// Phase C: canvas click-to-select. The point is in UV space (already
+// converted by SFaceHotspotLayer); pick the TOPMOST layer whose transformed
+// quad contains it (draw order = layer list order, last = on top —
+// FPLayout::FPHitTopmostQuad). The quads were built from the active view
+// state's stored transforms in RefreshHotspotRegions, so the click hits the
+// pixels the master material actually paints in this view.
+void UFaceParallaxEditorWidget::SelectCanvasLayerAt(const FVector2D& UV)
+{
+    if (!HotspotLayer.IsValid()) return;
+    const std::vector<FPLayout::FPLayerQuad>& Quads = HotspotLayer->GetLayerQuads();
+    const TArray<FString>& Tags = HotspotLayer->GetQuadLayerTags();
+    const int32 Top = FPLayout::FPHitTopmostQuad(UV.X, UV.Y, Quads);
+    if (Top >= 0 && Tags.IsValidIndex(Top))
+    {
+        SetSelectedLayer(Tags[Top]);
+        SetStatus(FString::Printf(TEXT("Selected '%s' (canvas)"),
+            *Tags[Top]), AccentBlue());
+    }
+}
+
+// Phase C: right-click / ctrl+click on the canvas cycles through the layers
+// overlapping the click point — FPLayout::FPCycleQuadHit semantics: the hit
+// AFTER the current selection (wrapping), or the topmost hit when the
+// selection is not among them. Same quad source as SelectCanvasLayerAt.
+void UFaceParallaxEditorWidget::CycleCanvasLayerAt(const FVector2D& UV)
+{
+    if (!HotspotLayer.IsValid()) return;
+    const std::vector<FPLayout::FPLayerQuad>& Quads = HotspotLayer->GetLayerQuads();
+    const TArray<FString>& Tags = HotspotLayer->GetQuadLayerTags();
+    if (Quads.empty()) return;
+    std::vector<int> Hits;
+    for (size_t i = 0; i < Quads.size(); ++i)
+        if (FPLayout::FPPointInQuad(UV.X, UV.Y, Quads[i]))
+            Hits.push_back((int)i);
+    if (Hits.empty()) return;
+    int32 Current = -1;
+    const FString SelTag = SelectedLayerName.IsValid() ? SelectedLayerName.ToString() : FString();
+    for (int32 i = 0; i < Tags.Num(); ++i)
+        if (Tags[i] == SelTag)
+        {
+            Current = i;
+            break;
+        }
+    const int32 Next = FPLayout::FPCycleQuadHit(Hits, Current);
+    if (Next >= 0 && Tags.IsValidIndex(Next))
+    {
+        SetSelectedLayer(Tags[Next]);
+        SetStatus(FString::Printf(TEXT("Selected '%s' (cycle)"),
+            *Tags[Next]), AccentBlue());
+    }
 }
 
 // Cycle Preview (Phase 2): a scripted 8-second tour of the live animation
@@ -141,6 +285,22 @@ void UFaceParallaxEditorWidget::StopLivePreview()
 
 void UFaceParallaxEditorWidget::NativeTick(const FGeometry&, float InDeltaTime)
 {
+    // Redesign: post-assign flash ring — keep the hotspot layer repainting
+    // while the 1.5s pulse is live, then clear the flash state.
+    if (AssignFlashTimestamp >= 0.0)
+    {
+        const double FlashAge = FSlateApplication::Get().GetCurrentTime() - AssignFlashTimestamp;
+        if (FlashAge < 1.5)
+        {
+            if (HotspotLayer.IsValid())
+                HotspotLayer->Invalidate(EInvalidateWidgetReason::Paint);
+        }
+        else
+        {
+            AssignFlashLayer.Reset();
+            AssignFlashTimestamp = -1.0;
+        }
+    }
     // Live canvas: no setter re-arms the scene capture, so poll it here —
     // the render target re-captures at ~30Hz, keeping the canvas in sync
     // with texture/transform/orbit/view-state edits (imports, sliders, etc.).
@@ -204,7 +364,9 @@ void UFaceParallaxEditorWidget::NativeTick(const FGeometry&, float InDeltaTime)
 }
 
 // Explicit map first (persisted in the preset), then derived match against
-// the union of all view layer tags; None when neither yields a layer.
+// the union of all view layer tags, then the part-name alias table
+// (Teeth->Mouth, Chin/Neck->Head — Phase 2 coverage). None when all three
+// yield nothing.
 FName UFaceParallaxEditorWidget::ResolveHotspotLayer(const FString& RegionName) const
 {
     if (!ActivePreset) return FName();
@@ -216,7 +378,9 @@ FName UFaceParallaxEditorWidget::ResolveHotspotLayer(const FString& RegionName) 
     for (const FName& Tag : GetUILayerTags())
         TagStrings.emplace_back(TCHAR_TO_UTF8(*Tag.ToString()));
     const char* Derived = FPLayout::FPHotspotLayerMatch(TagStrings, TCHAR_TO_UTF8(*RegionName));
-    return Derived ? FName(UTF8_TO_TCHAR(Derived)) : FName();
+    if (Derived) return FName(UTF8_TO_TCHAR(Derived));
+    const char* Aliased = FPSchematic::FPSchematicLayerAlias(TCHAR_TO_UTF8(*RegionName));
+    return Aliased ? FName(UTF8_TO_TCHAR(Aliased)) : FName();
 }
 
 // Persist an explicit region -> layer mapping (or clear when LayerTag is
@@ -580,6 +744,28 @@ TArray<EFaceAngleState> UFaceParallaxEditorWidget::GetLinkTargets(EFaceAngleStat
     return Out;
 }
 
+TArray<bool> UFaceParallaxEditorWidget::GetPickedSyncViews() const
+{
+    TArray<bool> Out;
+    for (int32 i = 0; i < SyncViewCheckBoxes.Num() && i < 10; ++i)
+        Out.Add(SyncViewCheckBoxes[i].IsValid() && SyncViewCheckBoxes[i]->IsChecked());
+    return Out;
+}
+
+TArray<EFaceAngleState> UFaceParallaxEditorWidget::GetLinkTargetsForEditing(EFaceAngleState Active) const
+{
+    TArray<EFaceAngleState> Out;
+    const TArray<bool> Picked = GetPickedSyncViews();
+    std::vector<int> PickedVec;
+    for (bool B : Picked) PickedVec.push_back(B ? 1 : 0);
+    for (int32 i = 0; i <= (int32)EFaceAngleState::Bottom; ++i)
+    {
+        if (FPLayout::FPLinkDestIsPicked(PickedVec, (int32)Active, i))
+            Out.Add((EFaceAngleState)i);
+    }
+    return Out;
+}
+
 FVector2D UFaceParallaxEditorWidget::GizmoUVToPixels(const FVector2D& UV, const FVector2D& CanvasSize)
 {
     return FVector2D(UV.X * CanvasSize.X, UV.Y * CanvasSize.Y);
@@ -606,7 +792,9 @@ void UFaceParallaxEditorWidget::ApplyCanonicalTransformWithLink(EFaceAngleState 
     FWidgetUndoScope UndoScope(this, TEXT("Set Layer Transform"));
     if (bLinkAcrossViews)
     {
-        for (EFaceAngleState S : GetLinkTargets(State))
+        // Phase D: link broadcasts to the PICKED destination views; with no
+        // picks it falls back to every other view (the Phase B contract).
+        for (EFaceAngleState S : GetLinkTargetsForEditing(State))
             ActivePreset->SetCanonicalTransform(S, LayerTag, T);
     }
     ActivePreset->SetCanonicalTransform(State, LayerTag, T);
@@ -629,7 +817,7 @@ void UFaceParallaxEditorWidget::SetGizmoTransform(const FFaceArtTransform& T)
 {
     if (!ValidatePreset() || !SelectedLayerName.IsValid()) return;
     const TArray<EFaceAngleState> Targets = bLinkAcrossViews
-        ? GetLinkTargets(ActiveViewState)
+        ? GetLinkTargetsForEditing(ActiveViewState)
         : TArray<EFaceAngleState>{ActiveViewState};
     if (bViewOverrideMode)
     {
@@ -1104,6 +1292,29 @@ void UFaceParallaxEditorWidget::SetDisplayMode(int32 Mode)
     RefreshUI();
 }
 
+// Phase C: unified inspect mode (0 Textured, 1 Outline, 2 Depth, 3 Wireframe,
+// 4 Depth Heatmap). Applies the canonical toggle combo (FPLayout::
+// InspectComboForMode) to the SAME five booleans the Advanced rail Config
+// checks own — the checks stay the single source of truth, and the canvas
+// row highlight re-derives from them on RefreshUI.
+void UFaceParallaxEditorWidget::SetInspectMode(int32 Mode)
+{
+    if (Mode < 0 || Mode > 4) return;
+    const FPLayout::FPInspectCombo B = FPLayout::InspectComboForMode(Mode);
+    bLocalShowTextures = B.T;
+    bLocalShowDepthMesh = B.D;
+    bLocalShowWireframe = B.W;
+    bLocalColorByDepth = B.C;
+    if (CheckShowTextures.IsValid()) CheckShowTextures->SetIsChecked(B.T);
+    if (CheckDepthMesh.IsValid()) CheckDepthMesh->SetIsChecked(B.D);
+    if (CheckWireframe.IsValid()) CheckWireframe->SetIsChecked(B.W);
+    if (CheckColorByDepth.IsValid()) CheckColorByDepth->SetIsChecked(B.C);
+    SetOutlineOverlayVisible(B.O);
+    SetStatus(FString::Printf(TEXT("Inspect mode: %s"),
+        UTF8_TO_TCHAR(FPLayout::InspectModeLabel(Mode))), AccentBlue());
+    RefreshUI();
+}
+
 void UFaceParallaxEditorWidget::RefreshDebugSliders()
 {
     UDepthDebugVisualizerComponent* Vis =
@@ -1213,6 +1424,48 @@ void UFaceParallaxEditorWidget::BuildEdgeOverlay()
             *Tex->GetName(), Grid, Grid, Density * 100.0f, Mean)));
     }
     RebuildHistogramBars();
+}
+
+// Redesign: Depth Overlay checkbox on the canvas mode row — composites the
+// selected layer's depth map over the live preview (live + depth in one
+// view) at low opacity.
+void UFaceParallaxEditorWidget::ToggleDepthOverlay(bool bEnable)
+{
+    bDepthOverlayVisible = bEnable;
+    SetStatus(FString::Printf(TEXT("Depth overlay %s"),
+        bEnable ? TEXT("on — composited over the live preview") : TEXT("off")), AccentBlue());
+    RefreshUI();
+}
+
+// Redesign: rebuild the depth-composite overlay texture from the selected
+// layer's depth map (raw pass-through — the Depth checkbox just wants the
+// map visible over the live view, so no processing is needed).
+void UFaceParallaxEditorWidget::BuildDepthOverlay()
+{
+    DepthOverlayTexture = nullptr;
+    if (!ValidatePreset() || !SelectedLayerName.IsValid()) return;
+    UTexture2D* Tex = ActivePreset->GetTexturesForSlot(ActiveViewState, SelectedLayerName).Depth;
+    if (!Tex) return;
+    DepthOverlayTexture = Tex;
+    DepthOverlayBrush.SetResourceObject(Tex);
+    DepthOverlayBrush.ImageSize = FVector2D((float)Tex->GetSizeX(), (float)Tex->GetSizeY());
+    DepthOverlayBrush.DrawAs = ESlateBrushDrawType::Image;
+}
+
+// Redesign: canvas drag-resize (SFaceCanvasResizer). Widget state only —
+// the Phase H design constant stays the default; clamps keep the canvas
+// usable.
+void UFaceParallaxEditorWidget::SetCanvasHeight(float Height)
+{
+    const float NewHeight = FMath::Clamp(Height, 220.0f, 900.0f);
+    if (NewHeight != CanvasHeight)
+    {
+        CanvasHeight = NewHeight;
+        if (PreviewHost.IsValid())
+        {
+            PreviewHost->Invalidate(EInvalidateWidgetReason::Layout);
+        }
+    }
 }
 
 void UFaceParallaxEditorWidget::RebuildHistogramBars()
@@ -1416,6 +1669,48 @@ void UFaceParallaxEditorWidget::RefreshPinControls()
         SetSliderReadout(SliderPinMinRot, TextPinMinRot, 0.0f, -180.0f, 180.0f, FString::Printf(TEXT("%.1f"), 0.0f));
         SetSliderReadout(SliderPinMaxRot, TextPinMaxRot, 0.0f, -180.0f, 180.0f, FString::Printf(TEXT("%.1f"), 0.0f));
         SetSliderReadout(SliderPinRotSens, TextPinRotSens, 1.0f, -10.0f, 10.0f, FString::Printf(TEXT("%.2f"), 1.0f));
+    }
+
+    // Jiggle controls — nested elements only (layer pins have no jiggle).
+    if (CheckJiggleEnabled.IsValid())
+    {
+        CheckJiggleEnabled->SetIsChecked(bHasElement && El.bJiggleEnabled
+            ? ECheckBoxState::Checked : ECheckBoxState::Unchecked);
+    }
+    SetCtrlEnabled(CheckJiggleEnabled, bHasElement);
+    const bool bJiggleActive = bHasElement && El.bJiggleEnabled;
+    for (const TSharedPtr<SSlider>& Sl : { SliderJiggleStiffness, SliderJiggleDamping,
+        SliderJiggleImpulse, SliderJiggleMidpoint, SliderJiggleEndStiffness,
+        SliderJiggleEndDamping, SliderJiggleEndImpulse })
+    {
+        SetCtrlEnabled(Sl, bJiggleActive);
+    }
+    if (bHasElement)
+    {
+        SetSliderReadout(SliderJiggleStiffness, TextJiggleStiffness, El.JiggleSettings.Stiffness, 0.0f, 20.0f,
+            FString::Printf(TEXT("%.2f"), El.JiggleSettings.Stiffness));
+        SetSliderReadout(SliderJiggleDamping, TextJiggleDamping, El.JiggleSettings.Damping, 0.0f, 5.0f,
+            FString::Printf(TEXT("%.2f"), El.JiggleSettings.Damping));
+        SetSliderReadout(SliderJiggleImpulse, TextJiggleImpulse, El.JiggleSettings.ImpulseScale, 0.0f, 10.0f,
+            FString::Printf(TEXT("%.2f"), El.JiggleSettings.ImpulseScale));
+        SetSliderReadout(SliderJiggleMidpoint, TextJiggleMidpoint, El.JiggleSettings.Midpoint, 0.0f, 1.0f,
+            FString::Printf(TEXT("%.2f"), El.JiggleSettings.Midpoint));
+        SetSliderReadout(SliderJiggleEndStiffness, TextJiggleEndStiffness, El.JiggleSettings.EndStiffness, 0.0f, 20.0f,
+            FString::Printf(TEXT("%.2f"), El.JiggleSettings.EndStiffness));
+        SetSliderReadout(SliderJiggleEndDamping, TextJiggleEndDamping, El.JiggleSettings.EndDamping, 0.0f, 5.0f,
+            FString::Printf(TEXT("%.2f"), El.JiggleSettings.EndDamping));
+        SetSliderReadout(SliderJiggleEndImpulse, TextJiggleEndImpulse, El.JiggleSettings.EndImpulseScale, 0.0f, 10.0f,
+            FString::Printf(TEXT("%.2f"), El.JiggleSettings.EndImpulseScale));
+    }
+    else
+    {
+        SetSliderReadout(SliderJiggleStiffness, TextJiggleStiffness, 5.0f, 0.0f, 20.0f, FString::Printf(TEXT("%.2f"), 5.0f));
+        SetSliderReadout(SliderJiggleDamping, TextJiggleDamping, 0.5f, 0.0f, 5.0f, FString::Printf(TEXT("%.2f"), 0.5f));
+        SetSliderReadout(SliderJiggleImpulse, TextJiggleImpulse, 1.0f, 0.0f, 10.0f, FString::Printf(TEXT("%.2f"), 1.0f));
+        SetSliderReadout(SliderJiggleMidpoint, TextJiggleMidpoint, 1.0f, 0.0f, 1.0f, FString::Printf(TEXT("%.2f"), 1.0f));
+        SetSliderReadout(SliderJiggleEndStiffness, TextJiggleEndStiffness, 5.0f, 0.0f, 20.0f, FString::Printf(TEXT("%.2f"), 5.0f));
+        SetSliderReadout(SliderJiggleEndDamping, TextJiggleEndDamping, 0.5f, 0.0f, 5.0f, FString::Printf(TEXT("%.2f"), 0.5f));
+        SetSliderReadout(SliderJiggleEndImpulse, TextJiggleEndImpulse, 1.0f, 0.0f, 10.0f, FString::Printf(TEXT("%.2f"), 1.0f));
     }
 }
 
@@ -1639,6 +1934,17 @@ void UFaceParallaxEditorWidget::RebuildNestedOutliner()
                 [MakeLbl(TEXT("[Jiggle]"), 8, FLinearColor(0.6f,1.0f,0.6f))];
         R->AddSlot().FillWidth(1.0f);
         R->AddSlot().Padding(FMargin(4,2)).AutoWidth()
+            [MakeBtn(TEXT("Dup"), [this, i]()
+            {
+                UFaceParallaxComponent* Comp = GetParallaxComponent();
+                if (!Comp || !SelectedLayerName.IsValid()) return;
+                if (i < 0 || i >= Comp->GetNestedElementCount(ActiveViewState, SelectedLayerName)) return;
+                int32 NewIndex = Comp->GetNestedElementCount(ActiveViewState, SelectedLayerName);
+                DuplicateNestedElement(ActiveViewState, SelectedLayerName, i, NewIndex);
+                SelectedNestedElementIndex = NewIndex;
+                RefreshUI();
+            }, FLinearColor(0.6f,1.0f,0.6f), FLinearColor(0.1f,0.1f,0.1f))];
+        R->AddSlot().Padding(FMargin(4,2)).AutoWidth()
             [MakeBtn(TEXT("Del"), [this, i]()
             {
                 RemoveNestedElement(ActiveViewState, SelectedLayerName, i);
@@ -1661,6 +1967,241 @@ void UFaceParallaxEditorWidget::RebuildNestedOutliner()
                     [MakeLbl(TEXT("[Pin]"), 7, FLinearColor(1.0f,0.8f,0.4f))];
             NestedOutlinerBox->AddSlot().AutoHeight()[Cr];
         }
+    }
+}
+
+void UFaceParallaxEditorWidget::SetNestedPaneMode(int32 Mode)
+{
+    NestedPaneMode = (Mode == 1) ? 1 : 0;
+    if (NestedPaneSwitcher.IsValid())
+        NestedPaneSwitcher->SetActiveWidgetIndex(NestedPaneMode);
+    RefreshUI();
+}
+
+void UFaceParallaxEditorWidget::RebuildPinManager()
+{
+    if (!PinManagerBox.IsValid()) return;
+    PinManagerBox->ClearChildren();
+    UFaceParallaxComponent* Comp = GetParallaxComponent();
+    if (!Comp || !SelectedLayerName.IsValid() || !ActivePreset)
+    {
+        PinManagerBox->AddSlot().AutoHeight()
+            [MakeLbl(TEXT("No layer selected."), 8, FLinearColor(0.5f,0.5f,0.5f))];
+        return;
+    }
+
+    // Copy-target options: every top-level element of the layer/state.
+    const int32 N = Comp->GetNestedElementCount(ActiveViewState, SelectedLayerName);
+    FString PrevSel = PinCopyTarget.IsValid() ? *PinCopyTarget : FString();
+    PinCopyTargets.Reset();
+    for (int32 i = 0; i < N; ++i)
+    {
+        FFaceNestedArt E = Comp->GetNestedElement(ActiveViewState, SelectedLayerName, i);
+        FString Ename = E.ElementName.IsValid() ? E.ElementName.ToString()
+            : FString::Printf(TEXT("Element %d"), i);
+        PinCopyTargets.Add(MakeShared<FString>(Ename));
+    }
+    PinCopyTarget.Reset();
+    if (N > 0)
+    {
+        PinCopyTarget = PinCopyTargets[0];
+        if (!PrevSel.IsEmpty())
+            for (const TSharedPtr<FString>& Opt : PinCopyTargets)
+                if (*Opt == PrevSel) { PinCopyTarget = Opt; break; }
+    }
+
+    int32 Rows = 0;
+    const FFaceArtSlot LS = ActivePreset->GetSlot(ActiveViewState, SelectedLayerName);
+    if (LS.LayerPin3D.bPinned) ++Rows;
+    for (int32 i = 0; i < N; ++i)
+    {
+        FFaceNestedArt E = Comp->GetNestedElement(ActiveViewState, SelectedLayerName, i);
+        if (E.Pin3D.bPinned) ++Rows;
+        for (int32 c = 0; c < E.Children.Num(); ++c)
+            if (E.Children[c].Pin3D.bPinned) ++Rows;
+    }
+
+    TSharedRef<STextBlock> Info = MakeLbl(
+        FString::Printf(TEXT("Pinned: %d item%s (layer + elements)"), Rows, Rows == 1 ? TEXT("") : TEXT("s")),
+        8, FLinearColor(0.8f, 0.8f, 0.8f));
+    Info->SetToolTipText(FText::FromString(TEXT("One row per pinned item. Click a row to jump to its pin "
+        "controls; the visibility checkbox and Unpin act on the row's element.")));
+    PinManagerBox->AddSlot().AutoHeight().Padding(FMargin(0,2))
+        [Info];
+
+    auto AddRow = [&](const FString& Name, bool bVis,
+        TFunction<void()>&& OnJump, TFunction<void()>&& OnToggle, TFunction<void()>&& OnUnpin)
+    {
+        TSharedRef<SHorizontalBox> R = SNew(SHorizontalBox);
+        R->AddSlot().Padding(FMargin(0,1)).AutoWidth()
+            [SNew(SCheckBox).IsChecked(bVis ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
+                .OnCheckStateChanged_Lambda([Fn = MoveTemp(OnToggle)](ECheckBoxState S){ Fn(); })];
+        R->AddSlot().Padding(FMargin(4,1)).AutoWidth()
+            [MakeBtn(Name, [Fn = MoveTemp(OnJump)](){ Fn(); },
+                FLinearColor(0.75f,0.75f,0.85f), FLinearColor(0.12f,0.12f,0.12f))];
+        R->AddSlot().Padding(FMargin(4,1)).AutoWidth()
+            [MakeBtn(TEXT("Unpin"), [Fn = MoveTemp(OnUnpin)](){ Fn(); },
+                FLinearColor(1.0f,0.5f,0.5f), FLinearColor(0.1f,0.1f,0.1f))];
+        PinManagerBox->AddSlot().AutoHeight().Padding(FMargin(0,1))[R];
+    };
+
+    // Whole-layer pin row.
+    if (LS.LayerPin3D.bPinned)
+    {
+        AddRow(TEXT("Layer Pin"), true,
+            [this]()
+            {
+                SetNestedPaneMode(0);
+                RefreshUI();
+            },
+            [](){},
+            [this]()
+            {
+                if (!ActivePreset || !SelectedLayerName.IsValid()) return;
+                FWidgetUndoScope UndoScope(this, TEXT("Unpin Layer"));
+                FFaceArtSlot S = ActivePreset->GetSlot(ActiveViewState, SelectedLayerName);
+                S.LayerPin3D.bPinned = false;
+                ActivePreset->SetSlot(ActiveViewState, SelectedLayerName, S);
+                RefreshUI();
+            });
+    }
+
+    // Element + child pin rows.
+    for (int32 i = 0; i < N; ++i)
+    {
+        FFaceNestedArt E = Comp->GetNestedElement(ActiveViewState, SelectedLayerName, i);
+        FString Ename = E.ElementName.IsValid() ? E.ElementName.ToString()
+            : FString::Printf(TEXT("Element %d"), i);
+        if (E.Pin3D.bPinned)
+        {
+            bool bVis = true;
+            if (const bool* V = E.ViewVisibility.Find(ActiveViewState)) bVis = *V;
+            AddRow(Ename, bVis,
+                [this, i]()   // jump: select element + show its controls
+                {
+                    SelectedNestedElementIndex = i;
+                    SelectedPinRow = i;
+                    SetNestedPaneMode(0);
+                },
+                [this, i]()   // visibility toggle
+                {
+                    UFaceParallaxComponent* Comp = GetParallaxComponent();
+                    if (!Comp || !SelectedLayerName.IsValid()) return;
+                    if (i >= Comp->GetNestedElementCount(ActiveViewState, SelectedLayerName)) return;
+                    FFaceNestedArt E2 = Comp->GetNestedElement(ActiveViewState, SelectedLayerName, i);
+                    bool bNow = true;
+                    if (const bool* V = E2.ViewVisibility.Find(ActiveViewState)) bNow = *V;
+                    E2.ViewVisibility.FindOrAdd(ActiveViewState) = !bNow;
+                    Comp->SetNestedElement(ActiveViewState, SelectedLayerName, i, E2);
+                    RefreshUI();
+                },
+                [this, i]()   // unpin
+                {
+                    UFaceParallaxComponent* Comp = GetParallaxComponent();
+                    if (!Comp || !SelectedLayerName.IsValid()) return;
+                    if (i >= Comp->GetNestedElementCount(ActiveViewState, SelectedLayerName)) return;
+                    FWidgetUndoScope UndoScope(this, TEXT("Unpin Element"));
+                    FFaceNestedArt E2 = Comp->GetNestedElement(ActiveViewState, SelectedLayerName, i);
+                    E2.Pin3D.bPinned = false;
+                    Comp->SetNestedElement(ActiveViewState, SelectedLayerName, i, E2);
+                    RefreshUI();
+                });
+        }
+        for (int32 c = 0; c < E.Children.Num(); ++c)
+        {
+            if (!E.Children[c].Pin3D.bPinned) continue;
+            FString CName = E.Children[c].ElementName.IsValid()
+                ? E.Children[c].ElementName.ToString()
+                : FString::Printf(TEXT("Child %d"), c);
+            bool bVis = true;
+            if (const bool* V = E.Children[c].ViewVisibility.Find(ActiveViewState)) bVis = *V;
+            AddRow(FString(TEXT("  \u2514 ")) + CName, bVis,
+                [this, i]()   // jump: select the parent element
+                {
+                    SelectedNestedElementIndex = i;
+                    SelectedPinRow = i;
+                    SetNestedPaneMode(0);
+                },
+                [this, i, c]()   // visibility toggle
+                {
+                    UFaceParallaxComponent* Comp = GetParallaxComponent();
+                    if (!Comp || !SelectedLayerName.IsValid()) return;
+                    if (i >= Comp->GetNestedElementCount(ActiveViewState, SelectedLayerName)) return;
+                    FFaceNestedArt E2 = Comp->GetNestedElement(ActiveViewState, SelectedLayerName, i);
+                    if (c >= E2.Children.Num()) return;
+                    bool bNow = true;
+                    if (const bool* V = E2.Children[c].ViewVisibility.Find(ActiveViewState)) bNow = *V;
+                    E2.Children[c].ViewVisibility.FindOrAdd(ActiveViewState) = !bNow;
+                    Comp->SetNestedElement(ActiveViewState, SelectedLayerName, i, E2);
+                    RefreshUI();
+                },
+                [this, i, c]()   // unpin child
+                {
+                    UFaceParallaxComponent* Comp = GetParallaxComponent();
+                    if (!Comp || !SelectedLayerName.IsValid()) return;
+                    if (i >= Comp->GetNestedElementCount(ActiveViewState, SelectedLayerName)) return;
+                    FWidgetUndoScope UndoScope(this, TEXT("Unpin Child"));
+                    FFaceNestedArt E2 = Comp->GetNestedElement(ActiveViewState, SelectedLayerName, i);
+                    if (c >= E2.Children.Num()) return;
+                    E2.Children[c].Pin3D.bPinned = false;
+                    Comp->SetNestedElement(ActiveViewState, SelectedLayerName, i, E2);
+                    RefreshUI();
+                });
+        }
+    }
+
+    // Copy selected pin to another element (Phase E duplicate-to-other-element).
+    if (N > 1)
+    {
+        TSharedRef<SHorizontalBox> CopyRow = SNew(SHorizontalBox);
+        CopyRow->AddSlot().Padding(FMargin(0,2)).AutoWidth()
+            [MakeLbl(TEXT("Copy pin \u2192"), 8, FLinearColor(0.7f,0.8f,1.0f))];
+        if (PinCopyTargets.Num() > 0 && PinCopyTarget.IsValid())
+        {
+            CopyRow->AddSlot().Padding(FMargin(4,2)).AutoWidth()
+                [SNew(SComboBox<TSharedPtr<FString>>)
+                    .OptionsSource(&PinCopyTargets)
+                    .OnGenerateWidget_Lambda([](TSharedPtr<FString> In)
+                    {
+                        return SNew(STextBlock).Text(FText::FromString(*In))
+                            .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8));
+                    })
+                    .OnSelectionChanged_Lambda([this](TSharedPtr<FString> In, ESelectInfo::Type)
+                    {
+                        if (In.IsValid()) PinCopyTarget = In;
+                    })
+                    [SNew(STextBlock)
+                        .Text_Lambda([this]()
+                        {
+                            return PinCopyTarget.IsValid()
+                                ? FText::FromString(*PinCopyTarget) : FText::FromString(TEXT("-"));
+                        })
+                        .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))]];
+        }
+        CopyRow->AddSlot().Padding(FMargin(4,2)).AutoWidth()
+            [MakeBtn(TEXT("Copy"), [this]()
+            {
+                UFaceParallaxComponent* Comp = GetParallaxComponent();
+                if (!Comp || !SelectedLayerName.IsValid() || SelectedPinRow < 0) return;
+                const int32 Src = SelectedPinRow;
+                if (Src >= Comp->GetNestedElementCount(ActiveViewState, SelectedLayerName)) return;
+                int32 Dst = -1;
+                for (int32 i = 0; i < PinCopyTargets.Num() && i < Comp->GetNestedElementCount(ActiveViewState, SelectedLayerName); ++i)
+                {
+                    if (PinCopyTarget.IsValid() && PinCopyTargets[i] == PinCopyTarget) { Dst = i; break; }
+                }
+                if (Dst < 0 || Dst == Src) return;
+                FWidgetUndoScope UndoScope(this, TEXT("Copy Pin to Element"));
+                FFaceNestedArt S = Comp->GetNestedElement(ActiveViewState, SelectedLayerName, Src);
+                FFaceNestedArt D = Comp->GetNestedElement(ActiveViewState, SelectedLayerName, Dst);
+                D.Pin3D = S.Pin3D;
+                D.Pin3D.bPinned = true;
+                Comp->SetNestedElement(ActiveViewState, SelectedLayerName, Dst, D);
+                if (TextStatus.IsValid())
+                    TextStatus->SetText(FText::FromString(TEXT("Pin copied to target element.")));
+                RefreshUI();
+            }, FLinearColor(0.6f,1.0f,0.6f), FLinearColor(0.1f,0.1f,0.1f))];
+        PinManagerBox->AddSlot().AutoHeight().Padding(FMargin(0,4,0,0))[CopyRow];
     }
 }
 
@@ -2061,12 +2602,12 @@ void UFaceParallaxEditorWidget::RebuildProblemsPanel()
             IssuesPageIndex + 1, TotalPages)));
 }
 
-// Phase 4: shows the issues summary in the Problems accordion header.
+// Phase 4: shows the issues summary in the Problems accordion header
+// (Problems is Advanced-rail section index 3 per FPLayout::RailSectionTitles()).
 void UFaceParallaxEditorWidget::RefreshProblemsSummary()
 {
-    if (!DebugAccordion.IsValid()) return;
-    const int32 N = DebugAccordion->NumSections();
-    if (N == 0) return;
-    DebugAccordion->SetSectionSummary(N - 1, ProblemsSummaryText, ProblemsSummaryColor);
+    if (!AdvancedAccordion.IsValid()) return;
+    if (AdvancedAccordion->NumSections() <= 3) return;
+    AdvancedAccordion->SetSectionSummary(3, ProblemsSummaryText, ProblemsSummaryColor);
 }
 #endif

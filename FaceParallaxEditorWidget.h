@@ -186,6 +186,8 @@ public:
 
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Transform")
     void SyncLayerToAllViews(EFaceAngleState State, FName LayerTag);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Transform")
     void SyncTexturesLayerToAllViews(EFaceAngleState State, FName LayerTag);
 
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Transform")
@@ -194,6 +196,13 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Face Editor|Transform")
     void SyncLayerToSelectedViews(EFaceAngleState State, FName LayerTag,
         const TArray<EFaceAngleState>& DestViews, bool bIncludeTextures);
+
+    // Textures-only variant of SyncLayerToSelectedViews (Phase D): copies the
+    // slot's albedo/normal/depth textures to the picked destination views,
+    // leaving every canonical transform untouched.
+    UFUNCTION(BlueprintCallable, Category = "Face Editor|Transform")
+    void SyncTexturesToSelectedViews(EFaceAngleState State, FName LayerTag,
+        const TArray<EFaceAngleState>& DestViews);
 
     // Per-axis sync (P3): propagates ONE axis of the active slot's canonical
     // into every other state's view override as a relative delta, preserving
@@ -1019,8 +1028,30 @@ public:
     double LastSyncTimestamp = 0.0;
     int32 LastSyncedViewCount = 0;
 
+    // ===== CENTRAL CANVAS REDESIGN: SCHEMATIC DEFAULT VIEW =====
+    void HandleSchematicPartClick(const FString& PartName); // canvas glyph pick: select layer; empty layer -> Import Wizard
+    void RefreshSchematic();                                // repaint part glyphs for artless layers (RefreshUI)
+    bool LayerHasFrontArt(FName LayerTag) const;            // does the Front slot carry an albedo texture?
+    void BuildDepthOverlay();                               // depth-map composite over the live preview (checkbox)
+    void ToggleDepthOverlay(bool bEnable);
+    float GetCanvasHeight() const { return CanvasHeight; }  // drag-resize state (SFaceCanvasResizer)
+    void SetCanvasHeight(float Height);
+    const FString& GetAssignFlashLayer() const { return AssignFlashLayer; }       // post-assign pulse ring
+    double GetAssignFlashTimestamp() const { return AssignFlashTimestamp; }        // post-assign pulse ring
+    FName GetSelectedLayerName() const { return SelectedLayerName; }               // schematic selection emphasis
+
+    // ===== CENTRAL CANVAS REDESIGN: FILTERS + FOCUS =====
+    void ToggleSchematicLayerFilter(const FString& LayerTag); // add/remove a layer chip in the schematic filter
+    void SetSchematicDepthFilter(int32 Depth);                // 0 all, 1 Front, 2 Base, 3 Back
+    void ClearSchematicFilters();                             // reset the depth radio + all layer chips
+    void ToggleSchematicFocus();                              // zoom-to-fit the selected layer's glyphs
+    void RebuildSchematicFilterRow();                         // rebuild the filter row chips (after any toggle)
+
     // ===== PHASE D: DISPLAY + DEBUG =====
     void SetDisplayMode(int32 Mode);
+    void SetInspectMode(int32 Mode);                 // Phase C: apply a canonical inspect combo (0-4)
+    void SelectCanvasLayerAt(const FVector2D& UV);   // Phase C: canvas click -> topmost layer-quad hit
+    void CycleCanvasLayerAt(const FVector2D& UV);    // Phase C: right/ctrl-click cycles overlapping layers
     void RefreshDebugSliders();
     void BuildEdgeOverlay();
     void RebuildHistogramBars();
@@ -1035,6 +1066,11 @@ public:
     void RebuildNestedOutliner();
     void RebuildParamTable();
     void RebuildProblemsPanel();
+    // Phase E: pin-manager pane inside the Nested Art / Pins section - one
+    // row per pinned item (layer pin, elements, pinned children) with
+    // visibility toggle, jump-to-element, unpin, and copy-pin-to-element.
+    void RebuildPinManager();
+    void SetNestedPaneMode(int32 Mode);   // 0 = element controls, 1 = pin manager
     static float FrameFillRatio(const TArray<bool>& Occupied);
     static int32 ClampGridCols(int32 MaxFrames);
     static void AppendSortedUnique(TArray<FString>& Out, const FString& Line);
@@ -1045,6 +1081,9 @@ protected:
     // Cycle Preview state machine: drives blink/expression/viseme/orbit
     // phases from widget tick while the tool tab is visible.
     virtual void NativeTick(const FGeometry& MyGeometry, float InDeltaTime) override;
+    // Phase F: Ctrl+Z undo / Ctrl+Shift+Z & Ctrl+Y redo while the panel
+    // has keyboard focus (mirror table FPLayout::UndoShortcutAction).
+    virtual FReply NativeOnKeyDown(const FGeometry& InGeometry, const FKeyEvent& InKeyEvent) override;
     bool bCyclePreviewActive = false;
     int32 CyclePhase = -1;
     float CyclePhaseTime = 0.0f;
@@ -1099,7 +1138,7 @@ private:
     TSharedPtr<SImage> ThumbDepth;
     TSharedPtr<STextBlock> TextStatus;
     TSharedPtr<STextBlock> TextStatusDetail;
-    // Assign rail (rail 5): bulk-assign grid cell dots + coverage label.
+    // Art rail (rail 1): bulk-assign grid cell dots + coverage label.
     TArray<TSharedPtr<SImage>> AssignCells;
     TSharedPtr<STextBlock> TextAssignCoverage;
     int32 PerformanceTier = 1;
@@ -1163,6 +1202,23 @@ private:
     TSharedPtr<STextBlock> TextPinRotSens;
     TSharedPtr<STextBlock> TextPinIndex;
 
+    // Jiggle controls (nested elements only; layer pins have no jiggle)
+    TSharedPtr<SCheckBox> CheckJiggleEnabled;
+    TSharedPtr<SSlider> SliderJiggleStiffness;
+    TSharedPtr<SSlider> SliderJiggleDamping;
+    TSharedPtr<SSlider> SliderJiggleImpulse;
+    TSharedPtr<SSlider> SliderJiggleMidpoint;
+    TSharedPtr<SSlider> SliderJiggleEndStiffness;
+    TSharedPtr<SSlider> SliderJiggleEndDamping;
+    TSharedPtr<SSlider> SliderJiggleEndImpulse;
+    TSharedPtr<STextBlock> TextJiggleStiffness;
+    TSharedPtr<STextBlock> TextJiggleDamping;
+    TSharedPtr<STextBlock> TextJiggleImpulse;
+    TSharedPtr<STextBlock> TextJiggleMidpoint;
+    TSharedPtr<STextBlock> TextJiggleEndStiffness;
+    TSharedPtr<STextBlock> TextJiggleEndDamping;
+    TSharedPtr<STextBlock> TextJiggleEndImpulse;
+
     // Config checkboxes
     TSharedPtr<SCheckBox> CheckBlinking;
     TSharedPtr<SCheckBox> CheckSwoosh;
@@ -1202,7 +1258,14 @@ private:
     TSharedPtr<SCheckBox> CheckViewOverrideMode;
     TArray<TSharedPtr<SCheckBox>> SyncViewCheckBoxes;   // shared strip checkboxes (pick-mode toggles, one per state)
     TSharedPtr<SHorizontalBox> SyncPickerRow;
-    TSharedPtr<SCheckBox> CheckSyncTextures;
+    int32 SyncOp = 2;   // grouped sync-op selector (Phase D): 0 Transform / 1 Textures / 2 Both (FPLayout::SyncOpBoth)
+
+    // Phase D: snapshot of the state-strip pick checklist (true = picked).
+    TArray<bool> GetPickedSyncViews() const;
+
+    // Phase D: link-broadcast targets - the PICKED views (excluding Active);
+    // when nothing is picked, every other view (Phase B fallback contract).
+    TArray<EFaceAngleState> GetLinkTargetsForEditing(EFaceAngleState Active) const;
     bool bClearStateArmed = false;
     bool bClearAllArmed = false;
 
@@ -1219,7 +1282,7 @@ private:
     // ===== WORKSPACE RAIL (Phase A) =====
     int32 ActiveRailIndex = 0;
     TSharedPtr<SWidgetSwitcher> RailSwitcher;
-    TArray<TSharedPtr<SVerticalBox>> RailContent;   // 0 Layers 1 Transform 2 Camera 3 Debug 4 Advanced 5 Assign
+    TArray<TSharedPtr<SVerticalBox>> RailContent;   // 0 Layers 1 Art 2 Animated 3 NestedPins 4 Camera 5 Advanced
     TSharedPtr<SVerticalBox> SlotPropsBox;          // right pane: selected slot properties
     TSharedPtr<SBox> PreviewHost;                   // center canvas container
     TSharedPtr<SImage> OnionSkinImage;              // onion-skin ghost (Phase B)
@@ -1229,8 +1292,10 @@ private:
     class SFaceLayerGizmo;
     TSharedPtr<SFaceLayerGizmo> GizmoWidget;        // canvas transform gizmo (Phase B)
     class SFaceAccordion;
-    TSharedPtr<SFaceAccordion> DebugAccordion;      // Debug rail: 8 collapsible sections (P16)
-    TSharedPtr<SFaceAccordion> AdvancedAccordion;   // Advanced rail: 4 collapsible sections (P16)
+    TSharedPtr<SFaceAccordion> ArtAccordion;        // Art rail: 2 collapsible sections (P16)
+    TSharedPtr<SFaceAccordion> AnimatedAccordion;   // Animated rail: 2 collapsible sections (P16)
+    TSharedPtr<SFaceAccordion> NestedAccordion;     // NestedPins rail: 3 collapsible sections (P16)
+    TSharedPtr<SFaceAccordion> AdvancedAccordion;   // Advanced rail: 6 collapsible sections (P16)
     class SFaceDisclosure;
     TSharedPtr<SFaceDisclosure> ConfigDisclosure;   // Config checks progressive disclosure (Phase 4b)
     TSharedPtr<SFaceDisclosure> VisemeDisclosure;   // Viseme grid progressive disclosure (Phase 4b)
@@ -1238,12 +1303,17 @@ private:
     TSharedPtr<SFaceRailResizer> RailResizer;       // drag-resize handle rail/canvas (Phase 4b)
     class SFaceHotspotLayer;
     TSharedPtr<SFaceHotspotLayer> HotspotLayer;     // canvas overlay: spatial part pick (Phase 4)
+    class SFaceSchematicLayer;
+    TSharedPtr<SFaceSchematicLayer> SchematicLayer; // canvas overlay: default-view part schematic (redesign)
+    class SFaceCanvasResizer;
+    TSharedPtr<SFaceCanvasResizer> CanvasResizer;   // canvas drag-resize handle (redesign)
     class SZoneBoundaryOverlay;
     TSharedPtr<SZoneBoundaryOverlay> ZoneDragOverlay; // zone diagram drag layer (Phase P3)
     class SFaceCarouselNav;                         // P18: prev/page/next strip under a carousel viewport
     TSharedPtr<SWrapBox> PartsStrip;                // canvas strip: 13 anatomical part chips (Phase 1)
     bool bStatePickMode = false;                    // state-strip pick mode: tab clicks toggle sync destinations
     int32 DisplayMode = 0;                          // 0 Textured 1 Depth 2 Wireframe 3 Split
+    int32 InspectMode = 0;                          // Phase C: derived inspect mode (0-4, -1 custom)
     TArray<TSharedPtr<SImage>> ViewTabDots;         // per-state status dots in view strip
     TSharedPtr<STextBlock> TextSlotAlbedoStatus;    // inline import status (filename/check/warning)
     TSharedPtr<STextBlock> TextSlotNormalStatus;
@@ -1256,6 +1326,20 @@ private:
     TSharedPtr<STextBlock> TextSyncDrift;           // Phase C: last-synced indicator
     bool bShowPins = false;                         // Phase 3: paint all nested-element pin markers on the gizmo
     TSharedPtr<SCheckBox> CheckShowPins;            // Phase 3: Show Pins toggle on the canvas mode row
+    // Redesign: canvas state
+    float CanvasHeight = 450.0f;                    // canvas height override (drag-resize; default = design constant)
+    bool bDepthOverlayVisible = false;              // depth-map composite over the live preview
+    TSharedPtr<SCheckBox> CheckDepthOverlay;        // depth overlay toggle on the canvas mode row
+    TSharedPtr<SImage> DepthOverlayImage;           // depth composite overlay (redesign)
+    double AssignFlashTimestamp = -1.0;             // post-assign pulse ring: start time (FSlateApplication time)
+    FString AssignFlashLayer;                       // post-assign pulse ring: layer that just received art
+    // Redesign: canvas interactivity (Phase 0) + schematic filters/focus
+    bool bCanvasPinMode = false;                    // canvas click router: pin-drag handled by the hotspot layer
+    bool bSchematicFilterVisible = true;            // filter row under the canvas mode row (Filter checkbox)
+    TSharedPtr<SWrapBox> SchematicFilterBox;        // filter row: depth segments + layer chips + focus/clear
+    TArray<FString> SchematicLayerFilter;           // selected layer chips (empty = all layers)
+    int32 SchematicDepthFilter = 0;                 // 0 all, 1 Front, 2 Base, 3 Back
+    bool bSchematicFocus = false;                   // zoom-to-fit the selected layer's glyphs
 
     // ===== PHASE D: DEBUG VIEW =====
     TSharedPtr<SVerticalBox> HistogramBox;          // 16 luminance bars
@@ -1265,6 +1349,13 @@ private:
     TSharedPtr<SCheckBox> CheckHistogram;
     TSharedPtr<SVerticalBox> HullThumbBox;          // 10 state thumbnails
     TArray<FSlateBrush> HullThumbBrushes;           // per-state albedo brushes
+    TArray<FSlateBrush> LayerRowBrushes;            // Phase E: per-layer-row albedo thumbs in the layer list
+    int32 NestedPaneMode = 0;                       // Phase E: 0 = element controls, 1 = pin manager
+    TSharedPtr<SWidgetSwitcher> NestedPaneSwitcher; // Phase E: Elements / Pins pane switcher
+    TSharedPtr<SVerticalBox> PinManagerBox;         // Phase E: pin-manager row list
+    int32 SelectedPinRow = -1;                      // Phase E: selected pin-manager row (-1 none, >=0 element)
+    TArray<TSharedPtr<FString>> PinCopyTargets;     // Phase E: copy-pin target element options
+    TSharedPtr<FString> PinCopyTarget;              // Phase E: selected copy target
     TSharedPtr<SSlider> SliderDebugGrid;
     TSharedPtr<SSlider> SliderDebugMeshSize;
     TSharedPtr<SSlider> SliderDebugHeight;
@@ -1290,6 +1381,9 @@ private:
     TObjectPtr<class UTexture2D> OutlineDepthTexture;
     UPROPERTY(Transient)
     TObjectPtr<class UTexture2D> EdgeOverlayTexture;
+    // Redesign: depth-map composite over the live preview (Depth checkbox).
+    UPROPERTY(Transient)
+    TObjectPtr<class UTexture2D> DepthOverlayTexture;
     // Per-state depth textures baked by the last GenerateDepthFromOutlines run
     // (kept referenced until the next run; each target view gets its own map).
     UPROPERTY(Transient)
@@ -1297,6 +1391,7 @@ private:
     FSlateBrush OutlineDepthBrush;
     FSlateBrush OnionSkinBrush;
     FSlateBrush EdgeOverlayBrush;
+    FSlateBrush DepthOverlayBrush;
     TSharedPtr<SImage> OutlinePreviewImage;
     TSharedPtr<SCheckBox> CheckOutlineOverlay;
     TSharedPtr<STextBlock> TextOutlineStats;
@@ -1419,11 +1514,11 @@ private:
     void BuildPanelLayers(const TSharedRef<SVerticalBox>& Root);
     TSharedRef<SVerticalBox> BuildPanelCanvas(const TSharedRef<SVerticalBox>& Root);
     void BuildPanelSlotProps(const TSharedRef<SVerticalBox>& Root, TSharedRef<SVerticalBox>& PropPanelOut);
-    void BuildPanelTransformRail();
-    void BuildPanelDebugRail();
+    void BuildPanelArtRail();
+    void BuildPanelAnimatedRail();
     void BuildPanelCameraRail();
+    void BuildPanelNestedRail();
     void BuildPanelAdvancedRail();
-    void BuildPanelAssignRail();
     void RefreshAssignGrid();
     void BuildPanelTimeline(const TSharedRef<SVerticalBox>& Root);
     void BuildPanelBottomBar(const TSharedRef<SVerticalBox>& Root);

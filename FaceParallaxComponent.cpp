@@ -1,6 +1,7 @@
 #include "FaceParallaxComponent.h"
 #include "FaceParallaxPreset.h"
 #include "FaceParallaxPreviewActor.h"
+#include "FaceParallaxSchematic.h"
 #include "DepthDebugVisualizerComponent.h"
 #include "GameFramework/Actor.h"
 #include "Camera/PlayerCameraManager.h"
@@ -1242,11 +1243,18 @@ void UFaceParallaxComponent::SyncLayerDefinitionsFromPreset()
             [&Tag](const FFaceLayerDef& Def) { return Def.LayerTag == Tag; });
         if (!Existing)
         {
+            // New layer definitions get the front/base/back yaw-motion class
+            // defaults from the schematic rule table (FaceParallaxSchematic.h):
+            // front features move WITH yaw, base layers are anchored, back
+            // layers invert. Existing defs are never overwritten (user edits
+            // win over the base-preset defaults).
             FFaceLayerDef NewDef;
             NewDef.LayerTag = Tag;
-            NewDef.DepthScale = 1.0f;
+            NewDef.DepthScale = FPSchematic::FPYawRule::DepthScaleForTag(
+                TCHAR_TO_UTF8(*Tag.ToString()));
             NewDef.DepthMapIntensity = 1.0f;
-            NewDef.bInvertParallax = false;
+            NewDef.bInvertParallax = FPSchematic::FPYawRule::InvertsParallaxForTag(
+                TCHAR_TO_UTF8(*Tag.ToString()));
             LayerDefinitions.Add(NewDef);
             bChanged = true;
         }
@@ -1814,7 +1822,11 @@ void UFaceParallaxComponent::UpdateNestedArtTick(float DeltaTime)
     float SubStepDt = 1.0f / FMath::Max(JiggleSubStepsPerSecond, 15);
     int32 MaxSubSteps = FMath::Min((int32)(DeltaTime / SubStepDt) + 1, 10); // cap to prevent spiral of death
 
-    // Process all nested elements from all layers (including children recursively)
+    // Process all nested elements from all layers (including children
+    // recursively). Each top-level element is a chain root: chain progress
+    // (0 = root, 1 = tip) is the accumulated local-offset distance along the
+    // subtree, normalized per chain, and feeds the midpoint spring split
+    // (FPHairSegmentRamp) so tips can swing differently from the root.
     std::function<void(const TArray<FFaceNestedArt>&, FName)> ProcessElements =
         [&](const TArray<FFaceNestedArt>& Elements, FName LayerTag)
     {
@@ -1828,57 +1840,85 @@ void UFaceParallaxComponent::UpdateNestedArtTick(float DeltaTime)
             return OutKey;
         };
 
-        for (const FFaceNestedArt& Element : Elements)
+        for (const FFaceNestedArt& Root : Elements)
         {
-            // Jiggle physics
-            if (Element.bJiggleEnabled)
+            // Phase 1: flatten the root's subtree into (element, distance) items.
+            struct FChainItem
             {
-                FName StateKey = BuildElemKey(Element);
-                FNestedJiggleState& JiggleState = JiggleStates.FindOrAdd(StateKey);
-                float& Accumulator = JiggleAccumulators.FindOrAdd(StateKey);
-                Accumulator += DeltaTime;
+                const FFaceNestedArt* Element;
+                float Distance;
+            };
+            TArray<FChainItem> ChainItems;
+            float MaxDistance = 0.0f;
+            std::function<void(const FFaceNestedArt&, float)> CollectChain =
+                [&](const FFaceNestedArt& Elem, float ParentDistance)
+            {
+                const FVector2D LocalOffset(Elem.Pin3D.Position3D.X, Elem.Pin3D.Position3D.Y);
+                const float Distance = ParentDistance + LocalOffset.Size();
+                ChainItems.Add({ &Elem, Distance });
+                MaxDistance = FMath::Max(MaxDistance, Distance);
+                for (const FFaceNestedArt& Child : Elem.Children)
+                    CollectChain(Child, Distance);
+            };
+            CollectChain(Root, 0.0f);
 
-                JiggleState.Velocity += Impulse * Element.JiggleSettings.JiggleAxis * Element.JiggleSettings.ImpulseScale;
+            // Phase 2: jiggle + idle per chain element, midpoint-blended springs.
+            for (const FChainItem& Item : ChainItems)
+            {
+                const FFaceNestedArt& Element = *Item.Element;
+                const float ChainProgress = MaxDistance > 0.01f
+                    ? FMath::Clamp(Item.Distance / MaxDistance, 0.0f, 1.0f)
+                    : 0.0f;
 
-                const float Stiffness = Element.JiggleSettings.Stiffness;
-                const float Damping = Element.JiggleSettings.Damping;
-                int32 Steps = 0;
-                while (Accumulator >= SubStepDt && Steps < MaxSubSteps)
+                // Jiggle physics. Spring gains blend toward the End* fields past
+                // the element's chain midpoint (e.g. bigger swing on hair ends).
+                if (Element.bJiggleEnabled)
                 {
-                    Accumulator -= SubStepDt;
-                    FVector2D SpringForce = -JiggleState.Position * Stiffness;
-                    FVector2D DampingForce = -JiggleState.Velocity * Damping;
-                    FVector2D Acceleration = SpringForce + DampingForce;
+                    FName StateKey = BuildElemKey(Element);
+                    FNestedJiggleState& JiggleState = JiggleStates.FindOrAdd(StateKey);
+                    float& Accumulator = JiggleAccumulators.FindOrAdd(StateKey);
+                    Accumulator += DeltaTime;
 
-                    JiggleState.Velocity += Acceleration * SubStepDt;
-                    JiggleState.Position += JiggleState.Velocity * SubStepDt;
-                    ++Steps;
+                    const FFaceJiggleSettings& JS = Element.JiggleSettings;
+                    const double Ramp = FPSchematic::FPHairSegmentRamp(JS.Midpoint, ChainProgress);
+                    const float Stiffness = (float)FPSchematic::FPHairSegmentBlend(JS.Stiffness, JS.EndStiffness, Ramp);
+                    const float Damping = (float)FPSchematic::FPHairSegmentBlend(JS.Damping, JS.EndDamping, Ramp);
+                    const float ImpulseScale = (float)FPSchematic::FPHairSegmentBlend(JS.ImpulseScale, JS.EndImpulseScale, Ramp);
+
+                    JiggleState.Velocity += Impulse * JS.JiggleAxis * ImpulseScale;
+
+                    int32 Steps = 0;
+                    while (Accumulator >= SubStepDt && Steps < MaxSubSteps)
+                    {
+                        Accumulator -= SubStepDt;
+                        FVector2D SpringForce = -JiggleState.Position * Stiffness;
+                        FVector2D DampingForce = -JiggleState.Velocity * Damping;
+                        FVector2D Acceleration = SpringForce + DampingForce;
+
+                        JiggleState.Velocity += Acceleration * SubStepDt;
+                        JiggleState.Position += JiggleState.Velocity * SubStepDt;
+                        ++Steps;
+                    }
+
+                    if (Steps >= MaxSubSteps)
+                        Accumulator = 0.0f;
                 }
 
-                if (Steps >= MaxSubSteps)
-                    Accumulator = 0.0f;
-            }
-
-            // Idle animation
-            if (Element.IdleFrames.Num() > 0)
-            {
-                FName StateKey = BuildElemKey(Element);
-                FNestedAnimState& Anim = AnimStates.FindOrAdd(StateKey);
-
-                float EffectiveDuration = Element.IdleFrameDuration / FMath::Max(0.001f, Element.IdleSpeedMultiplier);
-                Anim.FrameTimer += DeltaTime;
-
-                while (Anim.FrameTimer >= EffectiveDuration && Element.IdleFrames.Num() > 0)
+                // Idle animation
+                if (Element.IdleFrames.Num() > 0)
                 {
-                    Anim.FrameTimer -= EffectiveDuration;
-                    Anim.FrameIndex = (Anim.FrameIndex + 1) % Element.IdleFrames.Num();
-                }
-            }
+                    FName StateKey = BuildElemKey(Element);
+                    FNestedAnimState& Anim = AnimStates.FindOrAdd(StateKey);
 
-            // Recurse into children
-            if (Element.Children.Num() > 0)
-            {
-                ProcessElements(Element.Children, LayerTag);
+                    float EffectiveDuration = Element.IdleFrameDuration / FMath::Max(0.001f, Element.IdleSpeedMultiplier);
+                    Anim.FrameTimer += DeltaTime;
+
+                    while (Anim.FrameTimer >= EffectiveDuration && Element.IdleFrames.Num() > 0)
+                    {
+                        Anim.FrameTimer -= EffectiveDuration;
+                        Anim.FrameIndex = (Anim.FrameIndex + 1) % Element.IdleFrames.Num();
+                    }
+                }
             }
         }
     };

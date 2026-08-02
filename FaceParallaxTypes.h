@@ -247,6 +247,28 @@ struct FACEPARALLAX_API FFaceJiggleSettings
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Jiggle")
     FVector2D JiggleAxis = FVector2D(1.0f, 1.0f);
+
+    // Midpoint chain split (hair-end swing): chain progress below Midpoint uses
+    // the base Stiffness/Damping/ImpulseScale; past the midpoint the values ramp
+    // (smoothstep, see FPHairSegmentRamp in FaceParallaxSchematic.h) toward the
+    // End* fields so tips swing differently (e.g. bigger swing on hair ends).
+    // Midpoint = 1.0 (default) keeps the legacy uniform spring; End* defaults
+    // equal the base fields, so leaving them untouched is always identity.
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Jiggle",
+        meta = (ClampMin = "0.0", ClampMax = "1.0", DisplayName = "Midpoint (chain split)"))
+    float Midpoint = 1.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Jiggle",
+        meta = (ClampMin = "0.0", ClampMax = "20.0", DisplayName = "End Stiffness (past midpoint)"))
+    float EndStiffness = 5.0f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Jiggle",
+        meta = (ClampMin = "0.0", ClampMax = "5.0", DisplayName = "End Damping (past midpoint)"))
+    float EndDamping = 0.5f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Jiggle",
+        meta = (ClampMin = "0.0", ClampMax = "10.0", DisplayName = "End Impulse Scale (past midpoint)"))
+    float EndImpulseScale = 1.0f;
 };
 
 USTRUCT(BlueprintType)

@@ -164,11 +164,19 @@ class SyntaxValidator:
             'SetGizmoTransform', 'HandleHotspotClick', 'ImportHotspotRegion',
             'RebuildPartsStrip', 'OpenHotspotRemapMenu', 'RemapHotspotLayer',
             'ResolveHotspotLayer', 'RefreshSyncDriftIndicator',
-            'SetDisplayMode', 'RefreshDebugSliders', 'BuildEdgeOverlay',
+            'SetDisplayMode', 'SetInspectMode', 'SelectCanvasLayerAt',
+            'CycleCanvasLayerAt', 'RefreshDebugSliders', 'BuildEdgeOverlay',
             'RebuildHistogramBars', 'RefreshHullThumbnails',
             'RefreshPinControls', 'GetLayerPinMarkers', 'RebuildVisemeGrid',
             'RebuildNestedOutliner', 'RebuildParamTable',
-            'RebuildProblemsPanel',
+            'RebuildProblemsPanel', 'RebuildPinManager', 'SetNestedPaneMode',
+            # Central-canvas redesign (schematic default view + yaw rules)
+            'HandleSchematicPartClick', 'RefreshSchematic', 'LayerHasFrontArt',
+            'BuildDepthOverlay', 'ToggleDepthOverlay', 'SetCanvasHeight',
+            # Central-canvas redesign (click router + filters + focus)
+            'ToggleSchematicLayerFilter', 'SetSchematicDepthFilter',
+            'ClearSchematicFilters', 'ToggleSchematicFocus',
+            'RebuildSchematicFilterRow',
         }
 
         cls_re = (r'UCLASS\s*\((?:[^()]|\([^()]*\))*\)\s*\n\s*'

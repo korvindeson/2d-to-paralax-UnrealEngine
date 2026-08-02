@@ -5,6 +5,7 @@
 #include "FaceParallaxPreset.h"
 #include "FaceParallaxComponent.h"
 #include "FaceParallaxLayoutSpec.h"
+#include "FaceParallaxSchematic.h"
 #include <functional>
 
 #if WITH_EDITOR
@@ -12,6 +13,7 @@
 #include "Widgets/SLeafWidget.h"
 #include "Rendering/DrawElements.h"
 #include "Rendering/SlateLayoutTransform.h"
+#include "Framework/Application/SlateApplication.h"
 #include "Editor.h"
 
 // Internal helpers shared by the FaceParallaxEditorWidget translation units:
@@ -213,6 +215,10 @@ static TSharedRef<SButton> MakeBtn(const FString& T, TFunction<void()>&& Fn,
 // Drag body = move, bottom-right corner = scale, top handle = rotate.
 // Writes through UFaceParallaxEditorWidget::SetGizmoTransform so
 // canonical/override/link semantics stay in one place.
+// INTERACTIVITY (Phase 0): the gizmo is PAINT-ONLY. Its visibility is
+// EVisibility::SelfHitTestInvisible, so it can never intercept a click;
+// every canvas click is routed by SFaceHotspotLayer (the topmost
+// interactive overlay), which handles pin-drag in pin mode.
 // ====================================================================
 
 class UFaceParallaxEditorWidget::SFaceLayerGizmo : public SLeafWidget
@@ -226,7 +232,6 @@ public:
     void SetPinMode(bool bInPinMode)
     {
         bPinMode = bInPinMode;
-        PinDragMode = 0;
     }
 
     void Construct(const FArguments& InArgs) {}
@@ -369,53 +374,8 @@ public:
     // Public so the widget can re-invalidate the pin overlay after toggles.
     void InvalidatePaint() { Invalidate(EInvalidateWidgetReason::Paint); }
 
-    virtual FReply OnMouseButtonDown(const FGeometry& Geo, const FPointerEvent& Ev) override
-    {
-        if (!Owner || Ev.GetEffectingButton() != EKeys::LeftMouseButton)
-            return FReply::Unhandled();
-        const FVector2D Local = Geo.AbsoluteToLocal(Ev.GetScreenSpacePosition());
-        const FVector2D CanvasSize = Geo.GetLocalSize();
-
-        // Layer-transform mode: the gizmo is a PASSIVE visual overlay — it
-        // never starts move/scale/rotate drags. Every click falls through
-        // (SOverlay keeps routing on Unhandled) to the hotspot layer below,
-        // so clicking a face part selects the zone / imports art. Transform
-        // edits happen in the Transform rail sliders.
-        if (!bPinMode)
-            return FReply::Unhandled();
-
-        // Pin mode: drag moves the selected pinned element's 3D pin
-        // (writes through SetGizmoPinUV -> SetNestedPinFromUV).
-        const FVector2D PinUV = Owner->GetSelectedPinUV();
-        if (PinUV.X >= 0.0f
-            && FVector2D::Distance(Local,
-                UFaceParallaxEditorWidget::GizmoUVToPixels(PinUV, CanvasSize)) < 12.0f)
-        {
-            PinDragMode = 1;
-            return FReply::Handled().CaptureMouse(AsShared());
-        }
-        return FReply::Unhandled();
-    }
-
-    virtual FReply OnMouseMove(const FGeometry& Geo, const FPointerEvent& Ev) override
-    {
-        if (!Owner || PinDragMode != 1) return FReply::Unhandled();
-        const FVector2D CanvasSize = Geo.GetLocalSize();
-        Owner->SetGizmoPinUV(UFaceParallaxEditorWidget::GizmoPixelsToUV(
-            Geo.AbsoluteToLocal(Ev.GetScreenSpacePosition()), CanvasSize));
-        return FReply::Handled();
-    }
-
-    virtual FReply OnMouseButtonUp(const FGeometry&, const FPointerEvent&) override
-    {
-        if (PinDragMode == 0) return FReply::Unhandled();
-        PinDragMode = 0;
-        return FReply::Handled().ReleaseMouseCapture();
-    }
-
 private:
-    int32 PinDragMode = 0; // 0 none, 1 pin drag (bPinMode only)
-    bool bPinMode = false; // true: gizmo edits the selected pinned element instead of the layer transform
+    bool bPinMode = false; // true: draw the selected pinned element's handle instead of the layer transform box
 };
 
 // SFaceAccordion - one-open-per-group collapsible section stack (P16).
@@ -778,9 +738,12 @@ private:
 
 // SFaceHotspotLayer - transparent canvas overlay (Phase 4): maps clicks to UV
 // space and hit-tests FPLayout named polygon buckets (holes/concave supported).
-// Lives below the gizmo in the preview SOverlay, so gizmo drags win; clicks the
-// gizmo rejects fall through to hotspot hit-testing and call
-// Owner->HandleHotspotClick(name). Faint outlines paint the region bounds.
+// PHASE 0: this layer is THE canvas click router. It is the topmost
+// interactive widget in the preview SOverlay (the gizmo above it is
+// SelfHitTestInvisible / paint-only), so every canvas click lands here and is
+// resolved in one order: pin-drag (pin mode) -> named region -> schematic
+// glyph -> layer-art quad -> miss (swallowed — nothing below may receive
+// clicks). Hover is forwarded to SFaceSchematicLayer (lens- and filter-aware).
 class UFaceParallaxEditorWidget::SFaceHotspotLayer : public SLeafWidget
 {
 public:
@@ -800,6 +763,36 @@ public:
     // canvas layer hit-tests against these, so selection always matches).
     const std::vector<FPLayout::FPHotspotRegion>& GetRegions() const { return Regions; }
 
+    // Phase C: per-layer art quads (draw order = layer list order, last on
+    // top) + their tags, and the currently selected layer for the persistent
+    // selection outline. Re-fed on every RefreshUI, so the outline and the
+    // hit-test hug the art in the ACTIVE VIEW STATE's stored transforms (the
+    // cross-view outline constraint).
+    void SetLayerQuads(const std::vector<FPLayout::FPLayerQuad>& InQuads,
+        const TArray<FString>& InTags)
+    {
+        LayerQuads = InQuads;
+        QuadLayerTags = InTags;
+    }
+
+    void SetSelectedLayerTag(const FString& InTag) { SelectedLayerTag = InTag; }
+
+    // Phase C: the widget's hit-test/cycle logic reads the same quads the
+    // overlay paints (single source inside the layer).
+    const std::vector<FPLayout::FPLayerQuad>& GetLayerQuads() const { return LayerQuads; }
+    const TArray<FString>& GetQuadLayerTags() const { return QuadLayerTags; }
+
+    // Phase 0: the schematic glyph layer to hit-test / forward hover to.
+    void SetSchematicLayer(TSharedPtr<SFaceSchematicLayer> InSchematic) { Schematic = InSchematic; }
+
+    // Phase 0: pin mode moved here from the gizmo (paint-only). When set,
+    // clicks near the selected pinned element's projected handle drag it.
+    void SetCanvasPinMode(bool bInPinMode)
+    {
+        bCanvasPinMode = bInPinMode;
+        PinDragMode = 0;
+    }
+
     virtual FVector2D ComputeDesiredSize(float) const override
     {
         return FVector2D::ZeroVector;
@@ -818,32 +811,66 @@ public:
             for (const std::vector<FPLayout::FPHotspotPoint>& Hole : R.Holes)
                 DrawLoop(AllottedGeometry, OutDrawElements, LayerId, Hole, Size, Tint);
         }
+        // Phase C: persistent selection outline — the selected layer's quad,
+        // always visible (not hover-only), in AccentBlue at 2px so the
+        // current selection is confirmable at a glance.
+        if (!SelectedLayerTag.IsEmpty() && LayerQuads.size() == (size_t)QuadLayerTags.Num())
+        {
+            for (int32 i = 0; i < QuadLayerTags.Num(); ++i)
+            {
+                if (QuadLayerTags[i] != SelectedLayerTag) continue;
+                const FPLayout::FPLayerQuad& QL = LayerQuads[(size_t)i];
+                const std::vector<FPLayout::FPHotspotPoint> Loop = { QL.C[0], QL.C[1], QL.C[2], QL.C[3] };
+                DrawLoop(AllottedGeometry, OutDrawElements, LayerId, Loop, Size,
+                    FLinearColor(0.4f, 0.7f, 1.0f, 0.95f), 2.0f);
+                break;
+            }
+        }
+        // Redesign: post-assign flash — a fading pulse ring on the layer that
+        // just received art (1.5s), confirming the assignment right where it
+        // landed on the canvas. NativeTick invalidates while the flash is live.
+        if (Owner && !Owner->GetAssignFlashLayer().IsEmpty())
+        {
+            const double FlashAge = FSlateApplication::Get().GetCurrentTime() - Owner->GetAssignFlashTimestamp();
+            if (FlashAge >= 0.0 && FlashAge < 1.5 && LayerQuads.size() == (size_t)QuadLayerTags.Num())
+            {
+                for (int32 i = 0; i < QuadLayerTags.Num(); ++i)
+                {
+                    if (QuadLayerTags[i] != Owner->GetAssignFlashLayer()) continue;
+                    const FPLayout::FPLayerQuad& QL = LayerQuads[(size_t)i];
+                    const std::vector<FPLayout::FPHotspotPoint> Loop = { QL.C[0], QL.C[1], QL.C[2], QL.C[3] };
+                    const float Alpha = 1.0f - (float)(FlashAge / 1.5);
+                    DrawLoop(AllottedGeometry, OutDrawElements, LayerId, Loop, Size,
+                        FLinearColor(0.4f, 1.0f, 0.5f, Alpha), 3.0f);
+                    break;
+                }
+            }
+        }
         return LayerId + 1;
     }
 
-    virtual FReply OnMouseButtonDown(const FGeometry& Geo, const FPointerEvent& Ev) override
-    {
-        if (!Owner || Ev.GetEffectingButton() != EKeys::LeftMouseButton)
-            return FReply::Unhandled();
-        const FVector2D CanvasSize = Geo.GetLocalSize();
-        if (CanvasSize.X < 1.0f || CanvasSize.Y < 1.0f) return FReply::Unhandled();
-        const FVector2D Local = Geo.AbsoluteToLocal(Ev.GetScreenSpacePosition());
-        const FVector2D UV = UFaceParallaxEditorWidget::GizmoPixelsToUV(Local, CanvasSize);
-        const char* Name = FPLayout::FPHotspotHit(Regions, UV.X, UV.Y);
-        if (!Name || !Name[0]) return FReply::Unhandled();
-        // Alt+click: route straight to the import wizard for that part.
-        // Plain click: select the mapped layer (or report unmapped).
-        if (Ev.IsAltDown())
-            Owner->ImportHotspotRegion(FString(Name));
-        else
-            Owner->HandleHotspotClick(FString(Name));
-        return FReply::Handled();
-    }
+    // Phase 0 click router: pin -> region -> glyph -> quad -> miss. Bodies of
+    // the schematic-touching handlers live after SFaceSchematicLayer below
+    // (the schematic must be complete before its methods are called).
+    virtual FReply OnMouseButtonDown(const FGeometry& Geo, const FPointerEvent& Ev) override;
+    virtual FReply OnMouseMove(const FGeometry& Geo, const FPointerEvent& Ev) override;
+    virtual FReply OnMouseButtonUp(const FGeometry& Geo, const FPointerEvent& Ev) override;
+    virtual void OnMouseLeave(const FPointerEvent& Ev) override;
+    virtual FCursorReply OnCursorQuery(const FGeometry& Geo, const FPointerEvent& Ev) const override;
 
 private:
+    bool NearPin(const FVector2D& Local, const FVector2D& CanvasSize) const
+    {
+        if (!Owner || !bCanvasPinMode) return false;
+        const FVector2D PinUV = Owner->GetSelectedPinUV();
+        if (PinUV.X < 0.0f) return false;
+        return FVector2D::Distance(Local,
+            UFaceParallaxEditorWidget::GizmoUVToPixels(PinUV, CanvasSize)) < 12.0f;
+    }
+
     void DrawLoop(const FGeometry& G, FSlateWindowElementList& L, int32 Id,
         const std::vector<FPLayout::FPHotspotPoint>& Loop,
-        const FVector2D& Size, const FLinearColor& Tint) const
+        const FVector2D& Size, const FLinearColor& Tint, float Thickness = 1.0f) const
     {
         if (Loop.size() < 2) return;
         TArray<FVector2D> Pts;
@@ -853,10 +880,480 @@ private:
         const FVector2D First = Pts[0];
         Pts.Add(First);
         FSlateDrawElement::MakeLines(L, Id, G.ToPaintGeometry(), Pts,
-            ESlateDrawEffect::None, Tint, true, 1.0f);
+            ESlateDrawEffect::None, Tint, true, Thickness);
     }
 
     std::vector<FPLayout::FPHotspotRegion> Regions;
+    std::vector<FPLayout::FPLayerQuad> LayerQuads;   // Phase C: draw-order art quads
+    TArray<FString> QuadLayerTags;                   // Phase C: tags parallel to LayerQuads
+    FString SelectedLayerTag;                        // Phase C: selection outline source
+    TSharedPtr<SFaceSchematicLayer> Schematic;       // Phase 0: glyph hit-test/hover target
+    bool bCanvasPinMode = false;                     // Phase 0: pin-drag routing (from the gizmo)
+    int32 PinDragMode = 0;                           // 0 none, 1 pin drag (bCanvasPinMode only)
+};
+
+// SFaceSchematicLayer - the central-canvas DEFAULT VIEW (redesign): paints the
+// part schematic glyphs (FaceParallaxSchematic.h) for every part whose mapped
+// layer has NO assigned art — assigned art replaces the default outline on
+// the live preview automatically. Glyph color encodes the depth class
+// (front = amber, base = grey, back = cyan) so the front/base/back yaw rule
+// is visible at a glance. The canvas filter row drops filtered parts
+// (FPSchematicFilterAllows mirror); the SELECTED layer's glyphs render thick
+// with a soft fill while the rest dim to 25% alpha; the Focus lens zooms the
+// selected layer's glyphs to fit. PHASE 0: the layer is SelfHitTestInvisible
+// — SFaceHotspotLayer routes clicks and forwards hover here (lens- and
+// filter-aware, so what you see is exactly what you can click). Lives between
+// the edge overlay and the hotspot layer in the preview SOverlay.
+class UFaceParallaxEditorWidget::SFaceSchematicLayer : public SLeafWidget
+{
+public:
+    SLATE_BEGIN_ARGS(SFaceSchematicLayer) {}
+    SLATE_END_ARGS()
+
+    void Construct(const FArguments&) {}
+
+    UFaceParallaxEditorWidget* Owner = nullptr;
+
+    void SetParts(const std::vector<FPSchematic::FPSchematicPart>& InParts)
+    {
+        Parts = InParts;
+    }
+
+    const std::vector<FPSchematic::FPSchematicPart>& GetParts() const { return Parts; }
+
+    // Phase 0/3: resolved layer tag per part (parallel to Parts; empty =
+    // unmapped). Drives the filter drop AND the selection emphasis.
+    void SetPartLayerTags(const std::vector<std::string>& InTags)
+    {
+        PartLayerTags = InTags;
+        Invalidate(EInvalidateWidgetReason::Paint);
+    }
+
+    // Phase 3: the canvas filter row mirror (layer chips + depth radio).
+    void SetFilters(const std::vector<std::string>& InLayerFilter, int32 InDepthFilter)
+    {
+        LayerFilter = InLayerFilter;
+        DepthFilter = InDepthFilter;
+        if (HoveredIndex >= 0)
+        {
+            HoveredIndex = -1;
+        }
+        Invalidate(EInvalidateWidgetReason::Paint);
+    }
+
+    // Phase 3: zoom-to-fit lens. Min/Max are the selected layer's glyph
+    // bounds in part-UV space (already view-transformed); the lens maps
+    // part UV -> canvas UV as (UV - Center) * Scale + 0.5 with a uniform
+    // scale clamped to [1, 8] so it never zooms OUT beyond the full canvas.
+    void SetFocus(bool bInFocus, const FPSchematic::FPSchematicPoint& Min,
+        const FPSchematic::FPSchematicPoint& Max)
+    {
+        bFocus = bInFocus;
+        FocusMin = Min;
+        FocusMax = Max;
+        const float W = FMath::Max(0.05f, (float)(Max.X - Min.X));
+        const float H = FMath::Max(0.05f, (float)(Max.Y - Min.Y));
+        FocusScale = bFocus ? FMath::Clamp(FMath::Min(1.0f / W, 1.0f / H) * 0.9f, 1.0f, 8.0f) : 1.0f;
+        FocusCenter = FPSchematic::FPSchematicPoint{ (Min.X + Max.X) * 0.5, (Min.Y + Max.Y) * 0.5 };
+        Invalidate(EInvalidateWidgetReason::Paint);
+    }
+
+    // Phase 0: hover forwarding from the hotspot layer (lens- and filter-
+    // aware so the highlight always matches what is clickable).
+    void SetHoveredAt(const FVector2D& CanvasUV)
+    {
+        int32 NewHover = -1;
+        if (CanvasUV.X >= 0.0f && CanvasUV.X <= 1.0f
+            && CanvasUV.Y >= 0.0f && CanvasUV.Y <= 1.0f)
+        {
+            const FVector2D UV = InverseFocusUV(CanvasUV);
+            const FPSchematic::FPSchematicPart* Hit = FPSchematic::FPSchematicPartAt(Parts, UV.X, UV.Y);
+            if (Hit && Hit->Name && Hit->Name[0])
+            {
+                for (size_t i = 0; i < Parts.size(); ++i)
+                {
+                    if (!Parts[i].Name || std::string(Parts[i].Name) != std::string(Hit->Name)) continue;
+                    if (FilterAllows((int32)i))
+                    {
+                        NewHover = (int32)i;
+                    }
+                    break;
+                }
+            }
+        }
+        if (NewHover != HoveredIndex)
+        {
+            HoveredIndex = NewHover;
+            Invalidate(EInvalidateWidgetReason::Paint);
+        }
+    }
+
+    void ClearHover()
+    {
+        if (HoveredIndex >= 0)
+        {
+            HoveredIndex = -1;
+            Invalidate(EInvalidateWidgetReason::Paint);
+        }
+    }
+
+    bool HasHover() const { return HoveredIndex >= 0; }
+
+    // Phase 0: the hotspot layer's glyph step — lens-inverse the canvas UV,
+    // hit-test the schematic, and reject filtered-out parts.
+    const FPSchematic::FPSchematicPart* HitTest(const FVector2D& CanvasUV) const
+    {
+        if (Parts.empty()) return nullptr;
+        const FVector2D UV = InverseFocusUV(CanvasUV);
+        const FPSchematic::FPSchematicPart* Hit = FPSchematic::FPSchematicPartAt(Parts, UV.X, UV.Y);
+        if (!Hit || !Hit->Name || !Hit->Name[0]) return nullptr;
+        for (size_t i = 0; i < Parts.size(); ++i)
+        {
+            if (Parts[i].Name && std::string(Parts[i].Name) == std::string(Hit->Name))
+            {
+                return FilterAllows((int32)i) ? &Parts[i] : nullptr;
+            }
+        }
+        return nullptr;
+    }
+
+    virtual FVector2D ComputeDesiredSize(float) const override
+    {
+        return FVector2D::ZeroVector;
+    }
+
+    virtual int32 OnPaint(const FPaintArgs&, const FGeometry& AllottedGeometry,
+        const FSlateRect&, FSlateWindowElementList& OutDrawElements,
+        int32 LayerId, const FWidgetStyle&, bool) const override
+    {
+        const FVector2D Size = AllottedGeometry.GetLocalSize();
+        if (Size.X <= 0.0f || Size.Y <= 0.0f || Parts.empty()) return LayerId;
+        const FString SelTag = (Owner && Owner->GetSelectedLayerName().IsValid())
+            ? Owner->GetSelectedLayerName().ToString() : FString();
+        for (size_t i = 0; i < Parts.size(); ++i)
+        {
+            const FPSchematic::FPSchematicPart& P = Parts[i];
+            if (!P.Name || P.Outline.size() < 2) continue;
+            if (!FilterAllows((int32)i)) continue;
+            const bool bHovered = (int32)i == HoveredIndex;
+            const bool bSelected = !SelTag.IsEmpty()
+                && (size_t)i < PartLayerTags.size() && PartLayerTags[i] == TCHAR_TO_UTF8(*SelTag);
+            FLinearColor Color = DepthClassColor(P.DepthClass);
+            if (bSelected)
+            {
+                Color.A = 1.0f;
+                // Soft fill pass: a thick low-alpha halo behind the crisp
+                // outline makes the selected layer read as "filled".
+                DrawDashedLoop(AllottedGeometry, OutDrawElements, LayerId,
+                    P.Outline, Size, FLinearColor(Color.R, Color.G, Color.B, 0.08f), 14.0f);
+            }
+            else
+            {
+                Color.A = bHovered ? 1.0f : 0.25f;
+            }
+            const float Thickness = bSelected ? 3.0f : (bHovered ? 2.5f : 1.5f);
+            DrawDashedLoop(AllottedGeometry, OutDrawElements, LayerId,
+                P.Outline, Size, Color, Thickness);
+        }
+        return LayerId + 1;
+    }
+
+    virtual void OnMouseLeave(const FPointerEvent&) override
+    {
+        ClearHover();
+    }
+
+private:
+    // Phase 3: does the i-th part pass the filter row (layer chips + radio)?
+    // The "all layers" state is the empty filter (every mapped part shows);
+    // unmapped parts show only while the layer filter is empty.
+    bool FilterAllows(int32 Index) const
+    {
+        if (Index < 0 || (size_t)Index >= Parts.size()) return false;
+        const FPSchematic::FPSchematicPart& P = Parts[Index];
+        const char* LayerTagName = ((size_t)Index < PartLayerTags.size() && !PartLayerTags[Index].empty())
+            ? PartLayerTags[Index].c_str() : nullptr;
+        return FPSchematic::FPSchematicFilterAllows(P.DepthClass, LayerTagName, LayerFilter, DepthFilter);
+    }
+
+    static FLinearColor DepthClassColor(FPSchematic::FPDepthClass C)
+    {
+        switch (C)
+        {
+        case FPSchematic::FPDepthClass::Front: return FLinearColor(1.0f, 0.72f, 0.25f, 0.9f);   // amber
+        case FPSchematic::FPDepthClass::Back:  return FLinearColor(0.35f, 0.85f, 1.0f, 0.9f);   // cyan
+        default:                               return FLinearColor(0.72f, 0.72f, 0.78f, 0.85f); // grey
+        }
+    }
+
+    // Phase 3 focus lens: part UV -> canvas UV (identity when off).
+    FPSchematic::FPSchematicPoint FocusPoint(const FPSchematic::FPSchematicPoint& P) const
+    {
+        if (!bFocus) return P;
+        return FPSchematic::FPSchematicPoint{
+            (P.X - FocusCenter.X) * FocusScale + 0.5,
+            (P.Y - FocusCenter.Y) * FocusScale + 0.5 };
+    }
+
+    // Phase 3 focus lens inverse: canvas UV -> part UV (identity when off).
+    FVector2D InverseFocusUV(const FVector2D& CanvasUV) const
+    {
+        if (!bFocus) return CanvasUV;
+        return FVector2D(
+            (float)((CanvasUV.X - 0.5) / FocusScale + FocusCenter.X),
+            (float)((CanvasUV.Y - 0.5) / FocusScale + FocusCenter.Y));
+    }
+
+    // Dashed outline: each edge is split into ~8px dashes, every other one
+    // drawn (closed loop — first point repeated at the end). The focus lens
+    // is applied to every point here so hover/hit and paint stay in sync.
+    void DrawDashedLoop(const FGeometry& G, FSlateWindowElementList& L, int32 Id,
+        const std::vector<FPSchematic::FPSchematicPoint>& Loop,
+        const FVector2D& Size, const FLinearColor& Color, float Thickness) const
+    {
+        constexpr float DashLen = 8.0f;
+        TArray<FVector2D> Segs;
+        auto PushSegment = [&Segs](const FVector2D& A, const FVector2D& B)
+        {
+            Segs.Add(A);
+            Segs.Add(B);
+        };
+        bool bDrawNext = true;
+        for (size_t i = 0; i < Loop.size(); ++i)
+        {
+            const FPSchematic::FPSchematicPoint& P0 = FocusPoint(Loop[i]);
+            const FPSchematic::FPSchematicPoint& P1 = FocusPoint(Loop[(i + 1) % Loop.size()]);
+            const FVector2D A((float)(P0.X * Size.X), (float)(P0.Y * Size.Y));
+            const FVector2D B((float)(P1.X * Size.X), (float)(P1.Y * Size.Y));
+            const float Len = (B - A).Size();
+            if (Len <= 0.0f) continue;
+            const int32 NumDashes = FMath::Max(1, FMath::CeilToInt(Len / DashLen));
+            for (int32 D = 0; D < NumDashes; ++D)
+            {
+                const FVector2D S = A + (B - A) * ((float)D / (float)NumDashes);
+                const FVector2D E = A + (B - A) * ((float)(D + 1) / (float)NumDashes);
+                if (bDrawNext) PushSegment(S, E);
+                bDrawNext = !bDrawNext;
+            }
+        }
+        if (Segs.Num() > 0)
+        {
+            FSlateDrawElement::MakeLines(L, Id, G.ToPaintGeometry(), Segs,
+                ESlateDrawEffect::None, Color, true, Thickness);
+        }
+    }
+
+    std::vector<FPSchematic::FPSchematicPart> Parts;
+    std::vector<std::string> PartLayerTags;      // Phase 0/3: resolved tag per part (parallel)
+    std::vector<std::string> LayerFilter;        // Phase 3: selected layer chips (empty = all)
+    int32 DepthFilter = 0;                       // Phase 3: 0 all, 1 Front, 2 Base, 3 Back
+    bool bFocus = false;                         // Phase 3: zoom-to-fit lens
+    FPSchematic::FPSchematicPoint FocusMin;      // selected layer's glyph bounds (part UV)
+    FPSchematic::FPSchematicPoint FocusMax;
+    FPSchematic::FPSchematicPoint FocusCenter{ 0.5, 0.5 };
+    float FocusScale = 1.0f;
+    int32 HoveredIndex = -1;
+};
+
+// ====================================================================
+// SFaceHotspotLayer router bodies (Phase 0). Defined after
+// SFaceSchematicLayer so the glyph step and hover forwarding can call its
+// lens- and filter-aware API. Click order: pin -> region -> glyph -> quad
+// -> miss (swallowed so no image below ever receives a canvas click).
+// ====================================================================
+inline FReply UFaceParallaxEditorWidget::SFaceHotspotLayer::OnMouseButtonDown(
+    const FGeometry& Geo, const FPointerEvent& Ev)
+{
+    if (!Owner) return FReply::Unhandled();
+    const FVector2D CanvasSize = Geo.GetLocalSize();
+    if (CanvasSize.X < 1.0f || CanvasSize.Y < 1.0f) return FReply::Unhandled();
+    const FVector2D Local = Geo.AbsoluteToLocal(Ev.GetScreenSpacePosition());
+    const FVector2D UV = UFaceParallaxEditorWidget::GizmoPixelsToUV(Local, CanvasSize);
+    const bool bLeft = Ev.GetEffectingButton() == EKeys::LeftMouseButton;
+    const bool bRight = Ev.GetEffectingButton() == EKeys::RightMouseButton;
+    if (!bLeft && !bRight) return FReply::Handled();   // other buttons: keep the canvas inert
+
+    // (0) Pin mode: drag the selected pinned element's handle (moved here
+    // from the gizmo — the gizmo is paint-only now).
+    if (bLeft && NearPin(Local, CanvasSize))
+    {
+        PinDragMode = 1;
+        return FReply::Handled().CaptureMouse(AsShared());
+    }
+
+    // (1) Named region (spatial part pick). Alt+click: straight to the import
+    // wizard for that part. Plain click: select the mapped layer, and when
+    // the layer is artless open the import wizard preselected on the part.
+    if (bLeft)
+    {
+        const char* Name = FPLayout::FPHotspotHit(Regions, UV.X, UV.Y);
+        if (Name && Name[0])
+        {
+            if (Ev.IsAltDown())
+                Owner->ImportHotspotRegion(FString(Name));
+            else
+                Owner->HandleHotspotClick(FString(Name));
+            return FReply::Handled();
+        }
+    }
+
+    // (2) Schematic glyph (lens- and filter-aware): clicking an artless
+    // part selects its layer and opens the import wizard; artful parts are
+    // selected for review only.
+    if (Schematic.IsValid())
+    {
+        const FPSchematic::FPSchematicPart* Part = Schematic->HitTest(UV);
+        if (Part && Part->Name && Part->Name[0])
+        {
+            Owner->HandleSchematicPartClick(FString(Part->Name));
+            return FReply::Handled();
+        }
+    }
+
+    // (3) Layer-art quad (topmost wins). Right/ctrl-click cycles the
+    // overlapping layers.
+    const int32 Top = FPLayout::FPHitTopmostQuad(UV.X, UV.Y, LayerQuads);
+    if (Top >= 0 && (size_t)Top < (size_t)QuadLayerTags.Num())
+    {
+        if (!bLeft || Ev.IsControlDown())
+            Owner->CycleCanvasLayerAt(UV);
+        else
+            Owner->SelectCanvasLayerAt(UV);
+        return FReply::Handled();
+    }
+
+    // (4) Miss: swallow. SOverlay does NOT re-route Unhandled to sibling
+    // layers — without this the click would be dead (and the SImages below
+    // would swallow it instead).
+    return FReply::Handled();
+}
+
+inline FReply UFaceParallaxEditorWidget::SFaceHotspotLayer::OnMouseMove(
+    const FGeometry& Geo, const FPointerEvent& Ev)
+{
+    if (PinDragMode == 1 && Owner)
+    {
+        const FVector2D CanvasSize = Geo.GetLocalSize();
+        if (CanvasSize.X < 1.0f || CanvasSize.Y < 1.0f) return FReply::Handled();
+        Owner->SetGizmoPinUV(UFaceParallaxEditorWidget::GizmoPixelsToUV(
+            Geo.AbsoluteToLocal(Ev.GetScreenSpacePosition()), CanvasSize));
+        return FReply::Handled();
+    }
+    if (Schematic.IsValid())
+    {
+        const FVector2D CanvasSize = Geo.GetLocalSize();
+        if (CanvasSize.X >= 1.0f && CanvasSize.Y >= 1.0f)
+        {
+            const FVector2D UV = UFaceParallaxEditorWidget::GizmoPixelsToUV(
+                Geo.AbsoluteToLocal(Ev.GetScreenSpacePosition()), CanvasSize);
+            Schematic->SetHoveredAt(UV);
+        }
+    }
+    return FReply::Unhandled();
+}
+
+inline FReply UFaceParallaxEditorWidget::SFaceHotspotLayer::OnMouseButtonUp(
+    const FGeometry&, const FPointerEvent&)
+{
+    if (PinDragMode == 0) return FReply::Unhandled();
+    PinDragMode = 0;
+    return FReply::Handled().ReleaseMouseCapture();
+}
+
+inline void UFaceParallaxEditorWidget::SFaceHotspotLayer::OnMouseLeave(const FPointerEvent&)
+{
+    if (Schematic.IsValid()) Schematic->ClearHover();
+}
+
+inline FCursorReply UFaceParallaxEditorWidget::SFaceHotspotLayer::OnCursorQuery(
+    const FGeometry& Geo, const FPointerEvent& Ev) const
+{
+    if (Schematic.IsValid() && Schematic->HasHover())
+        return FCursorReply::Cursor(EMouseCursor::Hand);
+    if (Owner && bCanvasPinMode)
+    {
+        const FVector2D CanvasSize = Geo.GetLocalSize();
+        if (CanvasSize.X >= 1.0f && CanvasSize.Y >= 1.0f
+            && NearPin(Geo.AbsoluteToLocal(Ev.GetScreenSpacePosition()), CanvasSize))
+        {
+            return FCursorReply::Cursor(EMouseCursor::Hand);
+        }
+    }
+    return FCursorReply::Unhandled();
+}
+
+// SFaceCanvasResizer — drag handle between the canvas and the parts strip
+// (central-view redesign): drag vertically to resize the preview canvas
+// height, clamped to [MinCanvasHeight, MaxCanvasHeight] and applied live via
+// the PreviewHost SBox's HeightOverride lambda (no tree rebuild, no manifest
+// change — the 450px design constant stays the default).
+class UFaceParallaxEditorWidget::SFaceCanvasResizer : public SLeafWidget
+{
+public:
+    SLATE_BEGIN_ARGS(SFaceCanvasResizer) {}
+    SLATE_END_ARGS()
+
+    void Construct(const FArguments&) {}
+
+    UFaceParallaxEditorWidget* Owner = nullptr;
+
+    virtual FVector2D ComputeDesiredSize(float) const override
+    {
+        return FVector2D(0.0f, 6.0f);
+    }
+
+    virtual int32 OnPaint(const FPaintArgs&, const FGeometry& AllottedGeometry,
+        const FSlateRect&, FSlateWindowElementList& OutDrawElements,
+        int32 LayerId, const FWidgetStyle&, bool) const override
+    {
+        const FSlateBrush* Brush = FCoreStyle::Get().GetBrush("WhiteBrush");
+        if (!Brush) return LayerId;
+        const FVector2D Sz = AllottedGeometry.GetLocalSize();
+        FSlateDrawElement::MakeBox(OutDrawElements, LayerId,
+            AllottedGeometry.ToPaintGeometry(Sz, FSlateLayoutTransform(FVector2D(0, 0))),
+            Brush, ESlateDrawEffect::None,
+            bDragging ? FLinearColor(0.4f, 0.6f, 1.0f, 0.9f) : FLinearColor(0.10f, 0.10f, 0.12f));
+        return LayerId + 1;
+    }
+
+    virtual FReply OnMouseButtonDown(const FGeometry&, const FPointerEvent& E) override
+    {
+        bDragging = true;
+        DragStartY = E.GetScreenSpacePosition().Y;
+        DragStartHeight = Owner ? Owner->GetCanvasHeight() : 450.0f;
+        return FReply::Handled().CaptureMouse(SharedThis(this));
+    }
+
+    virtual FReply OnMouseButtonUp(const FGeometry&, const FPointerEvent&) override
+    {
+        bDragging = false;
+        return FReply::Handled().ReleaseMouseCapture();
+    }
+
+    virtual FReply OnMouseMove(const FGeometry&, const FPointerEvent& E) override
+    {
+        if (bDragging && Owner)
+        {
+            Owner->SetCanvasHeight(DragStartHeight + (E.GetScreenSpacePosition().Y - DragStartY));
+            return FReply::Handled();
+        }
+        return FReply::Unhandled();
+    }
+
+    virtual void OnMouseCaptureLost(const FCaptureLostEvent&) override
+    {
+        bDragging = false;
+    }
+
+    virtual FCursorReply OnCursorQuery(const FGeometry&, const FPointerEvent&) const override
+    {
+        return FCursorReply::Cursor(EMouseCursor::ResizeUpDown);
+    }
+
+private:
+    bool bDragging = false;
+    float DragStartY = 0.0f;
+    float DragStartHeight = 450.0f;
 };
 
 // SZoneBoundaryOverlay - transparent drag layer over the zone diagram (P3):

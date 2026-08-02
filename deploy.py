@@ -49,13 +49,35 @@ import time
 
 CONTENT_ROOT = "/Game/FaceParallax"
 
-# Layers -> (LayerTag, DepthScale, DepthMapIntensity, bInvertParallax)
+# Layers -> (LayerTag, DepthScale, DepthMapIntensity, bInvertParallax, depth_class)
+# depth_class is the front/base/back yaw-motion rule (FaceParallaxSchematic.h,
+# FPTagClassForTag): front features move WITH yaw (Eyes/Brows/Mouth/Bangs/Nose/
+# Cheeks), the head silhouette is anchored (Head), and far-side parts move
+# AGAINST yaw (Hair/BackHair/Ears). HAIR SYSTEM (Phase 2): Bangs = FRONT hair
+# (moves WITH yaw); Hair + BackHair = BACK hair (move AGAINST yaw) — every
+# hair layer rides the normal per-layer pipeline (camera-sync, auto-fit,
+# bulk-assign, nested pins, visibility, problems panel). DepthScale/
+# bInvertParallax here are the material-side defaults the runtime overwrites
+# per layer from the same class table
+# (UFaceParallaxComponent::SyncLayerDefinitionsFromPreset).
 LAYERS = [
-    ("Eyes",  0.5, 1.0, False),
-    ("Brows", 0.4, 1.0, False),
-    ("Mouth", 0.6, 1.0, False),
-    ("Hair",  0.8, 1.0, True),
+    # ---- Front (moves with yaw) ----
+    ("Eyes",    0.5, 1.0, False, "Front"),
+    ("Brows",   0.4, 1.0, False, "Front"),
+    ("Mouth",   0.6, 1.0, False, "Front"),
+    ("Bangs",   0.7, 1.0, False, "Front"),   # hair: front fringe (front hair)
+    ("Nose",    0.9, 1.0, False, "Front"),
+    ("Cheeks",  0.5, 1.0, False, "Front"),
+    # ---- Base (anchored) ----
+    ("Head",    0.15, 1.0, False, "Base"),
+    # ---- Back (moves against yaw) ----
+    ("Hair",    0.8, 1.0, True,  "Back"),    # hair: full silhouette (back hair)
+    ("BackHair", 0.8, 1.0, True, "Back"),    # hair: curtain (back hair)
+    ("Ears",    0.5, 1.0, True,  "Back"),
 ]
+
+# Layer tags the preset gets ViewAssignments for (the base-preset layer set).
+LAYER_TAGS = [entry[0] for entry in LAYERS]
 
 # All view states the preset needs an assignment for.
 # Must match EFaceAngleState enum names exactly.
@@ -551,14 +573,14 @@ def _set_mi_param_defaults(mi):
 # 3. FaceParallaxPreset Data Asset
 # --------------------------------------------------------------
 def _verify_preset_view_assignments(preset):
-    """Check preset has 10 states with 4 layers each. Returns True if valid."""
+    """Check preset has 10 states with LAYER_TAGS layers each. Returns True if valid."""
     try:
         va = preset.get_editor_property("ViewAssignments")
         if not va or len(va) != 10:
             return False
         for state_val, layer_set in va.items():
             layers = layer_set.get_editor_property("Layers")
-            if not layers or len(layers) != 4:
+            if not layers or len(layers) != len(LAYER_TAGS):
                 return False
         return True
     except Exception:
@@ -612,11 +634,11 @@ def create_preset_asset():
         # delete+recreate is only the fallback for class-layout mismatches.
         try:
             existing.set_editor_property("ViewAssignments", {})
-            existing.populate_default_assignments(["Eyes", "Brows", "Mouth", "Hair"])
+            existing.populate_default_assignments(LAYER_TAGS)
             _set_prop(existing, ("canvas_size", "CanvasSize"), unreal.IntPoint(2048, 2048))
             if _verify_preset_view_assignments(existing):
                 editor_asset_lib.save_loaded_asset(existing)
-                unreal.log(f"[OK] Rebuilt {obj_path} in place (10 states x 4 layers)")
+                unreal.log(f"[OK] Rebuilt {obj_path} in place (10 states x {len(LAYER_TAGS)} layers)")
                 return existing
             unreal.log_warning("[REPLACE] in-place rebuild failed verification — falling back to delete+recreate")
         except Exception as e:
@@ -635,12 +657,12 @@ def create_preset_asset():
     factory.set_editor_property("data_asset_class", preset_class)
     preset = asset_tools.create_asset(PRESET_NAME, PRESET_OUTPUT_PATH, preset_class, factory)
     # Populate via C++ UFUNCTION — structs can't be created from Python after LiveCoding
-    preset.populate_default_assignments(["Eyes", "Brows", "Mouth", "Hair"])
+    preset.populate_default_assignments(LAYER_TAGS)
     _set_prop(preset, ("canvas_size", "CanvasSize"), unreal.IntPoint(2048, 2048))
     if not _verify_preset_view_assignments(preset):
         raise RuntimeError("Failed to populate ViewAssignments after creation")
     editor_asset_lib.save_asset(pkg)
-    unreal.log(f"[OK] Created {obj_path} with 10 states x 4 layers")
+    unreal.log(f"[OK] Created {obj_path} with 10 states x {len(LAYER_TAGS)} layers")
     return preset
 
 

@@ -339,6 +339,29 @@ FString UFaceParallaxEditorWidget::GetRedoLabel() const
     return RedoStack.Num() > 0 ? RedoStack.Last().Label : FString();
 }
 
+// Phase F: Ctrl+Z undo / Ctrl+Shift+Z & Ctrl+Y redo while the panel holds
+// keyboard focus (the tab-activation hook in the subsystem grabs focus).
+// Mirrored by FPLayout::UndoShortcutAction so the key table is testable.
+FReply UFaceParallaxEditorWidget::NativeOnKeyDown(const FGeometry& InGeometry,
+    const FKeyEvent& InKeyEvent)
+{
+    const FKey Key = InKeyEvent.GetKey();
+    const int Action = FPLayout::UndoShortcutAction(
+        InKeyEvent.IsControlDown(), InKeyEvent.IsShiftDown(),
+        Key == EKeys::Z, Key == EKeys::Y);
+    if (Action == FPLayout::FUndoShortcutUndo)
+    {
+        Undo();
+        return FReply::Handled();
+    }
+    if (Action == FPLayout::FUndoShortcutRedo)
+    {
+        Redo();
+        return FReply::Handled();
+    }
+    return Super::NativeOnKeyDown(InGeometry, InKeyEvent);
+}
+
 bool UFaceParallaxEditorWidget::RestoreFromBackup(UFaceParallaxPreset* Backup, const FString& Desc)
 {
     if (!Backup || !ActivePreset) return false;
@@ -603,6 +626,26 @@ void UFaceParallaxEditorWidget::SyncLayerToSelectedViews(EFaceAngleState State, 
     }
 }
 
+void UFaceParallaxEditorWidget::SyncTexturesToSelectedViews(EFaceAngleState State, FName LayerTag,
+    const TArray<EFaceAngleState>& DestViews)
+{
+    FWidgetUndoScope UndoScope(this, TEXT("Sync Textures to Selected Views"));
+    if (!ValidatePreset()) return;
+    if (!ActivePreset->HasState(State)) return;
+
+    const FFaceArtSlot& SourceSlot = ActivePreset->GetSlot(State, LayerTag);
+    for (EFaceAngleState Dest : DestViews)
+    {
+        ActivePreset->SetTexturesForSlot(Dest, LayerTag, SourceSlot.Textures);
+    }
+    ActivePreset->SetTexturesForSlot(State, LayerTag, SourceSlot.Textures);
+
+    if (PreviewActor.IsValid() && PreviewActor->FaceParallax)
+    {
+        PreviewActor->FaceParallax->ApplyCurrentStateTextures();
+    }
+}
+
 void UFaceParallaxEditorWidget::SyncLayerAxisToAllViews(EFaceAngleState State, FName LayerTag, int32 Axis)
 {
     FWidgetUndoScope UndoScope(this, TEXT("Sync Layer Axis to All Views"));
@@ -731,6 +774,14 @@ void UFaceParallaxEditorWidget::SetSlotTextures(EFaceAngleState State, FName Lay
     if (PreviewActor.IsValid() && PreviewActor->FaceParallax)
     {
         PreviewActor->FaceParallax->ApplyCurrentStateTextures();
+    }
+
+    // Redesign: post-assign flash — any albedo assignment arms a 1.5s pulse
+    // ring on the layer's canvas quad (NativeTick animates and clears it).
+    if (Textures.Albedo != nullptr)
+    {
+        AssignFlashLayer = LayerTag.ToString();
+        AssignFlashTimestamp = FSlateApplication::Get().GetCurrentTime();
     }
 }
 
@@ -2494,9 +2545,18 @@ void UFaceParallaxEditorWidget::BatchSetNestedTexturesAllViews(FName LayerTag, F
 
 void UFaceParallaxEditorWidget::DuplicateNestedElement(EFaceAngleState State, FName LayerTag, int32 SourceIndex, int32 DestIndex)
 {
+    FWidgetUndoScope UndoScope(this, TEXT("Duplicate Nested Element"));
     if (!ValidatePreset()) return;
     FFaceNestedArt Source = ActivePreset->GetNestedElement(State, LayerTag, SourceIndex);
-    ActivePreset->SetNestedElement(State, LayerTag, DestIndex, Source);
+    int32 Count = ActivePreset->GetNestedElementCount(State, LayerTag);
+    if (DestIndex >= Count)
+    {
+        ActivePreset->AddNestedElement(State, LayerTag, Source);
+    }
+    else
+    {
+        ActivePreset->SetNestedElement(State, LayerTag, DestIndex, Source);
+    }
     UFaceParallaxComponent* Comp = GetParallaxComponent();
     if (Comp) Comp->ApplyCurrentStateTextures();
 }
