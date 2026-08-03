@@ -281,7 +281,11 @@ void UFaceParallaxEditorWidget::RefreshLayerList()
                         (bSelected ? FLinearColor(1,1,1) : FLinearColor(0.7f,0.7f,0.7f)))]];
         // P7-F: whole layer row is an image-drop host — a dropped asset/file
         // fills the row's layer (active view) Albedo/Normal/Depth by suffix.
-        LayerPanelBox->AddSlot().AutoHeight().Padding(FMargin(0,1))
+        // P18/P19: each row is EXACTLY CarouselRowHeight (22px) tall — no
+        // vertical slot padding — so 8 rows (176px) fit the fixed 184px page
+        // viewport with the 8px reserve and the Page x/y nav strip never
+        // intersects the last row (Hair).
+        LayerPanelBox->AddSlot().AutoHeight().Padding(FMargin(0))
             [SNew(SBox).HeightOverride(22)
                 [SNew(SFaceDropTarget)
                     .OnFaceDragOver_Lambda([](const FGeometry&, const FDragDropEvent& Evt) -> FReply
@@ -1285,20 +1289,36 @@ void UFaceParallaxEditorWidget::RebuildStatusMatrix()
                         .Justification(ETextJustify::Center)]]];
     }
 
-    // Data rows — one per layer
-    for (int32 li = 0; li < Tags.Num(); ++li)
+    // Data rows — one per layer, carousel-paged (P17/P18): the matrix's natural
+    // height (header 28px + one 44px row per layer) is UNBOUNDED, so the real
+    // table must page layer rows inside the fixed StatusMatrixHeaderH-viewport
+    // budget or the last layer row ("Hair") slides under the terminal section.
+    // The viewport clips the whole grid; each page re-renders the 28px header
+    // row plus StatusMatrixRowsPerPage data rows (3 x 44 = 132 <= 176 content).
     {
-        FName Tag = Tags[li];
-        StatusMatrixGrid->AddSlot(0, li + 1)
-            [SNew(SBox).WidthOverride(68).HeightOverride(CellH)
-                [SNew(STextBlock)
-                    .Text(FText::FromString(Tag.ToString()))
-                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 7))
-                    .ColorAndOpacity(FLinearColor(0.7f,0.7f,0.7f))]];
-        for (int32 si = 0; si < States.Num(); ++si)
+        const int32 RowsPerPage = FPLayout::StatusMatrixRowsPerPage;
+        const int32 TotalRows = Tags.Num();
+        const int32 TotalPages = FMath::Max(1, FMath::DivideAndRoundUp(TotalRows, RowsPerPage));
+        StatusMatrixPageIndex = FMath::Clamp(StatusMatrixPageIndex, 0, TotalPages - 1);
+        if (StatusMatrixPageLabel.IsValid())
+            StatusMatrixPageLabel->SetText(FText::FromString(FString::Printf(TEXT("Page %d/%d"),
+                StatusMatrixPageIndex + 1, TotalPages)));
+        const int32 Start = StatusMatrixPageIndex * RowsPerPage;
+        const int32 End = FMath::Min(Start + RowsPerPage, TotalRows);
+        for (int32 li = Start; li < End; ++li)
         {
-            StatusMatrixGrid->AddSlot(si + 1, li + 1)
-                [MakeThumbCell(States[si], Tag)];
+            FName Tag = Tags[li];
+            StatusMatrixGrid->AddSlot(0, li + 1)
+                [SNew(SBox).WidthOverride(68).HeightOverride(CellH)
+                    [SNew(STextBlock)
+                        .Text(FText::FromString(Tag.ToString()))
+                        .Font(FCoreStyle::GetDefaultFontStyle("Regular", 7))
+                        .ColorAndOpacity(FLinearColor(0.7f,0.7f,0.7f))]];
+            for (int32 si = 0; si < States.Num(); ++si)
+            {
+                StatusMatrixGrid->AddSlot(si + 1, li + 1)
+                    [MakeThumbCell(States[si], Tag)];
+            }
         }
     }
 }
@@ -2147,18 +2167,17 @@ TSharedRef<SVerticalBox> UFaceParallaxEditorWidget::BuildPanelCanvas(const TShar
                 + SOverlay::Slot()[SchematicLayer.ToSharedRef()]
                 + SOverlay::Slot()[HotspotLayer.ToSharedRef()]
                 + SOverlay::Slot()[GizmoLayer.ToSharedRef()]];
-        // P23: the canvas is aspect-locked SQUARE (width tracks the drag-resize
-        // height, mirroring the 1024x1024 render target) — the face schematic
-        // can never be stretched; the slot centers the 450px box in the
-        // center column.
+        // P23: the canvas is aspect-locked SQUARE (mirrors the 1024x1024 render
+        // target) — the face schematic can never be stretched; the slot centers
+        // the 450px box in the center column.
         CenterCol->AddSlot().AutoHeight().Padding(FMargin(2)).HAlign(HAlign_Center)
             [PreviewHost.ToSharedRef()];
-        // Redesign: canvas drag-resize handle (state-only; the manifest keeps
-        // the 450px design constant as the default height).
-        CanvasResizer = SNew(SFaceCanvasResizer);
-        CanvasResizer->Owner = this;
-        CenterCol->AddSlot().AutoHeight().Padding(FMargin(2, 0, 2, 0))
-            [CanvasResizer.ToSharedRef()];
+        // Resizing is only allowed at the very outside of the widget (the
+        // window/tab edge — no internal splitter anywhere, rail included).
+        // The canvas itself is fixed at the 450px design constant: an interior
+        // drag-resize handle here let the canvas grow past the MainRow band
+        // and broke the paged
+        // carousels + pushed the rows under the terminal (P24 defect class).
 
         // P7-A legend: one always-visible line under the canvas stating the
         // one-map interaction (the schematic glyphs and the part chips below
@@ -5076,12 +5095,37 @@ void UFaceParallaxEditorWidget::BuildPanelBottomBar(const TSharedRef<SVerticalBo
     {
         TSharedRef<SVerticalBox> BotArea = SNew(SVerticalBox);
 
-        // Status matrix detail (inside Layers rail panel)
+        // Status matrix detail (inside Layers rail panel): the layer x state
+        // grid is UNBOUNDED (one 44px row per layer), so it is carousel-paged
+        // (P18) inside the same fixed viewport + nav strip + bottom reserve
+        // (P19) as the other rail carousels - every layer row, including the
+        // last ("Hair"), stays reachable above the terminal section (P17/P24).
         StatusMatrixGrid = SNew(SGridPanel);
         StatusMatrixScroll = SNew(SScrollBox).Orientation(Orient_Horizontal);
         StatusMatrixScroll->AddSlot() [StatusMatrixGrid.ToSharedRef()];
         RebuildStatusMatrix();
-        TSharedRef<SWidget> StatusSection = MakeSectionBox(TEXT("Status Detail"), StatusMatrixScroll.ToSharedRef());
+        TSharedRef<SVerticalBox> SDBox = SNew(SVerticalBox);
+        SDBox->AddSlot().AutoHeight()
+            [SNew(SBox)
+                .HeightOverride(FPLayout::CarouselViewportH)
+                .Padding(FMargin(0, 0, 0, FPLayout::ScrollReserveBottom))
+                [StatusMatrixScroll.ToSharedRef()]];
+        TSharedRef<SFaceCarouselNav> SDNav = SNew(SFaceCarouselNav)
+            .OnPrev_Lambda([this]()
+            {
+                StatusMatrixPageIndex = FMath::Max(0, StatusMatrixPageIndex - 1);
+                RebuildStatusMatrix();
+                return FReply::Handled();
+            })
+            .OnNext_Lambda([this]()
+            {
+                StatusMatrixPageIndex = StatusMatrixPageIndex + 1;
+                RebuildStatusMatrix();
+                return FReply::Handled();
+            });
+        StatusMatrixPageLabel = SDNav->Label;
+        SDBox->AddSlot().AutoHeight().Padding(FMargin(4, 0, 4, 2))[SDNav];
+        TSharedRef<SWidget> StatusSection = MakeSectionBox(TEXT("Status Detail"), SDBox);
         RailContent[0]->AddSlot().AutoHeight().Padding(FMargin(2,1))
             [StatusSection];
         RegisterRailSection(0, TEXT("Status Detail"), StatusSection);

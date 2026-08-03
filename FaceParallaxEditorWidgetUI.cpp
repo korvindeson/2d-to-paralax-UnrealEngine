@@ -254,17 +254,17 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
                 .Padding(FMargin(0))
                 [RailSwitcher.ToSharedRef()]];
         MainRow->AddSlot().AutoWidth().VAlign(VAlign_Fill)
-            [SAssignNew(RailWidthBox, SBox).WidthOverride(RailWidthPx)
+            [SAssignNew(RailWidthBox, SBox).WidthOverride(FPLayout::RailWidth)
                 [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("NoBorder"))
                     .BorderBackgroundColor(FLinearColor(0.06f,0.06f,0.07f))
                     .Padding(FMargin(0))
                     [RailCol]]];
-        // Phase 4b: drag-resize handle between the rail column and the canvas
-        // (drag updates RailWidthPx live, clamped via FPLayout::ClampRailWidth).
-        RailResizer = SNew(SFaceRailResizer);
-        RailResizer->Owner = this;
-        MainRow->AddSlot().AutoWidth().VAlign(VAlign_Fill)
-            [RailResizer.ToSharedRef()];
+        // The rail is FIXED at FPLayout::RailWidth (fills the edge-schematic
+        // section's empty space while leaving the 450px canvas + props pane
+        // fully visible). NO splitter here: a drag-resize handle between the
+        // rail and the canvas lets users steal the canvas's space, which clips
+        // the edge map and breaks the paged carousels (P24 defect class).
+        // Resizing only happens at the very outside of the widget.
         MainRow->AddSlot().FillWidth(1.0f).VAlign(VAlign_Fill)
             [CenterCol];
         MainRow->AddSlot().AutoWidth().VAlign(VAlign_Fill)

@@ -1172,10 +1172,12 @@ void RebuildPinList();                    // P7-C: View & Layer rail "Pins" sect
     int32 PropsPageIndex = 0;
     int32 IssuesPageIndex = 0;
     int32 CrossLayerPageIndex = 0;
+    int32 StatusMatrixPageIndex = 0;            // status matrix layer-row page (P18)
     TSharedPtr<STextBlock> LayerPageLabel;
     TSharedPtr<STextBlock> PropsPageLabel;
     TSharedPtr<STextBlock> IssuesPageLabel;
     TSharedPtr<STextBlock> CrossLayerPageLabel;
+    TSharedPtr<STextBlock> StatusMatrixPageLabel;
     TSharedPtr<SVerticalBox> PropsPageBox;
     TArray<TSharedRef<SWidget>> PropsPages;         // right-pane carousel pages (P18)
     void ShowPropsPage(int32 Page);                 // P18: flips the right-pane page
@@ -1190,8 +1192,8 @@ void RebuildPinList();                    // P7-C: View & Layer rail "Pins" sect
     FString ProblemsSummaryText;                    // Phase 4: accordion header summary
     FLinearColor ProblemsSummaryColor = FLinearColor(0.6f, 0.6f, 0.6f);
     void RefreshProblemsSummary();                  // Phase 4: sets Problems section header text
-    float RailWidthPx = 180.0f;                     // Phase 4: rail width slider (180-360)
-    TSharedPtr<SSpinBox<float>> RailWidthSpin;      // Phase 4: rail width control
+    float RailWidthPx = (float)FPLayout::RailWidth; // rail width - FIXED (fills the canvas's empty space; not resizable)
+    TSharedPtr<SSpinBox<float>> RailWidthSpin;      // (kept) legacy rail width control - unused, rail is fixed
     TSharedPtr<SScrollBox> TimelineScrollBox;
     TSharedPtr<SComboBox<TWeakObjectPtr<AFaceParallaxPreviewActor>>> ActorSelector;
     TSharedPtr<STextBlock> TextFrameCounts;
@@ -1325,7 +1327,7 @@ TSharedPtr<SFaceAccordion> LayersPinsAccordion;  // P7-C: View & Layer rail Pins
     TSharedPtr<SFaceDisclosure> VisemeDisclosure;   // Viseme grid progressive disclosure (Phase 4b)
     class SFaceFlashButton;                         // P6: action-point confirmation button (Shared.h)
     class SFaceRailResizer;
-    TSharedPtr<SFaceRailResizer> RailResizer;       // drag-resize handle rail/canvas (Phase 4b)
+    TSharedPtr<SFaceRailResizer> RailResizer;       // (kept) legacy rail/canvas splitter - not constructed; rail is fixed
     class SFaceHotspotLayer;
     TSharedPtr<SFaceHotspotLayer> HotspotLayer;     // canvas overlay: spatial part pick (Phase 4)
     class SFaceSchematicLayer;

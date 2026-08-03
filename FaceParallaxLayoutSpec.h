@@ -92,9 +92,18 @@
 //                          resolved rect, so the face is never stretched.
 //                          Checkable: the resolved rect ratio of every
 //                          bAspectRatio node equals FaceAspectRatio within 2%.
+//   P24 NoTerminalOverlap - nothing under the schematic may slide into the
+//                          timeline / terminal output window below the main
+//                          row. Every MainRow column and every row of the
+//                          CENTER column (mode row, schematic filter, canvas,
+//                          legends, parts strip, layer label) must resolve
+//                          inside the MainRowHeight band. Checkable: the
+//                          resolved bottom edge of every MainRow/CENTER child
+//                          stays within its parent's resolved bottom edge.
 //
-// Scroll-viewport model: the rails are fixed 180x560 viewports whose content
-// (wide button rows, tall section stacks) scrolls; bClipH marks the viewport
+// Scroll-viewport model: the rails are fixed 180xMainRowHeight viewports whose
+// content (wide button rows, tall section stacks) scrolls; bClipH marks the
+// viewport
 // and exempts its whole subtree from P2/P10/P11/P12/P13 - exactly what a
 // clipped/scrollable Slate widget does visually. Vertical scroll is only
 // modelled this way as an exemption; the widget itself must not construct
@@ -128,14 +137,19 @@ inline constexpr double StateDotSize        = 8.0;    // state dot box
 inline constexpr double ZoneDiagramHeight   = 20.0;   // zone strips row
 inline constexpr double ModeTabPad          = 1.0;    // display-mode row spacing
 inline constexpr double PreviewCanvasHeight = 450.0;  // SBox HeightOverride
-inline constexpr double MainRowHeight       = 560.0;  // main area fixed height
+// Main area fixed height. The band must fit the FULL rail-0 content (layer
+// carousel + nav + add button + collapsed pins + the paged Status Detail
+// carousel + the All Layers carousel) plus the 26px rail-chips row above the
+// rail clip, so the Status Detail matrix can never slide under the terminal
+// output window (P17 fit-first + P24 NoTerminalOverlap).
+inline constexpr double MainRowHeight       = 800.0;  // main area fixed height (fits the full center column + rails)
 inline constexpr double PinnedStripHeight   = 26.0;   // pinned action strip (P21)
 inline constexpr double TabBarHeight        = 26.0;   // top-level rail tab bar (Phase B)
 inline constexpr double RailIconsWidth      = 36.0;   // rail icon column
 inline constexpr double RailIconSize        = 30.0;   // rail icon buttons
-inline constexpr double RailWidth           = 180.0;  // rail switcher width
-inline constexpr double RailWidthMin        = 180.0;  // rail width range (Phase 4 slider)
-inline constexpr double RailWidthMax        = 360.0;  // rail width range (Phase 4 slider)
+inline constexpr double MainRowWidth        = 1089.0; // toolbar natural width (root width) - the fixed design band
+inline constexpr double RailWidthMin        = 180.0;  // rail width range (Phase 4 slider - library only, not resizable)
+inline constexpr double RailWidthMax        = 360.0;  // rail width range (Phase 4 slider - library only, not resizable)
 inline constexpr double PropsWidth          = 340.0;  // slot properties pane
 inline constexpr double ThumbSize           = 72.0;   // texture thumbnails
 inline constexpr double TimelineHeight      = 90.0;   // timeline strip
@@ -148,6 +162,19 @@ inline constexpr double PropsRightGap       = 8.0;    // right edge of the windo
 inline constexpr double PropsScrollInsetR   = 8.0;    // gap before the vertical scrollbar inside PropScroll
 inline constexpr double FaceAspectRatio      = 1.0;    // square face schematic canvas (mirrors the 1024x1024 render target)
 inline constexpr double FaceCanvasWidth      = 450.0;  // P23: canvas width = height x aspect - the face is never stretched
+// The center column's widest fixed row is CN-ModeRow (5 x 76 display-mode
+// buttons + the Canvas-Options overflow row + slot margins = 468); the canvas,
+// filter row, legends and parts strip are all narrower.
+inline constexpr double CenterColumnMinWidth = 468.0;  // center column needs this much or its rows overlap the props pane
+// Rail width is FIXED and derived from the empty space of the edge-schematic
+// section: it takes the maximum width that still leaves the center column its
+// CenterColumnMinWidth (mode row + 450px aspect-locked canvas) AND the 340px
+// props pane (+ PropsRightGap) fully visible - no row may ever reach the props
+// pane (P24 NoTerminalOverlap defect class). It is NOT manually resizable - no
+// internal splitter; resizing only happens at the very outside of the widget
+// (the window/tab edge). A resizable rail lets users steal the canvas's space,
+// clipping the edge map and breaking the paged carousels.
+inline constexpr double RailWidth           = MainRowWidth - PropsWidth - PropsRightGap - CenterColumnMinWidth;
 
 // UI testing procedures (fit-first / carousel fallback / padding reserve):
 // P17 FitNoVScroll: content that fits is packed with no vertical scroll bar.
@@ -160,6 +187,17 @@ inline constexpr double CarouselViewportH     = 184.0;  // page viewport: 8 x 22
 inline constexpr double CarouselNavHeight     = 22.0;   // prev/page/next strip height
 inline constexpr double ScrollReserveBottom   = 8.0;    // P19: reserve between page content and nav/buttons
 inline constexpr double CarouselMergeSpacing  = 4.0;    // P20: gap between page bodies when merging adjacent pages
+
+// Status Detail matrix (real: RebuildStatusMatrix): a fixed-height carousel
+// viewport pages N layer rows (StatusMatrixRowH each) below a 28px header row
+// (corner label + state abbrs) with a bottom reserve (P19) - the same budget
+// as the other rail carousels. The real matrix is UNBOUNDED (one 44px row per
+// layer, last row = "Hair"), so the mirror keeps it page-bounded or P17 fires
+// the "slides under the terminal" overlap defect class (P24). Rows per page
+// = (CarouselViewportH - header - reserve) / rowH = 3.
+inline constexpr double StatusMatrixHeaderH   = 28.0;   // "STATE \ LAYER" + state abbrs row
+inline constexpr double StatusMatrixRowH      = 44.0;   // one layer row (texture thumb cell)
+inline constexpr int    StatusMatrixRowsPerPage = 3;    // header + 3 data rows = 160 <= 176 page content
 
 inline constexpr double PaletteVals[] = { 0.0, 1.0, 2.0, 3.0, 4.0, 6.0, 8.0 };
 inline constexpr double MaxMargin = 8.0;
@@ -190,7 +228,8 @@ enum class DesignRule : unsigned char {
     PageWhitespaceReview, // P20
     PinnedActionsNeverInScroll, // P21
     NoHorizontalOverflow, // P22
-    AspectRatioBroken    // P23
+    AspectRatioBroken,    // P23
+    NoTerminalOverlap     // P24
 };
 
 struct FPViolation {
@@ -224,6 +263,7 @@ inline const char* RuleName(DesignRule r)
         case DesignRule::PinnedActionsNeverInScroll: return "PinnedActionsNeverInScroll";
         case DesignRule::NoHorizontalOverflow: return "NoHorizontalOverflow";
         case DesignRule::AspectRatioBroken: return "AspectRatioBroken";
+        case DesignRule::NoTerminalOverlap: return "NoTerminalOverlap";
     }
     return "?";
 }
@@ -449,7 +489,9 @@ inline std::vector<FPLayoutNode> BuildSpec()
                         LF(b, "PI-List", 0, 0))),
                 VF(b, "Sec-StatusDetail",
                     LF(b, "Sec-StatusDetail-Title", 120, 14),
-                    LF(b, "Sec-StatusDetail-Body", 160, 24)),
+                    VF(b, "Sec-StatusDetail-Body",
+                        LF(b, "SD-Carousel", 0, 0),
+                        LF(b, "SD-CarouselNav", 120, 22))),
                 VF(b, "Sec-AllLayers",
                     LF(b, "Sec-AL-Title", 120, 14),
                     VF(b, "Sec-AL-Body",
@@ -684,6 +726,7 @@ inline std::vector<FPLayoutNode> BuildSpec()
                     LF(b, "CN-OptsSlider", 0, 0),
                     LF(b, "CN-OptsLbl", 44, 10)),
                 LF(b, "CN-Spacer", 0, 0)),
+            LF(b, "CN-FilterRow", 420, 28),
             OV(b, "CN-Preview",
                 LF(b, "PV-Image", 0, 0),
                 LF(b, "PV-Outline", 0, 0),
@@ -691,8 +734,9 @@ inline std::vector<FPLayoutNode> BuildSpec()
                 LF(b, "PV-Edge", 0, 0),
                 LF(b, "PV-Gizmo", 0, 0)),
             LF(b, "CN-Legend", 300, 16),
+            LF(b, "CN-EdgeLegend", 420, 18),
             LF(b, "CN-PartsStrip", 420, 26),
-            LF(b, "CN-LayerLabel", 200, 14)),
+            LF(b, "CN-LayerLabel", 200, 20)),
 
         // --- 3d. SLOT PROPS (right pane) ---
         VF(b, "PROPS",
@@ -736,12 +780,14 @@ inline std::vector<FPLayoutNode> BuildSpec()
                 LF(b, "PR-CarouselNav", 120, 22)),
             LF(b, "PR-Status", 220, 12)));
 
-    // MainRow fixed height (real: SBox HeightOverride(560)); stretches to root width
-    // (real: root SVerticalBox slot fills the window, CenterCol FillWidth(1.0)).
+    // MainRow fixed height (real: SBox HeightOverride(MainRowHeight)); stretches
+    // to root width (real: root SVerticalBox slot fills the window, CenterCol
+    // FillWidth(1.0)). P24 keeps every column + center row inside this band so
+    // nothing slides under the timeline / terminal output window below.
     b.N[(size_t)MainRow].FixedH = MainRowHeight;
     FxW(MainRow);
 
-    // --- Rail switcher config (overlay: fixed 180x560 scroll viewports) ---
+    // --- Rail switcher config (overlay: fixed 180xMainRowHeight scroll viewports) ---
     {
         const int RailSw = b.N[(size_t)MainRow].Children[0];
         b.N[(size_t)RailSw].FixedW = RailWidth;
@@ -787,9 +833,26 @@ inline std::vector<FPLayoutNode> BuildSpec()
                 b.N[(size_t)PList].FixedH = 100;       // 5 pin rows; accordion collapse keeps the rail fitting (P17)
             }
         }
+        // P7-C: Sec-StatusDetail (View & Layer rail, child 5) - the real Status
+        // Detail matrix is a layer x state grid whose natural height is UNBOUNDED
+        // (one 44px row per layer, last row = "Hair"). The mirror models it as a
+        // paged carousel (SD-Carousel viewport + SD-CarouselNav strip), the same
+        // budget as All Layers, so the rail content stays inside MainRowHeight
+        // and the last layer row can never slide under the terminal (P17/P18/P24).
         SecSetup(b.N[(size_t)RLViewLayer].Children[5], 0);
         M(b.N[(size_t)RLViewLayer].Children[5], 2, 1, 2, 1);
         P(Bod(b.N[(size_t)RLViewLayer].Children[5]), SectionBorderPad, SectionBorderPad, SectionBorderPad, SectionBorderPad);
+        {
+            const int SDBody = Bod(b.N[(size_t)RLViewLayer].Children[5]);
+            const int SDCar = b.N[(size_t)SDBody].Children[0];
+            FxW(SDCar);
+            b.N[(size_t)SDCar].FixedH = CarouselViewportH;
+            Car(SDCar);
+            P(SDCar, 0, 0, 0, ScrollReserveBottom);
+            const int SDNav = b.N[(size_t)SDBody].Children[1];
+            b.N[(size_t)SDNav].FixedH = CarouselNavHeight;
+            Nav(SDNav);
+        }
         {
             const int AL = b.N[(size_t)RLViewLayer].Children[6];
             SecSetup(AL, 0);
@@ -1060,7 +1123,7 @@ inline std::vector<FPLayoutNode> BuildSpec()
             Sp(b.N[(size_t)Mode].Children[6]);
         }
         {
-            const int Prev = b.N[(size_t)Center].Children[1];
+            const int Prev = b.N[(size_t)Center].Children[2];
             b.N[(size_t)Prev].FixedH = PreviewCanvasHeight;
             b.N[(size_t)Prev].FixedW = FaceCanvasWidth;
             b.N[(size_t)Prev].bAspectRatio = true;   // P23: square canvas - the face is never stretched
@@ -1069,14 +1132,17 @@ inline std::vector<FPLayoutNode> BuildSpec()
                 Fx(b.N[(size_t)Prev].Children[(size_t)c]);
         }
         // Text under the schematic (mirrors the real center column): the
-        // always-visible legend line + the fixed-height parts strip row sit
-        // between the canvas and the layer label. P2/P12 keep the whole column
-        // inside the 560px MainRow so nothing can overlap the timeline /
-        // terminal output window below (the mirror rows make that overlap
-        // detectable - a taller canvas or a wrapping parts strip fires).
-        M(b.N[(size_t)Center].Children[2], 4, 2, 4, 0);   // CN-Legend
-        M(b.N[(size_t)Center].Children[3], 2, 2, 2, 0);   // CN-PartsStrip
-        M(b.N[(size_t)Center].Children[4], 4, 2, 4, 0);   // CN-LayerLabel
+        // schematic filter row, the always-visible legend lines, the fixed-
+        // height parts strip row and the layer label sit below the canvas.
+        // P2/P12/P24 keep the whole column inside the MainRowHeight band so
+        // nothing can overlap the timeline / terminal output window below
+        // (the mirror rows make that overlap detectable - a taller canvas or
+        // a wrapping parts strip fires).
+        M(b.N[(size_t)Center].Children[2], 4, 2, 4, 0);   // CN-FilterRow
+        M(b.N[(size_t)Center].Children[3], 4, 2, 4, 0);   // CN-Legend
+        M(b.N[(size_t)Center].Children[4], 2, 2, 2, 0);   // CN-PartsStrip
+        M(b.N[(size_t)Center].Children[5], 4, 2, 4, 0);   // CN-EdgeLegend
+        M(b.N[(size_t)Center].Children[6], 4, 2, 4, 0);   // CN-LayerLabel
     }
 
     // --- Props pane config ---
@@ -1850,6 +1916,42 @@ inline std::vector<FPViolation> ValidateDesign(const std::vector<FPLayoutNode>& 
             if (Strip < 0 || Parent[i] != Strip)
                 Out.push_back({ DesignRule::PinnedActionsNeverInScroll, n.Name,
                     "pinned action outside the PinnedStrip node" });
+        }
+    }
+
+    // ---- P24 NoTerminalOverlap: the main row is a fixed-height band with
+    // ---- nothing below it inside the root except the timeline + terminal
+    // ---- output window. Every MainRow column and every row of the center
+    // ---- column must therefore resolve INSIDE the band - a taller canvas
+    // ---- (interior drag-resize), a taller filter/legend row, or a wrapping
+    // ---- parts strip would otherwise slide under the terminal (the overlap
+    // ---- defect class). Unlike P2/P10 this also covers the flexed main row
+    // ---- and its clipped columns.
+    {
+        int MR = -1, CN = -1;
+        for (size_t i = 0; i < Nodes.size(); ++i)
+        {
+            if (Nodes[i].Name && std::string(Nodes[i].Name) == "MainRow") MR = (int)i;
+            if (Nodes[i].Name && std::string(Nodes[i].Name) == "CENTER") CN = (int)i;
+        }
+        if (MR >= 0 && CN >= 0)
+        {
+            const FPRect& mr = R[(size_t)MR];
+            for (int ci : Nodes[(size_t)MR].Children)
+            {
+                const FPRect& cr = R[(size_t)ci];
+                if (cr.Y + cr.H > mr.Y + mr.H + Eps)
+                    Out.push_back({ DesignRule::NoTerminalOverlap, Nodes[(size_t)MR].Name,
+                        Nodes[(size_t)ci].Name });
+            }
+            const FPRect& cnr = R[(size_t)CN];
+            for (int ci : Nodes[(size_t)CN].Children)
+            {
+                const FPRect& cr = R[(size_t)ci];
+                if (cr.Y + cr.H > cnr.Y + cnr.H + Eps)
+                    Out.push_back({ DesignRule::NoTerminalOverlap, Nodes[(size_t)CN].Name,
+                        Nodes[(size_t)ci].Name });
+            }
         }
     }
 

@@ -2567,28 +2567,6 @@ void UFaceParallaxEditorWidget::RebuildProblemsPanel()
                 LgBox->AddSlot().AutoHeight()[R];
             }
         }
-        // Phase 4: rail width range control (clamped via the manifest mirror).
-        TSharedRef<SHorizontalBox> LwRow = SNew(SHorizontalBox);
-        LwRow->AddSlot().Padding(FMargin(0, 2)).AutoWidth().VAlign(VAlign_Center)
-            [MakeLbl(TEXT("Rail Width"), 8, FLinearColor(0.7f, 0.7f, 0.7f))];
-        TSharedRef<SSpinBox<float>> LwSpin = SNew(SSpinBox<float>)
-            .Value(RailWidthPx)
-            .MinValue(FPLayout::RailWidthMin)
-            .MaxValue(FPLayout::RailWidthMax)
-            .MinSliderValue(FPLayout::RailWidthMin)
-            .MaxSliderValue(FPLayout::RailWidthMax)
-            .Delta(10.0f)
-            .OnValueCommitted_Lambda([this](float Val, ETextCommit::Type)
-            {
-                RailWidthPx = (float)FPLayout::ClampRailWidth((double)Val);
-                RebuildWidget();
-            });
-        LwSpin->SetToolTipText(FText::FromString(TEXT(
-            "Rail width 180-360 px (default 180). Rebuilds the editor layout.")));
-        RailWidthSpin = LwSpin;
-        LwRow->AddSlot().Padding(FMargin(4, 2)).AutoWidth()[LwSpin];
-        LwRow->AddSlot().Padding(FMargin(4, 2)).FillWidth(1.0f);
-        LgBox->AddSlot().AutoHeight()[LwRow];
         ProblemsPanelBox->AddSlot().AutoHeight()
             [MakeSectionBox(TEXT("Layout Group"), LgBox)];
     }

@@ -6268,17 +6268,17 @@ void TestPhaseHUIDesign() {
 
     // Positive contract: the real manifest must be clean.
     const std::vector<FPLayout::FPLayoutNode> Spec = FPLayout::BuildSpec();
-    TEST("Phase H: manifest builds (507 nodes)", Spec.size() == 507u);
+    TEST("Phase H: manifest builds (511 nodes)", Spec.size() == 511u);
     TEST("Phase H: every node reachable from root", FPLayout::CountReachable(Spec) == (int)Spec.size());
     const int RootIdx = FPLayout::FindRootIndex(Spec);
     TEST("Phase H: single root is the last node", RootIdx == (int)Spec.size() - 1);
     const std::vector<FPLayout::FPRect> Rects = FPLayout::ResolveLayout(Spec);
-    TEST("Phase H: root rect matches design (1089x866)",
-        Rects[(size_t)RootIdx].W == 1089.0 && Rects[(size_t)RootIdx].H == 866.0);
+    TEST("Phase H: root rect matches design (1089x1106)",
+        Rects[(size_t)RootIdx].W == 1089.0 && Rects[(size_t)RootIdx].H == 1106.0);
     const std::vector<FPLayout::FPViolation> V = FPLayout::ValidateDesign(Spec);
     TEST("Phase H: zero design violations (P1..P23)", V.empty());
 
-    // Scroll-viewport contract: the 5 rails are fixed 180x560 clipped viewports,
+    // Scroll-viewport contract: the 5 rails are fixed 273x800 clipped viewports,
     // so their content can never overlap other panels or leave the screen.
     // P6: Animated Variants merged into the Nested rail (RL-NestedAnimated).
     {
@@ -6293,13 +6293,19 @@ void TestPhaseHUIDesign() {
                 || found->FixedW != FPLayout::RailWidth)
                 bViewports = false;
         }
-        TEST("Phase H: rails are 180x560 clipped scroll viewports", bViewports);
+        TEST("Phase H: rails are 273x800 clipped scroll viewports", bViewports);
     }
 
     // Design-system constants mirrored from RebuildWidget.
-    TEST("Phase H: RailWidth=180", FPLayout::RailWidth == 180.0);
+    TEST("Phase H: RailWidth fills the empty space (fixed, no splitter)",
+        FPLayout::RailWidth == FPLayout::MainRowWidth - FPLayout::PropsWidth
+            - FPLayout::PropsRightGap - FPLayout::CenterColumnMinWidth);
+    TEST("Phase H: RailWidth=273", FPLayout::RailWidth == 273.0);
+    TEST("Phase H: rail width never shrinks the center column below its min",
+        FPLayout::MainRowWidth - FPLayout::RailWidth - FPLayout::PropsWidth
+            - FPLayout::PropsRightGap >= FPLayout::CenterColumnMinWidth);
     TEST("Phase H: PropsWidth=340", FPLayout::PropsWidth == 340.0);
-    TEST("Phase H: MainRowHeight=560", FPLayout::MainRowHeight == 560.0);
+    TEST("Phase H: MainRowHeight=800", FPLayout::MainRowHeight == 800.0);
     TEST("Phase H: ThumbSize=72", FPLayout::ThumbSize == 72.0);
     TEST("Phase H: StateStripHeight=26", FPLayout::StateStripHeight == 26.0);
     TEST("Phase H: MaxMargin=8", FPLayout::MaxMargin == 8.0);
@@ -6699,9 +6705,10 @@ void TestPhaseHUIDesign() {
             !Violates(B.N, FPLayout::DesignRule::AspectRatioBroken));
     }
     {
-        // Terminal-overlap guard: every row under the schematic (legend,
-        // parts strip, layer label) stays inside the 560px MainRow - nothing
-        // may extend into the timeline / terminal output window below.
+        // Terminal-overlap guard: every row under the schematic (filter row,
+        // legends, parts strip, layer label) stays inside the MainRowHeight
+        // band - nothing may extend into the timeline / terminal output
+        // window below. Mirrors the validator's P24 NoTerminalOverlap rule.
         bool bContained = true;
         for (size_t i = 0; i < Spec.size() && bContained; ++i)
         {
@@ -6716,6 +6723,123 @@ void TestPhaseHUIDesign() {
             }
         }
         TEST("Phase H: schematic text rows never reach the terminal band", bContained);
+    }
+
+    // P24 NoTerminalOverlap: the validator itself flags any MainRow column or
+    // center-column row whose resolved bottom edge escapes the band (the
+    // "slides under the console" overlap defect class). Real manifest is clean.
+    {
+        bool bP24 = true;
+        for (const FPLayout::FPViolation& v : V)
+            if (v.Rule == FPLayout::DesignRule::NoTerminalOverlap) bP24 = false;
+        TEST("Phase H: no P24 NoTerminalOverlap violations", bP24);
+    }
+    // Negative: a taller canvas row (the removed interior resize defect) pokes
+    // past the MainRow band and fires P24.
+    {
+        FPLayout::Builder B;
+        const int Root = FPLayout::VF(B, "Root",
+            FPLayout::HF(B, "MainRow",
+                FPLayout::LF(B, "RAIL", 180, 0),
+                FPLayout::VF(B, "CENTER",
+                    FPLayout::LF(B, "CN-Preview", 450, 450),
+                    FPLayout::LF(B, "CN-Legend", 300, 16)),
+                FPLayout::LF(B, "PROPS", 340, 0)));
+        B.N[(size_t)Root].FixedW = 1089.0;
+        B.N[(size_t)Root].FixedH = 920.0;
+        const int MR = B.N[(size_t)Root].Children[0];
+        B.N[(size_t)MR].FixedH = 620.0;
+        B.N[(size_t)B.N[(size_t)MR].Children[0]].FixedH = 620.0;   // RAIL fills band
+        B.N[(size_t)B.N[(size_t)MR].Children[1]].FixedW = 560.0;   // CENTER fixed col
+        B.N[(size_t)B.N[(size_t)MR].Children[1]].FixedH = 620.0;
+        B.N[(size_t)B.N[(size_t)MR].Children[2]].FixedH = 620.0;   // PROPS fills band
+        // CENTER: preview canvas + legend total 466 < 620 -> clean baseline.
+        TEST("P24: center column inside band passes",
+            !Violates(B.N, FPLayout::DesignRule::NoTerminalOverlap));
+        // Now plant the interior canvas resize: 700px canvas pokes past 620.
+        const int Center = B.N[(size_t)MR].Children[1];
+        const int Prev = B.N[(size_t)Center].Children[0];
+        B.N[(size_t)Prev].FixedH = 700.0;
+        B.N[(size_t)Prev].FixedW = 700.0;
+        TEST("P24: oversized canvas under the terminal fires",
+            Violates(B.N, FPLayout::DesignRule::NoTerminalOverlap));
+    }
+    // No-interior-resize contract: MainRow holds exactly the three columns
+    // (rail | center | props) - an interior resizer handle between the canvas
+    // and the parts strip would add a 4th child and break the fit + carousels.
+    {
+        bool bThree = true;
+        for (const FPLayout::FPLayoutNode& n : Spec)
+            if (std::string(n.Name) == "MainRow" && n.Children.size() != 3u) bThree = false;
+        TEST("Phase H: MainRow has exactly 3 columns (no interior resizer)", bThree);
+    }
+
+    // Status Detail matrix overlap guard (improved UI test). The real matrix
+    // (RebuildStatusMatrix) is a layer x state grid whose natural height is
+    // UNBOUNDED - a 28px header plus one 44px row per layer, the LAST row
+    // being "Hair" - which used to slide under the terminal section. The
+    // manifest mirrors it as a paged carousel (SD-Carousel viewport + nav
+    // strip), the same budget as All Layers, so the fit rules can see it.
+    {
+        const FPLayout::FPLayoutNode* SD = nullptr;
+        const FPLayout::FPLayoutNode* SDN = nullptr;
+        for (const FPLayout::FPLayoutNode& n : Spec)
+        {
+            if (std::string(n.Name) == "SD-Carousel") SD = &n;
+            if (std::string(n.Name) == "SD-CarouselNav") SDN = &n;
+        }
+        TEST("Phase H: status matrix is a carousel viewport (P18)",
+            SD && SD->bCarousel && SD->FixedH == FPLayout::CarouselViewportH
+                && SD->PadB >= FPLayout::ScrollReserveBottom - 0.001);
+        TEST("Phase H: status matrix has its nav strip (P18)",
+            SDN && SDN->bCarouselNav && SDN->FixedH == FPLayout::CarouselNavHeight);
+        // Page budget: the 28px header + 3 data rows (44px) + 8px reserve must
+        // fit the 184px viewport - that is what keeps the last layer row
+        // ("Hair") reachable instead of clipped under the terminal.
+        TEST("Phase H: status matrix page budget fits the viewport",
+            FPLayout::StatusMatrixHeaderH + FPLayout::StatusMatrixRowsPerPage * FPLayout::StatusMatrixRowH
+                + FPLayout::ScrollReserveBottom <= FPLayout::CarouselViewportH + 0.001);
+        // The rail-0 section set (header + layer carousel + nav + add button +
+        // paged status detail) fits the grown MainRowHeight band.
+        TEST("Phase H: rail-0 content fits the MainRowHeight band",
+            FPLayout::MainRowHeight >= 760.0);
+    }
+    // Negative: the UNPAGED status matrix (the pre-fix defect - 20 layer rows,
+    // last = "Hair") overflows a fit-first rail and fires P17, mirroring the
+    // real rail-0 section set; the PAGED matrix (viewport + nav strip) passes.
+    {
+        auto RailBuilder = [](int BodyH) {
+            FPLayout::Builder B;
+            const int Root = FPLayout::VF(B, "Root",
+                FPLayout::VF(B, "RL-ViewLayer",
+                    FPLayout::LF(B, "Header", 120, 14),
+                    FPLayout::LF(B, "Scroll", 0, 184),
+                    FPLayout::LF(B, "Nav", 120, 22),
+                    FPLayout::LF(B, "AddBtn", 70, 20),
+                    FPLayout::VF(B, "Sec-StatusDetail",
+                        FPLayout::LF(B, "Title", 120, 14),
+                        FPLayout::LF(B, "Body", 160, BodyH))));
+            const int RL = B.N[(size_t)Root].Children[0];
+            B.N[(size_t)RL].bClipH = true;
+            B.N[(size_t)RL].bNoVScroll = true;
+            B.N[(size_t)RL].FixedW = FPLayout::RailWidth;
+            B.N[(size_t)RL].FixedH = FPLayout::MainRowHeight;
+            B.N[(size_t)RL].Spacing = 2.0;
+            const int Sec = B.N[(size_t)RL].Children[4];
+            B.N[(size_t)Sec].bSection = true;
+            B.N[(size_t)B.N[(size_t)Sec].Children[0]].bTitle = true;
+            return B;
+        };
+        {
+            const FPLayout::Builder B = RailBuilder(28 + 20 * 44);   // unpaged: 20 layer rows
+            TEST("P17: unpaged status matrix fires FitNoVScroll (hidden Hair)",
+                Violates(B.N, FPLayout::DesignRule::FitNoVScroll));
+        }
+        {
+            const FPLayout::Builder B = RailBuilder(184);            // paged: fixed viewport height
+            TEST("P17: paged status matrix fits the rail (Hair reachable)",
+                !Violates(B.N, FPLayout::DesignRule::FitNoVScroll));
+        }
     }
 }
 
@@ -6761,7 +6885,7 @@ void TestPhaseIUITesting() {
 
     // --- Step 1 fit-first: the real rails pack without vertical scroll ---
     const std::vector<FPLayout::FPLayoutNode> Spec = FPLayout::BuildSpec();
-    TEST("UI: manifest builds (507 nodes)", Spec.size() == 507u);
+    TEST("UI: manifest builds (511 nodes)", Spec.size() == 511u);
     {
         const char* RailNames[5] = { "RL-ViewLayer", "RL-Art", "RL-NestedAnimated", "RL-CameraPrev", "RL-Diagnostics" };
         bool bNoV = true;
@@ -6799,19 +6923,23 @@ void TestPhaseIUITesting() {
         const FPLayout::FPLayoutNode* PB = Find("PB-Carousel");
         const FPLayout::FPLayoutNode* AL = Find("AL-Carousel");
         const FPLayout::FPLayoutNode* PR = Find("PR-Carousel");
+        const FPLayout::FPLayoutNode* SD = Find("SD-Carousel");
         bool bCar = L && L->bCarousel && L->FixedH == FPLayout::CarouselViewportH
                  && PB && PB->bCarousel && PB->FixedH == FPLayout::CarouselViewportH
                  && AL && AL->bCarousel && AL->FixedH == FPLayout::CarouselViewportH
-                 && PR && PR->bCarousel && PR->FixedH == FPLayout::CarouselViewportH;
-        TEST("UI: layers/problems/cross-layer/props are carousels (P18)", bCar);
+                 && PR && PR->bCarousel && PR->FixedH == FPLayout::CarouselViewportH
+                 && SD && SD->bCarousel && SD->FixedH == FPLayout::CarouselViewportH;
+        TEST("UI: layers/problems/cross-layer/props/status are carousels (P18)", bCar);
     }
     {
         const FPLayout::FPLayoutNode* LN = Find("RL-LayersNav");
         const FPLayout::FPLayoutNode* PN = Find("PB-CarouselNav");
         const FPLayout::FPLayoutNode* AN = Find("AL-CarouselNav");
         const FPLayout::FPLayoutNode* PRN = Find("PR-CarouselNav");
+        const FPLayout::FPLayoutNode* SDN = Find("SD-CarouselNav");
         bool bNav = LN && LN->bCarouselNav && PN && PN->bCarouselNav
-                 && AN && AN->bCarouselNav && PRN && PRN->bCarouselNav;
+                 && AN && AN->bCarouselNav && PRN && PRN->bCarouselNav
+                 && SDN && SDN->bCarouselNav;
         TEST("UI: every carousel has a nav strip (P18)", bNav);
     }
     {
@@ -6836,6 +6964,15 @@ void TestPhaseIUITesting() {
         TEST("UI: page content height = rows x row height",
             FPLayout::CarouselViewportH - FPLayout::ScrollReserveBottom
                 == FPLayout::CarouselRowsPerPage * FPLayout::CarouselRowHeight);
+    }
+    {
+        // Status matrix page budget: the real matrix (28px header + one 44px
+        // row per layer, last = "Hair") pages 3 data rows per page inside the
+        // same 184 viewport - 28 + 3*44 + 8 = 168 <= 184, so the table stays
+        // above the terminal section (P17/P18/P19/P24).
+        TEST("UI: status matrix page fits the 184 viewport",
+            FPLayout::StatusMatrixHeaderH + FPLayout::StatusMatrixRowsPerPage * FPLayout::StatusMatrixRowH
+                + FPLayout::ScrollReserveBottom <= FPLayout::CarouselViewportH + 0.001);
     }
     {
         // P15 preserved: PR-Scroll still leaves the scrollbar gap.
@@ -7349,13 +7486,13 @@ void TestPhase4Mirrors() {
     // ---- Rail width range (RailWidthMin/Max + ClampRailWidth) ----
     TEST("Rail width min = 180", FPLayout::RailWidthMin == 180.0);
     TEST("Rail width max = 360", FPLayout::RailWidthMax == 360.0);
-    TEST("Default rail width stays 180", FPLayout::RailWidth == 180.0);
+    TEST("Fixed rail width = empty-space fill (273)", FPLayout::RailWidth == 273.0);
     TEST("Clamp: default passes through", FPLayout::ClampRailWidth(180.0) == 180.0);
     TEST("Clamp: below min -> min", FPLayout::ClampRailWidth(100.0) == 180.0);
     TEST("Clamp: above max -> max", FPLayout::ClampRailWidth(500.0) == 360.0);
     TEST("Clamp: mid range kept", FPLayout::ClampRailWidth(240.0) == 240.0);
     TEST("Clamp: max boundary kept", FPLayout::ClampRailWidth(360.0) == 360.0);
-    TEST("Clamp: NaN -> default 180", FPLayout::ClampRailWidth(std::nan("")) == 180.0);
+    TEST("Clamp: NaN -> default 273", FPLayout::ClampRailWidth(std::nan("")) == 273.0);
     TEST("Clamp: negative -> min", FPLayout::ClampRailWidth(-50.0) == 180.0);
 
     // ---- Problems search filter (mirror: case-insensitive substring match) ----
@@ -8017,7 +8154,9 @@ void TestAccessibilityMirrors() {
     TEST("Viseme summary: 0 rows -> No viseme frames",
         FPLayout::VisemeSummary(0) == "No viseme frames");
 
-    // ---- Drag-resize rail width (mirror of SFaceRailResizer + SetRailWidthLive) ----
+    // ---- Legacy rail-width drag math (kept library mirror of the removed
+    // ---- SFaceRailResizer: ClampRailWidth + RailWidthAfterDrag). The rail is
+    // ---- FIXED at FPLayout::RailWidth - no UI calls these anymore. ----
     TEST("Drag: +50 from 180 -> 230", FPLayout::RailWidthAfterDrag(180.0, 50.0) == 230.0);
     TEST("Drag: -100 from 230 -> clamp 180", FPLayout::RailWidthAfterDrag(230.0, -100.0) == 180.0);
     TEST("Drag: +200 from 300 -> clamp 360", FPLayout::RailWidthAfterDrag(300.0, 200.0) == 360.0);
@@ -8026,7 +8165,7 @@ void TestAccessibilityMirrors() {
     TEST("Drag: -1 from min -> clamp 180", FPLayout::RailWidthAfterDrag(180.0, -1.0) == 180.0);
     TEST("Drag: exact max via round kept", FPLayout::RailWidthAfterDrag(180.0, 180.0) == 360.0);
     TEST("Drag: +1 past max clamps 360", FPLayout::RailWidthAfterDrag(360.0, 1.0) == 360.0);
-    TEST("Drag: NaN delta -> default 180", FPLayout::RailWidthAfterDrag(300.0, std::nan("")) == 180.0);
+    TEST("Drag: NaN delta -> default 273", FPLayout::RailWidthAfterDrag(300.0, std::nan("")) == 273.0);
     TEST("Drag: huge negative clamps min", FPLayout::RailWidthAfterDrag(200.0, -1000.0) == 180.0);
     TEST("Drag: negative fraction rounds", FPLayout::RailWidthAfterDrag(200.0, -0.6) == 199.0);
     TEST("Drag: half delta rounds up", FPLayout::RailWidthAfterDrag(180.0, 49.5) == 230.0);
