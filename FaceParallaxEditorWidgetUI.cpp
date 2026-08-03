@@ -30,6 +30,7 @@
 #include "Editor.h"
 #include "Widgets/Input/SMultiLineEditableTextBox.h"
 #include "Widgets/Layout/SScrollBox.h"
+#include "Framework/Application/SlateApplication.h"
 #include "UObject/ObjectSaveContext.h"
 #include "Rendering/DrawElements.h"
 
@@ -148,10 +149,10 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
     TSharedRef<SVerticalBox> PropPanel = SNew(SVerticalBox);
     BuildPanelSlotProps(Root, PropPanel);
     BuildPanelArtRail();
-    BuildPanelAnimatedRail();
-    BuildPanelCameraRail();
     BuildPanelNestedRail();
-    BuildPanelAdvancedRail();
+    BuildPanelAnimatedSections();
+    BuildPanelCameraRail();
+    BuildPanelDiagnosticsRail();
     BuildPanelTimeline(Root);
     BuildPanelBottomBar(Root);
     // Phase 4b: rail chips are built after every panel builder has registered
@@ -168,15 +169,14 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
         TSharedRef<SHorizontalBox> QB = SNew(SHorizontalBox);
         const std::vector<std::string>& QLabels = FPLayout::QuickActionLabels();
         TFunction<void()> QHandlers[] = {
-            [this]() { OpenImportArtDialog(); },
-            [this]() { SyncAllLayersToAllViews(); RefreshUI(); },
+            [this]() { OpenImportFolderWizard(TEXT("")); },
             [this]() { ApplyAutoFitToAllSlots(); RefreshUI(); },
             [this]() { ClearAllOverrides(); RefreshUI(); },
         };
         for (int32 Qi = 0; Qi < (int32)QLabels.size(); ++Qi)
         {
             FString Label = FString(UTF8_TO_TCHAR(QLabels[Qi].c_str()));
-            const FLinearColor BtnFG = (Qi == 3) ? FLinearColor(1.0f,0.6f,0.6f) : FLinearColor(0.85f,0.85f,0.85f);
+            const FLinearColor BtnFG = (Qi == (int32)QLabels.size() - 1) ? FLinearColor(1.0f,0.6f,0.6f) : FLinearColor(0.85f,0.85f,0.85f);
             TSharedRef<SButton> QBt = SNew(SButton)
                 .ButtonColorAndOpacity(FLinearColor(0.15f,0.15f,0.15f))
                 .OnClicked_Lambda([this, Q = QHandlers[Qi]]()
@@ -198,23 +198,42 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
 
     // --- Top-level rail tab bar (TopTabs): labeled tabs replacing the old
     // single-char icon column. Mirrors the manifest TopTabs row exactly
-    // (TT-Tab0..5 + TT-Spacer, fixed height FPLayout::TabBarHeight).
+    // (TT-Tab0..4 + TT-Spacer, fixed height FPLayout::TabBarHeight).
+    // P6: 5 tabs — Animated Variants merged into "Nested & Animated".
     {
         TSharedRef<SHorizontalBox> Tabs = SNew(SHorizontalBox);
+        TopTabBar = Tabs;
         struct { int32 I; const TCHAR* T; float W; } TabDefs[] = {
             {0, TEXT("View & Layer"), 82.0f},
             {1, TEXT("Art"), 34.0f},
-            {2, TEXT("Animated Variants"), 104.0f},
-            {3, TEXT("Nested Elements & Pins"), 122.0f},
-            {4, TEXT("Camera/Preview"), 82.0f},
-            {5, TEXT("Advanced"), 60.0f},
+            {2, TEXT("Nested & Animated"), 116.0f},
+            {3, TEXT("Camera/Preview"), 82.0f},
+            {4, TEXT("Diagnostics"), 100.0f},
         };
         for (auto& Td : TabDefs)
         {
             const int32 RI = Td.I;
-            TSharedRef<SButton> TabBtn = MakeBtn(Td.T, [this, RI](){ SetActiveRailIndex(RI); },
-                ActiveRailIndex == RI ? AccentBlue() : FLinearColor(0.14f,0.14f,0.16f),
-                FLinearColor(0.08f,0.08f,0.08f));
+            // P7-A: programmatic rail jumps (canvas -> Art) flash the
+            // destination tab amber for ~0.9s (TabFlashUntil), so the tab
+            // switch is visible even when the user isn't looking at the bar.
+            TSharedRef<SButton> TabBtn = SNew(SButton)
+                .OnClicked_Lambda([this, RI]()
+                {
+                    SetActiveRailIndex(RI);
+                    return FReply::Handled();
+                })
+                .ButtonColorAndOpacity_Lambda([this, RI]()
+                {
+                    const bool bFlash = TabFlashUntil > FSlateApplication::Get().GetCurrentTime()
+                        && TabFlashIndex == RI;
+                    if (bFlash) return FLinearColor(1.0f, 0.7f, 0.2f);
+                    return ActiveRailIndex == RI ? AccentBlue() : FLinearColor(0.14f, 0.14f, 0.16f);
+                })
+                .Content()
+                [SNew(STextBlock)
+                    .Text(FText::FromString(Td.T))
+                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
+                    .ColorAndOpacity(FLinearColor(0.85f, 0.85f, 0.85f))];
             Tabs->AddSlot().Padding(FMargin(2)).AutoWidth()
                 [SNew(SBox).WidthOverride(Td.W).HeightOverride(22)[TabBtn]];
         }
@@ -249,13 +268,14 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
         MainRow->AddSlot().FillWidth(1.0f).VAlign(VAlign_Fill)
             [CenterCol];
         MainRow->AddSlot().AutoWidth().VAlign(VAlign_Fill)
-                [SNew(SBox).WidthOverride(340)
+                [SNew(SBox).WidthOverride(FPLayout::PropsWidth)
                     [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("NoBorder"))
                         .BorderBackgroundColor(FLinearColor(0.07f,0.07f,0.07f))
                         .Padding(FMargin(0, 0, FPLayout::PropsRightGap, 0))
                         [PropPanel]]];
         Root->AddSlot().AutoHeight()
-            [SNew(SBox).HeightOverride(560)[MainRow]];
+            [SNew(SBox).HeightOverride((float)FPLayout::MainRowHeight)
+                .Clipping(EWidgetClipping::ClipToBounds)[MainRow]];
     }
 
     // --- Diagnostic Log ---
@@ -263,7 +283,7 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
         .Font(FCoreStyle::GetDefaultFontStyle("Mono", 8))
         .IsReadOnly(true);
     DiagnosticLogBox = SNew(SBox)
-        .HeightOverride(100)
+        .HeightOverride((float)FPLayout::DiagnosticLogHeight)
         .Visibility_Lambda([this]()
         {
             return bShowDiagnosticLog ? EVisibility::Visible : EVisibility::Collapsed;

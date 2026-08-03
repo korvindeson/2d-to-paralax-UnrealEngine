@@ -56,7 +56,8 @@
 //                          vertical scroll bar. Checkable: the summed natural
 //                          height of the viewport's non-accordion children
 //                          (accordion sections collapse to their headers) must
-//                          stay inside FixedH. The 6 rails are bNoVScroll:
+//                          stay inside FixedH. The 5 rails (P6: Animated
+//                          Variants merged into Nested) are bNoVScroll:
 //                          fit-packed stacks, one-open accordions and carousel
 //                          pages replace the old vertical rails scroll.
 //   P18 CarouselFallback  - UI testing procedure, step 2: content that cannot
@@ -76,13 +77,30 @@
 //                          separate (excessive whitespace per tab). Checkable:
 //                          deterministic greedy pack (CarouselMinPages) - the
 //                          page count must equal the achievable minimum.
+//   P22 NoHorizontalOverflow - a clipped viewport's content must fit its fixed
+//                          width: no row may be wider than the rail, so the
+//                          rail NEVER scrolls left-to-right under neighboring
+//                          panels (the rail horizontal-scroll defect). The
+//                          widget mirrors this by building rails WITHOUT a
+//                          horizontal SScrollBox; wide rows are redesigned
+//                          (short labels, stacked rows) instead of scrolled.
+//                          Checkable: every non-flex child of a bClipH node
+//                          with FixedW > 0 keeps its natural width + margins
+//                          inside FixedW - PadL - PadR.
+//   P23 AspectRatioBroken - an aspect-locked node (bAspectRatio - the face
+//                          schematic canvas) must keep FaceAspectRatio in its
+//                          resolved rect, so the face is never stretched.
+//                          Checkable: the resolved rect ratio of every
+//                          bAspectRatio node equals FaceAspectRatio within 2%.
 //
 // Scroll-viewport model: the rails are fixed 180x560 viewports whose content
 // (wide button rows, tall section stacks) scrolls; bClipH marks the viewport
 // and exempts its whole subtree from P2/P10/P11/P12/P13 - exactly what a
 // clipped/scrollable Slate widget does visually. Vertical scroll is only
 // modelled this way as an exemption; the widget itself must not construct
-// vertical SScrollBoxes (SyntaxValidator rule 8).
+// vertical SScrollBoxes (SyntaxValidator rule 8). WIDTH is never exempt:
+// P22 keeps rail content inside the 180px contract so nothing can scroll
+// under the schematic.
 
 #include <cstddef>
 #include <cctype>
@@ -103,7 +121,7 @@ inline constexpr double ToolbarItemPad      = 2.0;    // FMargin(2) toolbar slot
 inline constexpr double ToolbarPadL         = 4.0;    // toolbar border padding
 inline constexpr double ToolbarPadV         = 3.0;
 inline constexpr double SearchBoxWidth      = 140.0;  // SSearchBox WidthOverride
-inline constexpr double ActorComboWidth     = 170.0;  // actor combo WidthOverride
+inline constexpr double ActorComboWidth     = 162.0;  // actor combo WidthOverride
 inline constexpr double StateStripHeight    = 26.0;   // view-state strip
 inline constexpr double StateTabPad         = 1.0;    // tab slot spacing
 inline constexpr double StateDotSize        = 8.0;    // state dot box
@@ -128,6 +146,8 @@ inline constexpr double SectionTitlePadL    = 4.0;    // section title padding
 inline constexpr double SectionTitlePadV    = 6.0;
 inline constexpr double PropsRightGap       = 8.0;    // right edge of the window (MainRow props slot padding)
 inline constexpr double PropsScrollInsetR   = 8.0;    // gap before the vertical scrollbar inside PropScroll
+inline constexpr double FaceAspectRatio      = 1.0;    // square face schematic canvas (mirrors the 1024x1024 render target)
+inline constexpr double FaceCanvasWidth      = 450.0;  // P23: canvas width = height x aspect - the face is never stretched
 
 // UI testing procedures (fit-first / carousel fallback / padding reserve):
 // P17 FitNoVScroll: content that fits is packed with no vertical scroll bar.
@@ -168,7 +188,9 @@ enum class DesignRule : unsigned char {
     CarouselFallback,   // P18
     ScrollbarReserve,   // P19
     PageWhitespaceReview, // P20
-    PinnedActionsNeverInScroll // P21
+    PinnedActionsNeverInScroll, // P21
+    NoHorizontalOverflow, // P22
+    AspectRatioBroken    // P23
 };
 
 struct FPViolation {
@@ -200,6 +222,8 @@ inline const char* RuleName(DesignRule r)
         case DesignRule::ScrollbarReserve:   return "ScrollbarReserve";
         case DesignRule::PageWhitespaceReview: return "PageWhitespaceReview";
         case DesignRule::PinnedActionsNeverInScroll: return "PinnedActionsNeverInScroll";
+        case DesignRule::NoHorizontalOverflow: return "NoHorizontalOverflow";
+        case DesignRule::AspectRatioBroken: return "AspectRatioBroken";
     }
     return "?";
 }
@@ -239,6 +263,7 @@ struct FPLayoutNode {
     bool bTitle = false;
     bool bAccordion = false; // P16: one-open-per-group collapsible section
     bool bPinnedAction = false; // P21: canonical pinned action (strip-only)
+    bool bAspectRatio = false; // P23: fixed box must keep FaceAspectRatio (face canvas)
 };
 
 struct FPRect { double X = 0, Y = 0, W = 0, H = 0; };
@@ -341,31 +366,33 @@ inline std::vector<FPLayoutNode> BuildSpec()
 
     // ============================ 1. TOOLBAR ============================
     const int Toolbar = HF(b, "Toolbar",
-        LF(b, "TB-NewPreset", 84, 22),
-        LF(b, "TB-Save", 42, 22),
-        LF(b, "TB-Undo", 42, 22),
-        LF(b, "TB-Redo", 42, 22),
-        LF(b, "TB-Import", 97, 22),
+        LF(b, "TB-NewPreset", 76, 22),
+        LF(b, "TB-Save", 40, 22),
+        LF(b, "TB-Undo", 40, 22),
+        LF(b, "TB-Redo", 40, 22),
+        LF(b, "TB-History", 56, 22),
+        LF(b, "TB-Import", 90, 22),
         LF(b, "TB-Search", SearchBoxWidth, 22),
         LF(b, "TB-Spacer", 0, 0),
-        LF(b, "TB-Help", 21, 22),
-        LF(b, "TB-Spawn", 104, 22),
-        LF(b, "TB-Find", 90, 22),
-        LF(b, "TB-Quads", 90, 22),
+        LF(b, "TB-Help", 20, 22),
+        LF(b, "TB-Spawn", 96, 22),
+        LF(b, "TB-Find", 84, 22),
+        LF(b, "TB-Quads", 84, 22),
         LF(b, "TB-ActorCombo", ActorComboWidth, 22),
-        LF(b, "TB-ClearStale", 83, 22));
+        LF(b, "TB-ClearStale", 75, 22));
     S(Toolbar, ToolbarItemPad);
     P(Toolbar, ToolbarPadL, ToolbarPadV, ToolbarPadL, ToolbarPadV);
-    Sp(b.N[(size_t)Toolbar].Children[6]);
-    M(b.N[(size_t)Toolbar].Children[5], 6, 2, 6, 2);  // search box slot FMargin(6,2)
+    Sp(b.N[(size_t)Toolbar].Children[7]);
+    M(b.N[(size_t)Toolbar].Children[6], 6, 2, 6, 2);  // search box slot FMargin(6,2)
     // Toolbar clusters: 8px left margin opens each group (matches RebuildWidget).
     // Button widths above are tuned so the toolbar natural width stays 1089
     // (the design window width contract asserted by Phase H; Undo/Redo buttons
-    // widen the contract from 1001).
-    M(b.N[(size_t)Toolbar].Children[4], 8, 2, 2, 2);  // Import Art
-    M(b.N[(size_t)Toolbar].Children[7], 8, 2, 2, 2);  // Help
-    M(b.N[(size_t)Toolbar].Children[8], 8, 2, 2, 2);  // Spawn Preview
-    M(b.N[(size_t)Toolbar].Children[12], 8, 2, 2, 2); // Clear Stale
+    // widen the contract from 1001; the P6 History menu button joins them and
+    // the 14-button row is retuned −66 so the natural width returns to 1089).
+    M(b.N[(size_t)Toolbar].Children[5], 8, 2, 2, 2);  // Import Art
+    M(b.N[(size_t)Toolbar].Children[8], 8, 2, 2, 2);  // Help
+    M(b.N[(size_t)Toolbar].Children[9], 8, 2, 2, 2);  // Spawn Preview
+    M(b.N[(size_t)Toolbar].Children[13], 8, 2, 2, 2); // Clear Stale
 
     // ========================= 2. VIEW STATE STRIP =========================
     const int StateStrip = HF(b, "StateStrip",
@@ -413,6 +440,13 @@ inline std::vector<FPLayoutNode> BuildSpec()
                 LF(b, "RL-LayersScroll", 0, 0),
                 LF(b, "RL-LayersNav", 120, 22),
                 LF(b, "RL-AddLayerBtn", 70, 20),
+                VF(b, "Sec-Pins",
+                    LF(b, "Sec-PI-Title", 120, 14),
+                    VF(b, "Sec-PI-Body",
+                        HF(b, "PI-AddRow",
+                            LF(b, "PI-AddBtn", 119, 20),
+                            LF(b, "PI-Spacer", 0, 0)),
+                        LF(b, "PI-List", 0, 0))),
                 VF(b, "Sec-StatusDetail",
                     LF(b, "Sec-StatusDetail-Title", 120, 14),
                     LF(b, "Sec-StatusDetail-Body", 160, 24)),
@@ -426,44 +460,38 @@ inline std::vector<FPLayoutNode> BuildSpec()
                     LF(b, "Sec-QA-Title", 120, 14),
                     VF(b, "Sec-QA-Body",
                         HF(b, "QA-Row0",
-                            LF(b, "QA-DupFront", 168, 20),
-                            LF(b, "QA-FillMissing", 140, 20),
-                            LF(b, "QA-Spacer", 0, 0)))),
+                            LF(b, "QA-ApplyBtn", 119, 20)))),
                 VF(b, "Sec-CrossView",
                     LF(b, "Sec-CV-Title", 120, 14),
                     VF(b, "Sec-CV-Body",
-                        HF(b, "CV-Row",
-                            LF(b, "CV-CopyLbl", 64, 14),
-                            LF(b, "CV-Combo", 90, 20),
-                            LF(b, "CV-CopyBtn", 105, 20),
-                            LF(b, "CV-Spacer", 0, 0),
-                            LF(b, "CV-LinkChk", 20, 20),
-                            LF(b, "CV-LinkLbl", 28, 14)),
-                        HF(b, "CV-AxisRow",
-                            LF(b, "CV-AxisLbl", 64, 14),
-                            LF(b, "CV-AxisX", 26, 20),
-                            LF(b, "CV-AxisY", 26, 20),
-                            LF(b, "CV-AxisSX", 32, 20),
-                            LF(b, "CV-AxisSY", 32, 20),
-                            LF(b, "CV-AxisR", 26, 20)))),
+                        HF(b, "CV-RowA",
+                            LF(b, "CV-CopyLbl", 34, 14),
+                            LF(b, "CV-Combo", 64, 20),
+                            LF(b, "CV-CopyBtn", 52, 20),
+                            LF(b, "CV-Spacer", 0, 0)),
+                        HF(b, "CV-RowB",
+                            LF(b, "CV-LinkChk", 16, 20),
+                            LF(b, "CV-LinkLbl", 22, 14)))),
                 VF(b, "Sec-Import",
                     LF(b, "Sec-IM-Title", 120, 14),
                     VF(b, "Sec-IM-Body",
                         HF(b, "IM-Row",
-                            LF(b, "IM-ImportAssign", 119, 20), LF(b, "IM-AssignCB", 147, 20), LF(b, "IM-Spacer", 0, 0)))),
+                            LF(b, "IM-ImportBtn", 60, 20), LF(b, "IM-DropBtn", 76, 20), LF(b, "IM-Spacer", 0, 0)))),
                 VF(b, "Sec-OutlineDepth",
                     LF(b, "Sec-OD-Title", 120, 14),
                     VF(b, "Sec-OD-Body",
                         HF(b, "OD-Row",
-                            LF(b, "OD-GenBtn", 210, 20), LF(b, "OD-GridEdit", 44, 20), LF(b, "OD-DetectBtn", 112, 20),
-                            LF(b, "OD-Spacer", 0, 0), LF(b, "OD-Chk", 20, 20), LF(b, "OD-OverlayLbl", 44, 10)),
+                            LF(b, "OD-GenBtn", 60, 20), LF(b, "OD-GridEdit", 40, 20), LF(b, "OD-DetectBtn", 52, 20),
+                            LF(b, "OD-Spacer", 0, 0)),
+                        HF(b, "OD-ChkRow",
+                            LF(b, "OD-Chk", 16, 20), LF(b, "OD-OverlayLbl", 40, 10), LF(b, "OD-Spacer1", 0, 0)),
                         HF(b, "OD-ScopeRow",
-                            LF(b, "OD-BakeLbl", 36, 10),
-                            LF(b, "OD-Scope0", 20, 20), LF(b, "OD-FrontLbl", 60, 10),
-                            LF(b, "OD-Scope1", 20, 20), LF(b, "OD-H8Lbl", 60, 10),
-                            LF(b, "OD-Scope2", 20, 20), LF(b, "OD-AllLbl", 44, 10),
+                            LF(b, "OD-BakeLbl", 22, 10),
+                            LF(b, "OD-Scope0", 16, 20), LF(b, "OD-FrontLbl", 30, 10),
+                            LF(b, "OD-Scope1", 16, 20), LF(b, "OD-H8Lbl", 18, 10),
+                            LF(b, "OD-Scope2", 16, 20), LF(b, "OD-AllLbl", 18, 10),
                             LF(b, "OD-Spacer2", 0, 0)),
-                        LF(b, "OD-Stats", 200, 10))),
+                        LF(b, "OD-Stats", 156, 10))),
                 VF(b, "Sec-AssignGrid",
                     LF(b, "Sec-AG-Title", 120, 14),
                     VF(b, "Sec-AG-Body",
@@ -489,47 +517,22 @@ inline std::vector<FPLayoutNode> BuildSpec()
                             LF(b, "AG-C26", 16, 16), LF(b, "AG-C27", 16, 16),
                             LF(b, "AG-C28", 16, 16), LF(b, "AG-C29", 16, 16)),
                         HF(b, "AG-RowLbls",
-                            LF(b, "AG-Lbl0", 60, 14), LF(b, "AG-Lbl1", 60, 14), LF(b, "AG-Lbl2", 60, 14),
-                            LF(b, "AG-Coverage", 116, 14)))),
+                            LF(b, "AG-Lbl0", 44, 14), LF(b, "AG-Lbl1", 44, 14), LF(b, "AG-Lbl2", 44, 14),
+                            LF(b, "AG-Spacer", 0, 0)),
+                        LF(b, "AG-Coverage", 140, 14))),
                 VF(b, "Sec-AssignOps",
                     LF(b, "Sec-AO-Title", 120, 14),
                     VF(b, "Sec-AO-Body",
                         HF(b, "AO-Row0",
-                            LF(b, "AO-Fill", 110, 20),
-                            LF(b, "AO-ClearRow", 105, 20),
-                            LF(b, "AO-SlotToAll", 152, 20),
+                            LF(b, "AO-ClearRow", 64, 20),
+                            LF(b, "AO-ApplyViews", 84, 20),
                             LF(b, "AO-Spacer", 0, 0)),
                         HF(b, "AO-Row1",
-                            LF(b, "AO-PerfLbl", 80, 14),
-                            LF(b, "AO-PerfCombo", 70, 20),
-                            LF(b, "AO-CamLbl", 92, 14),
-                            LF(b, "AO-CamCombo", 100, 20))))),
-            VF(b, "RL-Animated",
-                VF(b, "Sec-VisemeGrid",
-                    LF(b, "Sec-VG-Title", 120, 14),
-                    VF(b, "Sec-VG-Body",
-                        HF(b, "VG-Row0",
-                            LF(b, "VG-C0", 18, 18), LF(b, "VG-C1", 18, 18), LF(b, "VG-C2", 18, 18),
-                            LF(b, "VG-C3", 18, 18), LF(b, "VG-C4", 18, 18), LF(b, "VG-C5", 18, 18),
-                            LF(b, "VG-C6", 18, 18), LF(b, "VG-C7", 18, 18), LF(b, "VG-C8", 18, 18),
-                            LF(b, "VG-C9", 18, 18)),
-                        HF(b, "VG-Row1",
-                            LF(b, "VG-D0", 18, 18), LF(b, "VG-D1", 18, 18), LF(b, "VG-D2", 18, 18),
-                            LF(b, "VG-D3", 18, 18), LF(b, "VG-D4", 18, 18), LF(b, "VG-D5", 18, 18),
-                            LF(b, "VG-D6", 18, 18), LF(b, "VG-D7", 18, 18), LF(b, "VG-D8", 18, 18),
-                            LF(b, "VG-D9", 18, 18)))),
-                VF(b, "Sec-HullReview",
-                    LF(b, "Sec-HR-Title", 120, 14),
-                    VF(b, "Sec-HR-Body",
-                        HF(b, "HR-OrbitRow",
-                            LF(b, "HR-Chk", 20, 20), LF(b, "HR-OrbitLbl", 56, 14),
-                            LF(b, "HR-Slider", 0, 0), LF(b, "HR-SpdLbl", 24, 10), LF(b, "HR-SnapBtn", 42, 20)),
-                        GRID(b, "HR-Thumbs",
-                            LF(b, "HT-0", 64, 48), LF(b, "HT-1", 64, 48), LF(b, "HT-2", 64, 48),
-                            LF(b, "HT-3", 64, 48), LF(b, "HT-4", 64, 48), LF(b, "HT-5", 64, 48),
-                            LF(b, "HT-6", 64, 48), LF(b, "HT-7", 64, 48), LF(b, "HT-8", 64, 48),
-                            LF(b, "HT-9", 64, 48))))),
-            VF(b, "RL-NestedPins",
+                            LF(b, "AO-PerfLbl", 20, 14),
+                            LF(b, "AO-PerfCombo", 50, 20),
+                            LF(b, "AO-CamLbl", 20, 14),
+                            LF(b, "AO-CamCombo", 50, 20))))),
+            VF(b, "RL-NestedAnimated",
                 VF(b, "Sec-NestedPins",
                     LF(b, "Sec-NP-Title", 120, 14),
                     VF(b, "Sec-NP-Body",
@@ -552,7 +555,31 @@ inline std::vector<FPLayoutNode> BuildSpec()
                         HF(b, "NP-Sens",
                             LF(b, "NP-SensLbl", 56, 14), LF(b, "NP-SensSlider", 0, 0), LF(b, "NP-SensVal", 44, 10)),
                         LF(b, "NP-DetectBtn", 91, 20),
-                        LF(b, "NP-Outliner", 200, 60)))),
+                        LF(b, "NP-Outliner", 156, 60))),
+                VF(b, "Sec-VisemeGrid",
+                    LF(b, "Sec-VG-Title", 120, 14),
+                    VF(b, "Sec-VG-Body",
+                        HF(b, "VG-Row0",
+                            LF(b, "VG-C0", 15, 15), LF(b, "VG-C1", 15, 15), LF(b, "VG-C2", 15, 15),
+                            LF(b, "VG-C3", 15, 15), LF(b, "VG-C4", 15, 15), LF(b, "VG-C5", 15, 15),
+                            LF(b, "VG-C6", 15, 15), LF(b, "VG-C7", 15, 15), LF(b, "VG-C8", 15, 15),
+                            LF(b, "VG-C9", 15, 15)),
+                        HF(b, "VG-Row1",
+                            LF(b, "VG-D0", 15, 15), LF(b, "VG-D1", 15, 15), LF(b, "VG-D2", 15, 15),
+                            LF(b, "VG-D3", 15, 15), LF(b, "VG-D4", 15, 15), LF(b, "VG-D5", 15, 15),
+                            LF(b, "VG-D6", 15, 15), LF(b, "VG-D7", 15, 15), LF(b, "VG-D8", 15, 15),
+                            LF(b, "VG-D9", 15, 15)))),
+                VF(b, "Sec-HullReview",
+                    LF(b, "Sec-HR-Title", 120, 14),
+                    VF(b, "Sec-HR-Body",
+                        HF(b, "HR-OrbitRow",
+                            LF(b, "HR-Chk", 20, 20), LF(b, "HR-OrbitLbl", 56, 14),
+                            LF(b, "HR-Slider", 0, 0), LF(b, "HR-SpdLbl", 24, 10), LF(b, "HR-SnapBtn", 42, 20)),
+                        GRID(b, "HR-Thumbs",
+                            LF(b, "HT-0", 28, 48), LF(b, "HT-1", 28, 48), LF(b, "HT-2", 28, 48),
+                            LF(b, "HT-3", 28, 48), LF(b, "HT-4", 28, 48), LF(b, "HT-5", 28, 48),
+                            LF(b, "HT-6", 28, 48), LF(b, "HT-7", 28, 48), LF(b, "HT-8", 28, 48),
+                            LF(b, "HT-9", 28, 48))))),
             VF(b, "RL-CameraPrev",
                 VF(b, "Sec-Camera",
                     LF(b, "Sec-Cam-Title", 120, 14),
@@ -566,9 +593,9 @@ inline std::vector<FPLayoutNode> BuildSpec()
                         HF(b, "CM-AutoRow",
                             LF(b, "CM-AutoChk", 20, 20), LF(b, "CM-AutoLbl", 36, 14), LF(b, "CM-AutoSlider", 0, 0), LF(b, "CM-AutoSpd", 24, 10)),
                         HF(b, "CM-ZoneRow",
-                            LF(b, "CM-ZoneLbl", 96, 14),
-                            LF(b, "CM-Zone0", 36, 20), LF(b, "CM-Zone1", 36, 20),
-                            LF(b, "CM-Zone2", 36, 20), LF(b, "CM-Zone3", 36, 20)))),
+                            LF(b, "CM-ZoneLbl", 30, 14),
+                            LF(b, "CM-Zone0", 28, 20), LF(b, "CM-Zone1", 28, 20),
+                            LF(b, "CM-Zone2", 28, 20), LF(b, "CM-Zone3", 28, 20)))),
                 VF(b, "Sec-BlendPreview",
                     LF(b, "Sec-BP-Title", 120, 14),
                     VF(b, "Sec-BP-Body",
@@ -578,8 +605,33 @@ inline std::vector<FPLayoutNode> BuildSpec()
                     LF(b, "Sec-CF-Title", 120, 14),
                     VF(b, "Sec-CF-Body",
                         HF(b, "CF-Row",
-                            LF(b, "CF-Chk", 20, 20), LF(b, "CF-Lbl", 112, 14), LF(b, "CF-Spacer", 0, 0), LF(b, "CF-SnapBtn", 84, 20))))),
-            VF(b, "RL-Advanced",
+                            LF(b, "CF-Chk", 16, 20), LF(b, "CF-Lbl", 56, 14), LF(b, "CF-Spacer", 0, 0), LF(b, "CF-SnapBtn", 72, 20))))),
+            VF(b, "RL-Diagnostics",
+                // P6: Diagnostics group leads the accordion — the
+                // review tools (tag validator, material cross-reference, param
+                // search, edge histogram) sit first; Config / Param Bindings /
+                // Depth Debug / Problems follow.
+                VF(b, "Sec-TagValidator",
+                    LF(b, "Sec-TV-Title", 120, 14),
+                    VF(b, "Sec-TV-Body",
+                        LF(b, "TV-Report", 152, 20))),
+                VF(b, "Sec-MatCrossRef",
+                    LF(b, "Sec-MC-Title", 120, 14),
+                    VF(b, "Sec-MC-Body",
+                        LF(b, "MC-Report", 152, 20))),
+                VF(b, "Sec-ParamRef",
+                    LF(b, "Sec-PRF-Title", 120, 14),
+                    VF(b, "Sec-PRF-Body",
+                        HF(b, "PRF-Row",
+                            LF(b, "PRF-Edit", 90, 20), LF(b, "PRF-FindBtn", 56, 20)),
+                        LF(b, "PRF-Results", 152, 32))),
+                VF(b, "Sec-EdgeAnalysis",
+                    LF(b, "Sec-EA-Title", 120, 14),
+                    VF(b, "Sec-EA-Body",
+                        HF(b, "EA-Row",
+                            LF(b, "EA-Chk", 14, 20), LF(b, "EA-EdgeLbl", 40, 14),
+                            LF(b, "EA-Chk2", 14, 20), LF(b, "EA-HistLbl", 24, 14),
+                            LF(b, "EA-Rebuild", 46, 20), LF(b, "EA-Spacer", 0, 0)))),
                 VF(b, "Sec-Config",
                     LF(b, "Sec-CFG-Title", 120, 14),
                     VF(b, "Sec-CFG-Body",
@@ -591,26 +643,13 @@ inline std::vector<FPLayoutNode> BuildSpec()
                         HF(b, "CFG-R5", LF(b, "CFG-Chk5", 20, 20), LF(b, "CFG-Lbl5", 96, 14)),
                         HF(b, "CFG-R6", LF(b, "CFG-Chk6", 20, 20), LF(b, "CFG-Lbl6", 96, 14)),
                         HF(b, "CFG-R7", LF(b, "CFG-Chk7", 20, 20), LF(b, "CFG-Lbl7", 96, 14)))),
-                VF(b, "Sec-ParamRef",
-                    LF(b, "Sec-PRF-Title", 120, 14),
-                    VF(b, "Sec-PRF-Body",
-                        HF(b, "PRF-Row",
-                            LF(b, "PRF-Edit", 100, 20), LF(b, "PRF-FindBtn", 63, 20)),
-                        LF(b, "PRF-Results", 180, 32))),
                 VF(b, "Sec-ParamTable",
                     LF(b, "Sec-PT-Title", 120, 14),
                     VF(b, "Sec-PT-Body",
                         HF(b, "PT-AddRow",
                             LF(b, "PT-Edit", 90, 20), LF(b, "PT-AddBtn", 56, 20)),
                         VF(b, "PT-Rows",
-                            LF(b, "PT-Row0", 220, 16), LF(b, "PT-Row1", 220, 16), LF(b, "PT-Row2", 220, 16)))),
-                VF(b, "Sec-EdgeAnalysis",
-                    LF(b, "Sec-EA-Title", 120, 14),
-                    VF(b, "Sec-EA-Body",
-                        HF(b, "EA-Row",
-                            LF(b, "EA-Chk", 20, 20), LF(b, "EA-EdgeLbl", 76, 14),
-                            LF(b, "EA-Chk2", 20, 20), LF(b, "EA-HistLbl", 56, 14),
-                            LF(b, "EA-Rebuild", 63, 20), LF(b, "EA-Spacer", 0, 0)))),
+                            LF(b, "PT-Row0", 156, 16), LF(b, "PT-Row1", 156, 16), LF(b, "PT-Row2", 156, 16)))),
                 VF(b, "Sec-DepthDebug",
                     LF(b, "Sec-DD-Title", 120, 14),
                     VF(b, "Sec-DD-Body",
@@ -625,30 +664,25 @@ inline std::vector<FPLayoutNode> BuildSpec()
                         HF(b, "DD-Colors",
                             LF(b, "DD-LowLbl", 64, 14), LF(b, "DD-LowEdit", 70, 20), LF(b, "DD-Spacer", 0, 0)),
                         HF(b, "DD-Btns",
-                            LF(b, "DD-RebuildBtn", 91, 20), LF(b, "DD-ColorBtn", 105, 20), LF(b, "DD-Spacer2", 0, 0)))),
+                            LF(b, "DD-RebuildBtn", 72, 20), LF(b, "DD-ColorBtn", 78, 20), LF(b, "DD-Spacer2", 0, 0)))),
                 VF(b, "Sec-Problems",
                     LF(b, "Sec-PR-Title", 120, 14),
                     VF(b, "Sec-PR-Body",
                         LF(b, "PB-Carousel", 0, 0),
-                        LF(b, "PB-CarouselNav", 120, 22))),
-                VF(b, "Sec-TagValidator",
-                    LF(b, "Sec-TV-Title", 120, 14),
-                    VF(b, "Sec-TV-Body",
-                        LF(b, "TV-Report", 180, 20))),
-                VF(b, "Sec-MatCrossRef",
-                    LF(b, "Sec-MC-Title", 120, 14),
-                    VF(b, "Sec-MC-Body",
-                        LF(b, "MC-Report", 180, 20))))),
+                        LF(b, "PB-CarouselNav", 120, 22))))),
         // --- 3c. CENTER COLUMN ---
+        // P5: the 5-way preview selector is the primary canvas control (large
+        // labeled segmented buttons); onion-skin/show-pins/depth-overlay/
+        // filter demote into the collapsed Canvas Options overflow menu.
         VF(b, "CENTER",
             HF(b, "CN-ModeRow",
-                LF(b, "CN-Mode0", 64, 20), LF(b, "CN-Mode1", 64, 20),
-                LF(b, "CN-Mode2", 64, 20), LF(b, "CN-Mode3", 64, 20),
-                LF(b, "CN-DisplayLbl", 44, 12),
-                HF(b, "CN-OnionRow",
-                    LF(b, "CN-OnionChk", 20, 20),
-                    LF(b, "CN-OnionSlider", 0, 0),
-                    LF(b, "CN-OpacityLbl", 44, 10)),
+                LF(b, "CN-Mode0", 76, 24), LF(b, "CN-Mode1", 76, 24),
+                LF(b, "CN-Mode2", 76, 24), LF(b, "CN-Mode3", 76, 24),
+                LF(b, "CN-Mode4", 76, 24),
+                HF(b, "CN-OptsRow",
+                    LF(b, "CN-OptsChk", 20, 20),
+                    LF(b, "CN-OptsSlider", 0, 0),
+                    LF(b, "CN-OptsLbl", 44, 10)),
                 LF(b, "CN-Spacer", 0, 0)),
             OV(b, "CN-Preview",
                 LF(b, "PV-Image", 0, 0),
@@ -656,6 +690,8 @@ inline std::vector<FPLayoutNode> BuildSpec()
                 LF(b, "PV-Onion", 0, 0),
                 LF(b, "PV-Edge", 0, 0),
                 LF(b, "PV-Gizmo", 0, 0)),
+            LF(b, "CN-Legend", 300, 16),
+            LF(b, "CN-PartsStrip", 420, 26),
             LF(b, "CN-LayerLabel", 200, 14)),
 
         // --- 3d. SLOT PROPS (right pane) ---
@@ -673,7 +709,7 @@ inline std::vector<FPLayoutNode> BuildSpec()
                     LF(b, "PR-Pick2", 70, 18), LF(b, "PR-Clear2", 70, 18), LF(b, "PR-Status2", ThumbSize, 10))),
             HF(b, "PR-ActRow",
                 LF(b, "PR-AutoFit", 70, 20), LF(b, "PR-Reset", 49, 20),
-                LF(b, "PR-SyncAll", 77, 20), LF(b, "PR-SyncTexAll", 105, 20), LF(b, "PR-AFCheck", 20, 20)),
+                LF(b, "PR-SyncTexAll", 105, 20), LF(b, "PR-AFCheck", 20, 20)),
             VF(b, "PR-Scroll",
                 OV(b, "PR-Carousel",
                     VF(b, "Sec-Transform",
@@ -733,11 +769,29 @@ inline std::vector<FPLayoutNode> BuildSpec()
             Nav(LNav);
         }
         M(b.N[(size_t)RLViewLayer].Children[3], 4, 2, 4, 2);
-        SecSetup(b.N[(size_t)RLViewLayer].Children[4], 0);
-        M(b.N[(size_t)RLViewLayer].Children[4], 2, 1, 2, 1);
-        P(Bod(b.N[(size_t)RLViewLayer].Children[4]), SectionBorderPad, SectionBorderPad, SectionBorderPad, SectionBorderPad);
+        // P7-C: Sec-Pins (View & Layer rail, child 4) - named pins list
+        // mirroring the live widget section (RebuildPinList, an accordion
+        // collapsed while the layer has no pins): title + body with the Add
+        // row and the fixed 5-row list.
         {
-            const int AL = b.N[(size_t)RLViewLayer].Children[5];
+            const int Pins = b.N[(size_t)RLViewLayer].Children[4];
+            Acc(Pins);
+            SecSetup(Pins, 2);
+            P(Bod(Pins), SectionBorderPad, SectionBorderPad, SectionBorderPad, SectionBorderPad);
+            {
+                const int PBody = Bod(Pins);
+                const int AddRow = b.N[(size_t)PBody].Children[0];
+                Sp(b.N[(size_t)AddRow].Children[1]);   // PI-Spacer absorbs the Add row's trailing width
+                const int PList = b.N[(size_t)PBody].Children[1];
+                FxW(PList);
+                b.N[(size_t)PList].FixedH = 100;       // 5 pin rows; accordion collapse keeps the rail fitting (P17)
+            }
+        }
+        SecSetup(b.N[(size_t)RLViewLayer].Children[5], 0);
+        M(b.N[(size_t)RLViewLayer].Children[5], 2, 1, 2, 1);
+        P(Bod(b.N[(size_t)RLViewLayer].Children[5]), SectionBorderPad, SectionBorderPad, SectionBorderPad, SectionBorderPad);
+        {
+            const int AL = b.N[(size_t)RLViewLayer].Children[6];
             SecSetup(AL, 0);
             P(Bod(AL), SectionBorderPad, SectionBorderPad, SectionBorderPad, SectionBorderPad);
             {
@@ -766,15 +820,14 @@ inline std::vector<FPLayoutNode> BuildSpec()
             SecSetup(QA, 2);
             const int QA0 = b.N[(size_t)Bod(QA)].Children[0];
             S(QA0, 4);
-            Sp(b.N[(size_t)QA0].Children[2]);
             const int CV = b.N[(size_t)RLArt].Children[1];
             SecSetup(CV, 2);
             {
                 const int CVR = b.N[(size_t)Bod(CV)].Children[0];
-                S(CVR, 4);
+                S(CVR, 2);
                 Sp(b.N[(size_t)CVR].Children[3]);
-                const int CVA = b.N[(size_t)Bod(CV)].Children[1];
-                S(CVA, 2);
+                const int CVB = b.N[(size_t)Bod(CV)].Children[1];
+                S(CVB, 2);
             }
             Acc(b.N[(size_t)RLArt].Children[2]);
             const int Im = b.N[(size_t)RLArt].Children[2];
@@ -789,12 +842,13 @@ inline std::vector<FPLayoutNode> BuildSpec()
             SecSetup(OD, 2);
             {
                 const int OD1 = b.N[(size_t)Bod(OD)].Children[0];
-                S(OD1, 4);
+                S(OD1, 2);
                 Sp(b.N[(size_t)OD1].Children[3]);
-                M(b.N[(size_t)OD1].Children[4], 2, 2, 2, 2);
-                M(b.N[(size_t)OD1].Children[5], 2, 2, 2, 2);
-                const int ScR = b.N[(size_t)Bod(OD)].Children[1];
-                S(ScR, 4);
+                const int ODChk = b.N[(size_t)Bod(OD)].Children[1];
+                S(ODChk, 4);
+                Sp(b.N[(size_t)ODChk].Children[2]);
+                const int ScR = b.N[(size_t)Bod(OD)].Children[2];
+                S(ScR, 1);
                 Sp(b.N[(size_t)ScR].Children[7]);
                 M(b.N[(size_t)ScR].Children[2], 2, 2, 2, 2);
                 M(b.N[(size_t)ScR].Children[4], 2, 2, 2, 2);
@@ -817,54 +871,26 @@ inline std::vector<FPLayoutNode> BuildSpec()
             {
                 const int AORow0 = b.N[(size_t)Bod(AO)].Children[0];
                 S(AORow0, 4);
-                Sp(b.N[(size_t)AORow0].Children[3]);
+                Sp(b.N[(size_t)AORow0].Children[2]);
                 const int AORow1 = b.N[(size_t)Bod(AO)].Children[1];
                 S(AORow1, 4);
             }
         }
 
-        // RL-Animated (tab 2 "Animated Variants"): Viseme Grid + Hull Review
-        // (Animated accordion).
-        const int RLAnimated = b.N[(size_t)RailSw].Children[2];
-        S(RLAnimated, 2);
-        Clip(RLAnimated);
-        NoV(RLAnimated);
-        b.N[(size_t)RLAnimated].FixedH = MainRowHeight;
-        b.N[(size_t)RLAnimated].FixedW = RailWidth;
+        // RL-NestedAnimated (tab 2 "Nested & Animated"): Nested Art / Pins +
+        // Viseme Grid + Hull Review (one merged accordion, P6: the Animated
+        // Variants rail folded into the Nested rail). Param Reference + Param
+        // Bindings moved to the Diagnostics rail (review grouping: params live
+        // with diagnostics).
+        const int RLNestedAnimated = b.N[(size_t)RailSw].Children[2];
+        S(RLNestedAnimated, 2);
+        Clip(RLNestedAnimated);
+        NoV(RLNestedAnimated);
+        b.N[(size_t)RLNestedAnimated].FixedH = MainRowHeight;
+        b.N[(size_t)RLNestedAnimated].FixedW = RailWidth;
         {
-            Acc(b.N[(size_t)RLAnimated].Children[0]);
-            const int VG = b.N[(size_t)RLAnimated].Children[0];
-            SecSetup(VG, 2);
-            for (int c = 0; c < (int)b.N[(size_t)Bod(VG)].Children.size(); ++c)
-                S(b.N[(size_t)Bod(VG)].Children[(size_t)c], 1);
-            Acc(b.N[(size_t)RLAnimated].Children[1]);
-            const int HR = b.N[(size_t)RLAnimated].Children[1];
-            SecSetup(HR, 2);
-            {
-                const int Orb = b.N[(size_t)Bod(HR)].Children[0];
-                S(Orb, 4);
-                FxW(b.N[(size_t)Orb].Children[2]);
-                M(b.N[(size_t)Orb].Children[4], 4, 0, 0, 0);
-                const int Th = b.N[(size_t)Bod(HR)].Children[1];
-                S(Th, 2);
-                b.N[(size_t)Th].FixedH = 98;
-                for (int c = 0; c < (int)b.N[(size_t)Th].Children.size(); ++c)
-                    GP(b.N[(size_t)Th].Children[(size_t)c], c % 5, c / 5);
-            }
-        }
-
-        // RL-NestedPins (tab 3 "Nested Elements & Pins"): Nested Art / Pins
-        // (Nested accordion). Param Reference + Param Bindings moved to the
-        // Advanced rail (review grouping: params live with diagnostics).
-        const int RLNestedPins = b.N[(size_t)RailSw].Children[3];
-        S(RLNestedPins, 2);
-        Clip(RLNestedPins);
-        NoV(RLNestedPins);
-        b.N[(size_t)RLNestedPins].FixedH = MainRowHeight;
-        b.N[(size_t)RLNestedPins].FixedW = RailWidth;
-        {
-            Acc(b.N[(size_t)RLNestedPins].Children[0]);
-            const int NP = b.N[(size_t)RLNestedPins].Children[0];
+            Acc(b.N[(size_t)RLNestedAnimated].Children[0]);
+            const int NP = b.N[(size_t)RLNestedAnimated].Children[0];
             SecSetup(NP, 2);
             for (int c = 0; c < (int)b.N[(size_t)Bod(NP)].Children.size(); ++c)
             {
@@ -878,11 +904,30 @@ inline std::vector<FPLayoutNode> BuildSpec()
             }
             M(b.N[(size_t)Bod(NP)].Children[9], 0, 2, 0, 2);
             M(b.N[(size_t)Bod(NP)].Children[10], 0, 2, 0, 2);
+            Acc(b.N[(size_t)RLNestedAnimated].Children[1]);
+            const int VG = b.N[(size_t)RLNestedAnimated].Children[1];
+            SecSetup(VG, 2);
+            for (int c = 0; c < (int)b.N[(size_t)Bod(VG)].Children.size(); ++c)
+                S(b.N[(size_t)Bod(VG)].Children[(size_t)c], 1);
+            Acc(b.N[(size_t)RLNestedAnimated].Children[2]);
+            const int HR = b.N[(size_t)RLNestedAnimated].Children[2];
+            SecSetup(HR, 2);
+            {
+                const int Orb = b.N[(size_t)Bod(HR)].Children[0];
+                S(Orb, 2);
+                FxW(b.N[(size_t)Orb].Children[2]);
+                M(b.N[(size_t)Orb].Children[4], 4, 0, 0, 0);
+                const int Th = b.N[(size_t)Bod(HR)].Children[1];
+                S(Th, 2);
+                b.N[(size_t)Th].FixedH = 98;
+                for (int c = 0; c < (int)b.N[(size_t)Th].Children.size(); ++c)
+                    GP(b.N[(size_t)Th].Children[(size_t)c], c % 5, c / 5);
+            }
         }
 
-        // RL-CameraPrev (tab 4 "Camera/Preview"): Camera + Blend Preview +
+        // RL-CameraPrev (tab 3 "Camera/Preview"): Camera + Blend Preview +
         // Camera Follow (plain sections).
-        const int RLCameraPrev = b.N[(size_t)RailSw].Children[4];
+        const int RLCameraPrev = b.N[(size_t)RailSw].Children[3];
         S(RLCameraPrev, 2);
         Clip(RLCameraPrev);
         NoV(RLCameraPrev);
@@ -906,7 +951,6 @@ inline std::vector<FPLayoutNode> BuildSpec()
             {
                 const int ZoneR = b.N[(size_t)Body].Children[4];
                 S(ZoneR, 4);
-                for (int c = 0; c < 4; ++c) M(b.N[(size_t)ZoneR].Children[(size_t)c + 1], 2, 2, 2, 2);
             }
             const int BP = b.N[(size_t)RLCameraPrev].Children[1];
             SecSetup(BP, 2);
@@ -924,39 +968,46 @@ inline std::vector<FPLayoutNode> BuildSpec()
             }
         }
 
-        // RL-Advanced (tab 5 "Advanced", collapsed by default): Config +
-        // Param Reference + Param Bindings + Edge Analysis + Depth Debug +
-        // Problems + Tag Validator + MatCrossRef (Advanced accordion).
-        const int RLAdvanced = b.N[(size_t)RailSw].Children[5];
-        S(RLAdvanced, 2);
-        Clip(RLAdvanced);
-        NoV(RLAdvanced);
-        b.N[(size_t)RLAdvanced].FixedH = MainRowHeight;
-        b.N[(size_t)RLAdvanced].FixedW = RailWidth;
+        // RL-Diagnostics (tab 4 "Diagnostics", collapsed by default): the
+        // Diagnostics group (Tag Validator + MatCrossRef + Param Reference +
+        // Edge Analysis) leads, then Config + Param Bindings + Depth Debug +
+        // Problems (accordion, P6 split: History moved to the toolbar,
+        // diagnostics reordered to the front).
+        const int RLDiagnostics = b.N[(size_t)RailSw].Children[4];
+        S(RLDiagnostics, 2);
+        Clip(RLDiagnostics);
+        NoV(RLDiagnostics);
+        b.N[(size_t)RLDiagnostics].FixedH = MainRowHeight;
+        b.N[(size_t)RLDiagnostics].FixedW = RailWidth;
         {
-            for (int c = 0; c < (int)b.N[(size_t)RLAdvanced].Children.size(); ++c)
-                Acc(b.N[(size_t)RLAdvanced].Children[(size_t)c]);
-            const int Cfg = b.N[(size_t)RLAdvanced].Children[0];
-            SecSetup(Cfg, 2);
-            for (int c = 0; c < (int)b.N[(size_t)Bod(Cfg)].Children.size(); ++c)
-                S(b.N[(size_t)Bod(Cfg)].Children[(size_t)c], 4);
-            const int PRF = b.N[(size_t)RLAdvanced].Children[1];
+            for (int c = 0; c < (int)b.N[(size_t)RLDiagnostics].Children.size(); ++c)
+                Acc(b.N[(size_t)RLDiagnostics].Children[(size_t)c]);
+            const int TV = b.N[(size_t)RLDiagnostics].Children[0];
+            SecSetup(TV, 2);
+            M(b.N[(size_t)Bod(TV)].Children[0], 2, 1, 2, 1);
+            const int MC = b.N[(size_t)RLDiagnostics].Children[1];
+            SecSetup(MC, 2);
+            M(b.N[(size_t)Bod(MC)].Children[0], 2, 1, 2, 1);
+            const int PRF = b.N[(size_t)RLDiagnostics].Children[2];
             SecSetup(PRF, 2);
             S(b.N[(size_t)Bod(PRF)].Children[0], 4);
             M(b.N[(size_t)Bod(PRF)].Children[1], 2, 2, 2, 2);
-            const int PT = b.N[(size_t)RLAdvanced].Children[2];
-            SecSetup(PT, 2);
-            S(b.N[(size_t)Bod(PT)].Children[0], 4);
-            S(b.N[(size_t)Bod(PT)].Children[1], 1);
-            const int EA = b.N[(size_t)RLAdvanced].Children[3];
+            const int EA = b.N[(size_t)RLDiagnostics].Children[3];
             SecSetup(EA, 2);
             {
                 const int EAR = b.N[(size_t)Bod(EA)].Children[0];
                 S(EAR, 4);
                 Sp(b.N[(size_t)EAR].Children[5]);
-                M(b.N[(size_t)EAR].Children[2], 8, 0, 0, 0);
             }
-            const int DD = b.N[(size_t)RLAdvanced].Children[4];
+            const int Cfg = b.N[(size_t)RLDiagnostics].Children[4];
+            SecSetup(Cfg, 2);
+            for (int c = 0; c < (int)b.N[(size_t)Bod(Cfg)].Children.size(); ++c)
+                S(b.N[(size_t)Bod(Cfg)].Children[(size_t)c], 4);
+            const int PT = b.N[(size_t)RLDiagnostics].Children[5];
+            SecSetup(PT, 2);
+            S(b.N[(size_t)Bod(PT)].Children[0], 4);
+            S(b.N[(size_t)Bod(PT)].Children[1], 1);
+            const int DD = b.N[(size_t)RLDiagnostics].Children[6];
             SecSetup(DD, 2);
             for (int c = 0; c < 4; ++c)
             {
@@ -972,7 +1023,7 @@ inline std::vector<FPLayoutNode> BuildSpec()
                 S(Btn, 4);
                 Sp(b.N[(size_t)Btn].Children[2]);
             }
-            const int Prob = b.N[(size_t)RLAdvanced].Children[5];
+            const int Prob = b.N[(size_t)RLDiagnostics].Children[7];
             SecSetup(Prob, 0);
             {
                 const int PBody = Bod(Prob);
@@ -985,12 +1036,6 @@ inline std::vector<FPLayoutNode> BuildSpec()
                 b.N[(size_t)PNav].FixedH = CarouselNavHeight;
                 Nav(PNav);
             }
-            const int TV = b.N[(size_t)RLAdvanced].Children[6];
-            SecSetup(TV, 2);
-            M(b.N[(size_t)Bod(TV)].Children[0], 2, 1, 2, 1);
-            const int MC = b.N[(size_t)RLAdvanced].Children[7];
-            SecSetup(MC, 2);
-            M(b.N[(size_t)Bod(MC)].Children[0], 2, 1, 2, 1);
         }
     }
 
@@ -1017,12 +1062,21 @@ inline std::vector<FPLayoutNode> BuildSpec()
         {
             const int Prev = b.N[(size_t)Center].Children[1];
             b.N[(size_t)Prev].FixedH = PreviewCanvasHeight;
+            b.N[(size_t)Prev].FixedW = FaceCanvasWidth;
+            b.N[(size_t)Prev].bAspectRatio = true;   // P23: square canvas - the face is never stretched
             M(Prev, 2, 2, 2, 0);
-            FxW(Prev);
             for (int c = 0; c < (int)b.N[(size_t)Prev].Children.size(); ++c)
                 Fx(b.N[(size_t)Prev].Children[(size_t)c]);
         }
-        M(b.N[(size_t)Center].Children[2], 4, 2, 4, 0);
+        // Text under the schematic (mirrors the real center column): the
+        // always-visible legend line + the fixed-height parts strip row sit
+        // between the canvas and the layer label. P2/P12 keep the whole column
+        // inside the 560px MainRow so nothing can overlap the timeline /
+        // terminal output window below (the mirror rows make that overlap
+        // detectable - a taller canvas or a wrapping parts strip fires).
+        M(b.N[(size_t)Center].Children[2], 4, 2, 4, 0);   // CN-Legend
+        M(b.N[(size_t)Center].Children[3], 2, 2, 2, 0);   // CN-PartsStrip
+        M(b.N[(size_t)Center].Children[4], 4, 2, 4, 0);   // CN-LayerLabel
     }
 
     // --- Props pane config ---
@@ -1142,17 +1196,18 @@ inline std::vector<FPLayoutNode> BuildSpec()
     // Full-width row above the main row: the canonical quick actions live
     // HERE and only here. They are pinned (never inside a scroll viewport),
     // mirroring the widget strip built from FPLayout::QuickActionLabels().
+    // P7-B: 3 actions (Sync All -> All removed; sync lives in the
+    // apply-to-views picker / per-layer Sync Tex->All).
     const int PinnedStrip = HF(b, "PinnedStrip",
         LF(b, "Import Art...", 97, 20),
-        LF(b, "Sync All -> All", 119, 20),
         LF(b, "Auto-Fit All", 98, 20),
         LF(b, "Clear All Overrides", 147, 20),
         LF(b, "PS-Spacer", 0, 0));
     b.N[(size_t)PinnedStrip].FixedH = PinnedStripHeight;
     FxW(PinnedStrip);
     S(PinnedStrip, 2);
-    Sp(b.N[(size_t)PinnedStrip].Children[4]);
-    for (int c = 0; c < 4; ++c)
+    Sp(b.N[(size_t)PinnedStrip].Children[3]);
+    for (int c = 0; c < 3; ++c)
     {
         PK(b.N[(size_t)PinnedStrip].Children[(size_t)c]);
         M(b.N[(size_t)PinnedStrip].Children[(size_t)c], 2, 2, 2, 2);
@@ -1166,16 +1221,15 @@ inline std::vector<FPLayoutNode> BuildSpec()
     const int TopTabs = HF(b, "TopTabs",
         LF(b, "TT-Tab0", 82, 22),    // View & Layer
         LF(b, "TT-Tab1", 34, 22),    // Art
-        LF(b, "TT-Tab2", 104, 22),   // Animated Variants
-        LF(b, "TT-Tab3", 122, 22),   // Nested Elements & Pins
-        LF(b, "TT-Tab4", 82, 22),    // Camera/Preview
-        LF(b, "TT-Tab5", 60, 22),    // Advanced
+        LF(b, "TT-Tab2", 116, 22),   // Nested & Animated (P6: Animated Variants merged in)
+        LF(b, "TT-Tab3", 82, 22),    // Camera/Preview
+        LF(b, "TT-Tab4", 100, 22),    // Diagnostics
         LF(b, "TT-Spacer", 0, 0));
     b.N[(size_t)TopTabs].FixedH = TabBarHeight;
     FxW(TopTabs);
     S(TopTabs, 2);
-    Sp(b.N[(size_t)TopTabs].Children[6]);
-    for (int c = 0; c < 6; ++c)
+    Sp(b.N[(size_t)TopTabs].Children[5]);
+    for (int c = 0; c < 5; ++c)
         M(b.N[(size_t)TopTabs].Children[(size_t)c], 2, 2, 2, 2);
 
     // =========================== ROOT ===========================
@@ -1471,7 +1525,7 @@ inline int CountReachable(const std::vector<FPLayoutNode>& Nodes)
 }
 
 // ----------------------------------------------------------------------------
-// Validator: enforces P1..P21 over the resolved tree.
+// Validator: enforces P1..P23 over the resolved tree.
 // ----------------------------------------------------------------------------
 inline const std::vector<std::string>& QuickActionLabels();
 inline std::vector<FPViolation> ValidateDesign(const std::vector<FPLayoutNode>& Nodes)
@@ -1565,6 +1619,35 @@ inline std::vector<FPViolation> ValidateDesign(const std::vector<FPLayoutNode>& 
             if (PlainSections > 4)
                 Out.push_back({ DesignRule::DensityOverflow, n.Name,
                     "more than 4 plain sections in a clipped viewport (use accordion sections)" });
+        }
+
+        // ---- P22 NoHorizontalOverflow: a clipped viewport with a fixed width
+        // ---- (rail) must fit its content horizontally - a wider row would
+        // ---- scroll left-to-right under neighboring panels (the rail
+        // ---- horizontal-scroll defect). Flex/spacer children absorb the
+        // ---- remaining width and can never overflow.
+        if (n.bClipH && n.FixedW > 0.0 && !isLeaf)
+        {
+            const double availW = n.FixedW - n.PadL - n.PadR;
+            for (int ci : n.Children)
+            {
+                const FPLayoutNode& cn = Nodes[(size_t)ci];
+                if (cn.bSpacer || cn.bFlexW || cn.bClipH) continue;
+                const double cw = M[(size_t)ci].W + cn.MarginL + cn.MarginR;
+                if (cw > availW + Eps)
+                    Out.push_back({ DesignRule::NoHorizontalOverflow, n.Name, cn.Name });
+            }
+        }
+
+        // ---- P23 AspectRatioBroken: an aspect-locked node (bAspectRatio -
+        // ---- the face schematic canvas) must keep FaceAspectRatio in its
+        // ---- resolved rect, so the face is never stretched.
+        if (n.bAspectRatio && r.W > Eps && r.H > Eps)
+        {
+            const double Ratio = r.W / r.H;
+            if (std::abs(Ratio - FaceAspectRatio) > 0.02)
+                Out.push_back({ DesignRule::AspectRatioBroken, n.Name,
+                    "canvas aspect ratio broken (face stretched)" });
         }
 
         // ---- P17 FitNoVScroll: a bNoVScroll viewport must fit without a
@@ -2105,7 +2188,7 @@ inline FPHotspotRegion FPHotspotTransformRegion(const FPHotspotRegion& R,
 //   - Inspect mode: the canvas's single segmented control
 //     Textured / Outline / Depth / Wireframe / Depth Heatmap. DeriveInspectMode
 //     maps the five source toggles (Show Textures, Depth Mesh, Wireframe,
-//     Outline overlay, Color by Depth — the Advanced rail Config checks stay
+//     Outline overlay, Color by Depth — the Diagnostics rail Config checks stay
 //     the single source of truth, P3 dedupe) to the canonical mode; every
 //     other combination (e.g. the legacy Split = textures+depth) is Custom.
 //     InspectComboForMode returns the canonical toggle set a segment applies.
@@ -2223,7 +2306,7 @@ inline int FPPinDriftCount(const std::vector<FPMirrorTransform>& Views, int Acti
 }
 
 // ============================================================================
-// Rail width clamp mirror (Phase 4): the Advanced rail's "Rail Width" slider
+// Rail width clamp mirror (Phase 4): the Diagnostics rail's "Rail Width" slider
 // lives in [RailWidthMin, RailWidthMax] with RailWidth as the default.
 // Mirrors the widget's FMath::Clamp + NaN guard so the range is pinned by
 // the test suite.
@@ -2257,21 +2340,24 @@ inline double ClampRailWidth(double W)
 // ============================================================================
 inline const std::vector<std::vector<std::string>>& RailSectionTitles()
 {
-    // Phase B: 6 user-facing groups (labeled tab bar). Section order per group
-    // mirrors the widget's RegisterRailSection / RegisterAccordionSections
+    // Phase B/P6: 5 user-facing groups (labeled tab bar). Section order per
+    // group mirrors the widget's RegisterRailSection / RegisterAccordionSections
     // call order in Panels.cpp (chips are built from that registration order).
+    // P6: Animated Variants folded into the Nested rail; the Diagnostics rail
+    // leads with the Diagnostics group (Tag Validator / Mat Cross-Ref / Param
+    // Reference / Edge Analysis), History lives in the toolbar.
     static const std::vector<std::vector<std::string>> Titles = {
         /* rail 0 View & Layer */   { "Layers", "Status Detail", "All Layers (current state)" },
         /* rail 1 Art */            { "Quick Actions", "Cross-View Transform", "Import",
                                       "Outline -> Depth", "Bulk Assign", "Assign Ops" },
-        /* rail 2 Animated Variants */ { "Viseme Frames (click filled cell = play)",
+        /* rail 2 Nested & Animated */ { "Nested Art / Pins",
+                                      "Viseme Frames (click filled cell = play)",
                                       "Hull Review (click thumb = jump)" },
-        /* rail 3 Nested & Pins */  { "Nested Art / Pins" },
-        /* rail 4 Camera/Preview */ { "Camera Follow", "Camera", "Blend Preview" },
-        /* rail 5 Advanced */       { "Config", "Param Reference",
-                                      "Param Bindings (state + layer)", "Edge Analysis",
-                                      "Depth Debug", "Problems (click row = jump)",
-                                      "Tag Validator", "Material Cross-Reference" }
+        /* rail 3 Camera/Preview */ { "Camera Follow", "Camera", "Blend Preview" },
+        /* rail 4 Diagnostics */    { "Tag Validator", "Material Cross-Reference",
+                                      "Param Reference", "Edge Analysis", "Config",
+                                      "Param Bindings (state + layer)", "Depth Debug",
+                                      "Problems (click row = jump)" }
     };
     return Titles;
 }
@@ -2319,8 +2405,11 @@ inline double RailWidthAfterDrag(double StartWidth, double DeltaPx)
 
 inline const std::vector<std::string>& QuickActionLabels()
 {
+    // P7-B: the pinned strip is 3 actions. "Sync All -> All" was removed -
+    // the apply-to-views picker + per-layer "Sync Tex->All" are the sync
+    // mechanisms now (one apply model, no hidden full-sync duplicate).
     static const std::vector<std::string> Labels = {
-        "Import Art...", "Sync All -> All", "Auto-Fit All", "Clear All Overrides"
+        "Import Art...", "Auto-Fit All", "Clear All Overrides"
     };
     return Labels;
 }

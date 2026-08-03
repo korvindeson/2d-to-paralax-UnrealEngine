@@ -28,7 +28,14 @@
 //      Bangs = front hair (Front), Hair + BackHair = back hair (Back).
 //   7. FPSchematicFilterAllows — the canvas filter row's pure mirror
 //      (layer multi-select + depth-class radio).
-//   8. FPYawRule — the front/base/back yaw-motion rule as a pure mirror of
+//   8. FPEdgeMap — the group-colored edge map contract: every part/layer
+//      resolves to a visual GROUP (Eyes / Mouth / Hair / Surface), each group
+//      has a distinct base color, and the depth class scales luminance so
+//      FRONT reads lighter than BACK. Hair is a separate system: its three
+//      layers are detailed LEVELS (Bangs=0, Hair=1, BackHair=2), it has its
+//      own color distinct from every other group, and it can be toggled off
+//      entirely (hair edges hidden while everything else stays).
+//   9. FPYawRule — the front/base/back yaw-motion rule as a pure mirror of
 //      UFaceParallaxComponent::ComputeOffsetForState (non-vertical branch):
 //      offset = NormalizedYaw * DepthScale * (bInvertParallax ? -1 : 1)
 //      * MaxParallaxOffset. The classes encode the rule as data:
@@ -346,9 +353,149 @@ inline bool FPSchematicFilterAllows(FPDepthClass Cls, const char* ResolvedLayerT
 }
 
 // ============================================================================
-// FPYawRule — front/base/back yaw-motion rule. Pure mirror of the component's
-// non-vertical offset formula; the classes are data, the mirror is math.
+// Edge-map group contract (Phase I): the part edge map colors every glyph by
+// its visual GROUP — eyes and mouth get distinct hues, the depth class scales
+// the LUMINANCE (front lighter, back darker), and hair is its own system:
+// three detailed levels (Bangs = 0, Hair = 1, BackHair = 2) with its own
+// color distinct from everything else, toggleable off wholesale. Pure mirror
+// of what SFaceSchematicLayer::OnPaint draws; the widget resolves a part to
+// its group via the same aliases FPSchematicLayerAlias provides, so paint
+// and test can never drift.
 // ============================================================================
+enum class FPEdgeGroup : unsigned char
+{
+    Eyes,    // brows + eyes (EyeL/EyeR/BrowL/BrowR + Eyes/Brows layers)
+    Mouth,   // mouth + teeth (Mouth/Teeth + Mouth layer)
+    Hair,    // the hair system (Bangs/Hair/BackHair + Bangs/Hair/BackHair layers)
+    Surface, // everything else (silhouette + residual anatomy)
+    MAX
+};
+
+inline const char* FPEdgeGroupName(FPEdgeGroup G)
+{
+    switch (G)
+    {
+    case FPEdgeGroup::Eyes:   return "Eyes";
+    case FPEdgeGroup::Mouth:  return "Mouth";
+    case FPEdgeGroup::Hair:   return "Hair";
+    default:                  return "Surface";
+    }
+}
+
+// Part name -> group. Uses the same alias table as layer resolution
+// (Teeth -> Mouth) so the schematic's 17 glyphs all land in a group.
+inline FPEdgeGroup FPEdgeGroupForPartName(const char* Name)
+{
+    if (!Name || !Name[0]) return FPEdgeGroup::Surface;
+    if (std::string(Name) == "EyeL" || std::string(Name) == "EyeR"
+        || std::string(Name) == "BrowL" || std::string(Name) == "BrowR")
+        return FPEdgeGroup::Eyes;
+    if (std::string(Name) == "Mouth"
+        || (FPSchematicLayerAlias(Name) && std::string(FPSchematicLayerAlias(Name)) == "Mouth"))
+        return FPEdgeGroup::Mouth;
+    if (FPSchematicIsHairLayer(Name)) return FPEdgeGroup::Hair;
+    return FPEdgeGroup::Surface;
+}
+
+// Resolved layer tag -> group. The hair set check keeps the three hair
+// layers in their own group regardless of their depth class.
+inline FPEdgeGroup FPEdgeGroupForTag(const char* Tag)
+{
+    if (!Tag || !Tag[0]) return FPEdgeGroup::Surface;
+    if (std::string(Tag) == "Eyes" || std::string(Tag) == "Brows")
+        return FPEdgeGroup::Eyes;
+    if (std::string(Tag) == "Mouth") return FPEdgeGroup::Mouth;
+    if (FPSchematicIsHairLayer(Tag)) return FPEdgeGroup::Hair;
+    return FPEdgeGroup::Surface;
+}
+
+// Hair detail level: Bangs = 0 (front), Hair = 1, BackHair = 2; -1 for
+// non-hair. The hair system's "detailed levels" — three layers, each with
+// its own edges — are addressable by this level so the UI can dim/emphasize
+// per level.
+inline int FPHairLevelForTag(const char* Tag)
+{
+    if (!Tag || !Tag[0]) return -1;
+    if (std::string(Tag) == "Bangs")    return 0;
+    if (std::string(Tag) == "Hair")     return 1;
+    if (std::string(Tag) == "BackHair") return 2;
+    return -1;
+}
+
+inline int FPHairLevelForPartName(const char* Name)
+{
+    return FPHairLevelForTag(Name);
+}
+
+// Per-level luminance for the hair system (front lighter than back, the
+// same rule as the depth classes): Bangs (0) = full luminance (lightest),
+// Hair (1) = mid, BackHair (2) = dimmed (darkest); non-hair (-1) = full.
+// The three detailed levels stay in the hair's own color family while each
+// level's edges read as a distinct step — level drives the brightness, the
+// depth class never dims hair.
+inline double FPHairLevelLuminance(int Level)
+{
+    switch (Level)
+    {
+    case 0:  return 1.0;   // Bangs: front hair — full luminance (lightest)
+    case 1:  return 0.72;  // Hair: mid level
+    case 2:  return 0.45;  // BackHair: back hair — dimmed (darkest)
+    default: return 1.0;   // non-hair: no level — full luminance
+    }
+}
+
+// Luminance scale per depth class: FRONT is LIGHTER than BACK (the edge-map
+// brightness rule). Base sits between; hair is exempt (it carries its own
+// per-level color) so the toggle is pure and the tests can pin the order.
+inline double FPEdgeLuminanceForClass(FPDepthClass C)
+{
+    switch (C)
+    {
+    case FPDepthClass::Front: return 1.0;   // front: full luminance (lightest)
+    case FPDepthClass::Back:  return 0.45;  // back: dimmed (darkest)
+    default:                  return 0.72;  // base: mid luminance
+    }
+}
+
+// Group -> base edge color (RGB 0..1, y-up friendly hues). Eyes and Mouth
+// are the two named facial-feature groups; Surface is the neutral silhouette
+// grey; Hair gets a color DISTINCT from every other group.
+struct FPEdgeColor { double R = 0, G = 0, B = 0; };
+
+inline FPEdgeColor FPEdgeGroupColor(FPEdgeGroup G)
+{
+    switch (G)
+    {
+    case FPEdgeGroup::Eyes:   return { 0.35, 0.85, 0.40 };  // green — eyes
+    case FPEdgeGroup::Mouth:  return { 0.95, 0.45, 0.45 };  // red — mouth
+    case FPEdgeGroup::Hair:   return { 0.85, 0.55, 0.95 };  // violet — hair (distinct)
+    default:                  return { 0.60, 0.63, 0.68 };  // grey-blue — surface
+    }
+}
+
+// Final edge color: group base color scaled by the depth-class luminance
+// (front lighter than back). Hair parts ignore the class scale — their
+// color is driven by the hair DETAIL LEVEL instead (FPHairLevelLuminance:
+// Bangs lightest, BackHair darkest), so the hair system's three detailed
+// levels stay recognizable within its own distinct color family.
+inline FPEdgeColor FPEdgeColorForPart(const char* Name, FPDepthClass C)
+{
+    const FPEdgeGroup G = FPEdgeGroupForPartName(Name);
+    const double Lum = (G == FPEdgeGroup::Hair)
+        ? FPHairLevelLuminance(FPHairLevelForPartName(Name))
+        : FPEdgeLuminanceForClass(C);
+    const FPEdgeColor Base = FPEdgeGroupColor(G);
+    return { Base.R * Lum, Base.G * Lum, Base.B * Lum };
+}
+
+// Edge-map visibility: hair edges can be toggled off wholesale; every other
+// group is always visible.
+inline bool FPEdgeMapShows(FPEdgeGroup G, bool bHairEdgesVisible)
+{
+    return G != FPEdgeGroup::Hair || bHairEdgesVisible;
+}
+
+
 struct FPYawRule
 {
     // Mirror of UFaceParallaxComponent::MaxParallaxOffset (component default).

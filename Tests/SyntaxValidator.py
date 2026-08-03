@@ -161,11 +161,11 @@ class SyntaxValidator:
             'RefreshSlotPropStatus', 'ToggleOnionSkin', 'SetOnionSkinOpacity',
             'RefreshOnionSkin', 'CopyTransformFromView',
             'ApplyCanonicalTransformWithLink', 'GetGizmoTransform',
-            'SetGizmoTransform', 'HandleHotspotClick', 'ImportHotspotRegion',
-            'RebuildPartsStrip', 'OpenHotspotRemapMenu', 'RemapHotspotLayer',
+            'SetGizmoTransform', 'HandleHotspotClick', 'SelectPartOrImport',
+            'SetBreadcrumb', 'RebuildPartsStrip', 'OpenHotspotRemapMenu', 'RemapHotspotLayer',
+            'BuildApplyToViewsContent', 'PlacePinAtUV',
             'ResolveHotspotLayer', 'RefreshSyncDriftIndicator',
-            'SetDisplayMode', 'SetInspectMode', 'SelectCanvasLayerAt',
-            'CycleCanvasLayerAt', 'RefreshDebugSliders', 'BuildEdgeOverlay',
+            'SetDisplayMode', 'SetInspectMode', 'RefreshDebugSliders', 'BuildEdgeOverlay',
             'RebuildHistogramBars', 'RefreshHullThumbnails',
             'RefreshPinControls', 'GetLayerPinMarkers', 'RebuildVisemeGrid',
             'RebuildNestedOutliner', 'RebuildParamTable',
@@ -177,6 +177,8 @@ class SyntaxValidator:
             'ToggleSchematicLayerFilter', 'SetSchematicDepthFilter',
             'ClearSchematicFilters', 'ToggleSchematicFocus',
             'RebuildSchematicFilterRow',
+            # Phase I edge map (Canvas Options toggles -> schematic layer)
+            'SetSchematicEdgeMap', 'SetEdgeMapHairEdges',
         }
 
         cls_re = (r'UCLASS\s*\((?:[^()]|\([^()]*\))*\)\s*\n\s*'

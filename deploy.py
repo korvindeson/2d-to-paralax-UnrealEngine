@@ -27,8 +27,14 @@ editor tool needs:
 
 The C++ classes (FaceParallax component, preset, preview actor, editor
 widget, editor subsystem) are a plugin built by UnrealBuildTool — this
-script verifies they are available and reports clearly if the plugin is
-not built yet.
+script verifies they are available. If the plugin is missing from the
+project (fresh project, or a copy that lost the Plugins folder),
+deploy.py INSTALLS it first: the uplugin descriptor, module Build.cs
+rules and the canonical sources from the repo root are written into
+<Project>/Plugins/FaceParallax and the plugin is enabled in the .uproject.
+It cannot build C++ (that is Tests\run_tests.ps1 -IncludeUEBuild) — after
+an install it reports that the project must be built and the editor
+restarted before deployment can complete.
 
 USAGE (in-editor Python console — the console history command):
     py "G:\\tailedstories\\paralax\\deploy.py"
@@ -41,7 +47,9 @@ After deployment, open the editor with the toolbar button or the
 """
 
 import unreal
+import json
 import os
+import shutil
 import sys
 import time
 
@@ -180,6 +188,240 @@ def class_available(name):
         return False
 
 
+# ================================================================
+# 2a. Plugin self-install (fresh-project / lost-folder recovery)
+# ================================================================
+# A brand-new project (or a copy that lost the plugin folder) has no
+# Plugins\FaceParallax at all, so the plugin modules can never load and
+# every class check below fails with "classes not available". Instead of
+# failing with only instructions, deploy.py installs the plugin into the
+# CURRENT project: the uplugin descriptor + module Build.cs rules
+# (mirroring Tests\run_tests.ps1's scaffold templates - keep in sync)
+# and the canonical sources copied from the repo root (deploy.py's own
+# directory). It also enables the plugin in the .uproject (idempotent).
+# deploy.py cannot build C++ (that is Tests\run_tests.ps1 -IncludeUEBuild),
+# so after an install it reports that a build + editor restart is needed.
+
+PLUGIN_NAME = "FaceParallax"
+PLUGIN_SOURCE_ROOT = os.path.dirname(os.path.abspath(__file__))
+
+# Same four source dirs as Tests\run_tests.ps1's sync step.
+PLUGIN_SOURCE_DIRS = [
+    ("Source/FaceParallax/Public", [
+        "FaceParallaxTypes.h", "FaceParallaxComponent.h", "FaceParallaxPreset.h",
+        "FaceParallaxPreviewActor.h", "DepthDebugVisualizerComponent.h",
+        "FaceParallaxSchematic.h",
+    ]),
+    ("Source/FaceParallax/Private", [
+        "FaceParallaxComponent.cpp", "FaceParallaxPreset.cpp",
+        "FaceParallaxPreviewActor.cpp", "DepthDebugVisualizerComponent.cpp",
+        "FaceParallaxModule.cpp",
+    ]),
+    ("Source/FaceParallaxEditor/Public", [
+        "FaceParallaxEditorWidget.h", "FaceParallaxEditorSubsystem.h",
+    ]),
+    ("Source/FaceParallaxEditor/Private", [
+        "FaceParallaxEditorWidget.cpp", "FaceParallaxEditorSubsystem.cpp",
+        "FaceParallaxEditorWidgetShared.h", "FaceParallaxEditorWidgetUI.cpp",
+        "FaceParallaxEditorWidgetInteractions.cpp",
+        "FaceParallaxEditorWidgetPanels.cpp", "FaceParallaxLayoutSpec.h",
+    ]),
+]
+
+# Plugin descriptor - MUST match the scaffold template in
+# Tests\run_tests.ps1 (the uplugin content is the plugin contract).
+UPLUGIN_TEMPLATE = """{
+	"FileVersion": 3,
+	"Version": 1,
+	"VersionName": "1.0",
+	"FriendlyName": "Face Parallax",
+	"Description": "Face parallax face-layer system - runtime component, preset, preview actor and docked-tab editor.",
+	"Category": "Rendering",
+	"CanContainContent": false,
+	"Installed": false,
+	"Modules": [
+		{
+			"Name": "FaceParallax",
+			"Type": "Runtime",
+			"LoadingPhase": "PostDefault"
+		},
+		{
+			"Name": "FaceParallaxEditor",
+			"Type": "Editor",
+			"LoadingPhase": "PostDefault"
+		}
+	],
+	"Plugins": [
+		{
+			"Name": "EditorScriptingUtilities",
+			"Enabled": true,
+			"TargetAllowList": [ "Editor" ]
+		},
+		{
+			"Name": "ProceduralMeshComponent",
+			"Enabled": true
+		}
+	]
+}
+"""
+
+RUNTIME_BUILD_TEMPLATE = """using UnrealBuildTool;
+
+public class FaceParallax : ModuleRules
+{
+	public FaceParallax(ReadOnlyTargetRules Target) : base(Target)
+	{
+		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
+		PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine", "InputCore", "ProceduralMeshComponent" });
+	}
+}
+"""
+
+EDITOR_BUILD_TEMPLATE = """using UnrealBuildTool;
+
+public class FaceParallaxEditor : ModuleRules
+{
+	public FaceParallaxEditor(ReadOnlyTargetRules Target) : base(Target)
+	{
+		PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
+		PrivateDependencyModuleNames.AddRange(new string[] {
+			"Core", "CoreUObject", "Engine", "InputCore",
+			"UnrealEd", "Slate", "SlateCore", "UMG", "UMGEditor",
+			"ToolMenus", "LevelEditor", "ContentBrowser", "ContentBrowserData", "AssetTools", "AssetRegistry",
+			"EditorScriptingUtilities", "EditorSubsystem", "WorkspaceMenuStructure",
+			"FaceParallax", "ProceduralMeshComponent"
+		});
+	}
+}
+"""
+
+
+def _current_project_root():
+    """Absolute directory of the .uproject this editor session has open."""
+    try:
+        proj = unreal.Paths.get_project_file_path()
+        if proj:
+            return os.path.dirname(os.path.normpath(proj))
+    except Exception:
+        pass
+    return None
+
+
+def _plugin_installed(project_root):
+    """A plugin is 'installed' only when EVERY piece is present: the
+    uplugin descriptor, both module Build.cs rules and all canonical
+    sources. A lone uplugin (half-install) still fails to load its
+    module at editor startup, so it is treated as missing and gets the
+    remaining pieces filled in (existing files are never overwritten)."""
+    if not project_root:
+        return False
+    plugin_root = os.path.join(project_root, "Plugins", PLUGIN_NAME)
+    if not os.path.isfile(os.path.join(plugin_root, PLUGIN_NAME + ".uplugin")):
+        return False
+    for rel in ("Source/FaceParallax/FaceParallax.Build.cs",
+                "Source/FaceParallaxEditor/FaceParallaxEditor.Build.cs"):
+        if not os.path.isfile(os.path.join(plugin_root, rel)):
+            return False
+    for subdir, files in PLUGIN_SOURCE_DIRS:
+        for name in files:
+            if not os.path.isfile(os.path.join(plugin_root, subdir, name)):
+                return False
+    return True
+
+
+def _plugin_enabled_in_uproject(project_root):
+    """Return (already_enabled, enabled_now) for the FaceParallax plugin."""
+    uproj = os.path.join(project_root, os.path.basename(
+        unreal.Paths.get_project_file_path())) if project_root else None
+    if not uproj or not os.path.isfile(uproj):
+        return False, False
+    try:
+        with open(uproj, encoding="utf-8-sig") as f:
+            data = json.load(f)
+    except Exception:
+        return False, False
+    plugins = data.get("Plugins") or []
+    for p in plugins:
+        if isinstance(p, dict) and p.get("Name") == PLUGIN_NAME and p.get("Enabled", True):
+            return True, False
+    plugins.append({"Name": PLUGIN_NAME, "Enabled": True})
+    data["Plugins"] = plugins
+    try:
+        with open(uproj, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent="\t")
+        unreal.log(f"[INSTALL] Enabled '{PLUGIN_NAME}' in {os.path.basename(uproj)}")
+        return False, True
+    except Exception as e:
+        unreal.log_error(f"[INSTALL] Could not write {uproj}: {e}")
+        return False, False
+
+
+def install_plugin_if_missing():
+    """Fill in any missing FaceParallax plugin pieces in the current project.
+
+    Returns True when the plugin is (now) complete and enabled in the
+    .uproject. Safe to call every run - it is a no-op when the plugin is
+    fully present, and it NEVER overwrites existing files (idempotent).
+    """
+    project_root = _current_project_root()
+    if not project_root:
+        unreal.log_warning("[INSTALL] Could not resolve project root - cannot self-install plugin.")
+        return False
+    if _plugin_installed(project_root):
+        _plugin_enabled_in_uproject(project_root)
+        return True
+
+    plugin_root = os.path.join(project_root, "Plugins", PLUGIN_NAME)
+    unreal.log(f"[INSTALL] FaceParallax plugin incomplete in '{project_root}' - filling in missing pieces.")
+    wrote_any = False
+    try:
+        # Uplugin descriptor
+        os.makedirs(plugin_root, exist_ok=True)
+        uplugin_path = os.path.join(plugin_root, PLUGIN_NAME + ".uplugin")
+        if not os.path.isfile(uplugin_path):
+            with open(uplugin_path, "w", encoding="utf-8", newline="\n") as f:
+                f.write(UPLUGIN_TEMPLATE)
+            unreal.log("[INSTALL]   wrote " + PLUGIN_NAME + ".uplugin")
+            wrote_any = True
+        # Module Build.cs rules
+        for rel, tpl in (("Source/FaceParallax/FaceParallax.Build.cs", RUNTIME_BUILD_TEMPLATE),
+                         ("Source/FaceParallaxEditor/FaceParallaxEditor.Build.cs",
+                          EDITOR_BUILD_TEMPLATE)):
+            dst = os.path.join(plugin_root, rel)
+            if not os.path.isfile(dst):
+                os.makedirs(os.path.dirname(dst), exist_ok=True)
+                with open(dst, "w", encoding="utf-8", newline="\n") as f:
+                    f.write(tpl)
+                unreal.log(f"[INSTALL]   wrote {rel}")
+                wrote_any = True
+        # Canonical sources from the repo root (deploy.py's directory)
+        for subdir, files in PLUGIN_SOURCE_DIRS:
+            dst_dir = os.path.join(plugin_root, subdir)
+            os.makedirs(dst_dir, exist_ok=True)
+            for name in files:
+                dst = os.path.join(dst_dir, name)
+                if os.path.isfile(dst):
+                    continue
+                src = os.path.join(PLUGIN_SOURCE_ROOT, name)
+                if not os.path.isfile(src):
+                    unreal.log_warning(f"[INSTALL]   repo source missing (skipped): {name}")
+                    continue
+                shutil.copy2(src, dst)
+                unreal.log(f"[INSTALL]   copied {name}")
+                wrote_any = True
+    except Exception as e:
+        unreal.log_error(f"[INSTALL] Plugin self-install FAILED: {e}")
+        return False
+
+    _, enabled_now = _plugin_enabled_in_uproject(project_root)
+    if wrote_any:
+        unreal.log(f"[INSTALL] Plugin completed at {plugin_root}")
+        unreal.log("[INSTALL] The C++ modules are NOT built yet - run "
+                   "Tests\\run_tests.ps1 -IncludeUEBuild (or Build.bat on the "
+                   "project), restart the editor, then run deploy.py again.")
+    return _plugin_installed(project_root)
+
+
 def _load_project_module():
     """Force-load the project module so reflected types become available."""
     try:
@@ -190,6 +432,24 @@ def _load_project_module():
             if world:
                 unreal.SystemLibrary.execute_console_command(world, f"Module.Load {mod_name}")
                 time.sleep(0.5)
+    except Exception:
+        pass
+
+
+def load_plugin_modules():
+    """Try to load the FaceParallax runtime + editor modules if they are
+    not loaded yet. Handles the case where the plugin files exist but the
+    editor session started before they were added (no restart needed for
+    the DLL discovery when the plugin folder + descriptor are present)."""
+    try:
+        world = unreal.get_editor_subsystem(unreal.UnrealEditorSubsystem).get_editor_world()
+        if not world:
+            return
+        for mod in ("FaceParallax", "FaceParallaxEditor"):
+            if unreal.load_class(None, f"/Script/{mod}.{PRESET_CLASS_NAME}"):
+                continue
+            unreal.SystemLibrary.execute_console_command(world, f"Module.Load {mod}")
+            time.sleep(0.5)
     except Exception:
         pass
 
@@ -1201,6 +1461,12 @@ def main():
     # Phase 0: Clean legacy/wrong-named assets from older pipelines
     delete_legacy_assets()
 
+    # Phase 0.5: Self-heal a fresh project - if the FaceParallax plugin is
+    # missing entirely, install it (scaffold + canonical sources + .uproject
+    # enablement) so the class checks below give an actionable diagnosis.
+    plugin_was_installed = install_plugin_if_missing() and not class_available(PRESET_CLASS_NAME)
+    load_plugin_modules()
+
     # Phase 1: No C++ classes needed
     try:
         master_mat = create_master_material()
@@ -1215,10 +1481,18 @@ def main():
     missing_classes = [cls for cls in required if not class_available(cls)]
     if missing_classes:
         for cls in missing_classes:
-            unreal.log_error(
-                f"[MANUAL] C++ class '{cls}' not available. The FaceParallax plugin is not "
-                f"loaded/built - build the project first (Tests\\run_tests.ps1 -IncludeUEBuild), "
-                f"restart the editor so the plugin loads, then run deploy.py again.")
+            if plugin_was_installed:
+                unreal.log_error(
+                    f"[MANUAL] C++ class '{cls}' not available YET. deploy.py just "
+                    f"installed the FaceParallax plugin into this project - it is not "
+                    f"built yet. Run Tests\\run_tests.ps1 -IncludeUEBuild (or "
+                    f"Build.bat on the project), restart the editor, then run "
+                    f"deploy.py again.")
+            else:
+                unreal.log_error(
+                    f"[MANUAL] C++ class '{cls}' not available. The FaceParallax plugin is not "
+                    f"loaded/built - build the project first (Tests\\run_tests.ps1 -IncludeUEBuild), "
+                    f"restart the editor so the plugin loads, then run deploy.py again.")
         step_fail(f"plugin C++ classes not available: {missing_classes}")
 
     # Phase 3-5: only when the plugin classes are live

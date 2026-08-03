@@ -6276,12 +6276,13 @@ void TestPhaseHUIDesign() {
     TEST("Phase H: root rect matches design (1089x866)",
         Rects[(size_t)RootIdx].W == 1089.0 && Rects[(size_t)RootIdx].H == 866.0);
     const std::vector<FPLayout::FPViolation> V = FPLayout::ValidateDesign(Spec);
-    TEST("Phase H: zero design violations (P1..P21)", V.empty());
+    TEST("Phase H: zero design violations (P1..P23)", V.empty());
 
-    // Scroll-viewport contract: the 6 rails are fixed 180x560 clipped viewports,
+    // Scroll-viewport contract: the 5 rails are fixed 180x560 clipped viewports,
     // so their content can never overlap other panels or leave the screen.
+    // P6: Animated Variants merged into the Nested rail (RL-NestedAnimated).
     {
-        const char* RailNames[6] = { "RL-ViewLayer", "RL-Art", "RL-Animated", "RL-NestedPins", "RL-CameraPrev", "RL-Advanced" };
+        const char* RailNames[5] = { "RL-ViewLayer", "RL-Art", "RL-NestedAnimated", "RL-CameraPrev", "RL-Diagnostics" };
         bool bViewports = true;
         for (const char* nm : RailNames)
         {
@@ -6317,7 +6318,7 @@ void TestPhaseHUIDesign() {
     TEST("Phase H: Toolbar present", Has("Toolbar"));
     TEST("Phase H: RAIL-Switcher present", Has("RAIL-Switcher"));
     TEST("Phase H: RL-ViewLayer present", Has("RL-ViewLayer"));
-    TEST("Phase H: RL-Advanced present", Has("RL-Advanced"));
+    TEST("Phase H: RL-Diagnostics present", Has("RL-Diagnostics"));
     TEST("Phase H: RL-Art present", Has("RL-Art"));
     TEST("Phase H: AG-Grid present", Has("AG-Grid"));
     TEST("Phase H: AO-PerfCombo present", Has("AO-PerfCombo"));
@@ -6325,9 +6326,9 @@ void TestPhaseHUIDesign() {
     TEST("Phase H: TB-ClearStale present", Has("TB-ClearStale"));
     TEST("Phase H: BA-BotBar present", Has("BA-BotBar"));
     {
-        // Phase B: the labeled 6-group tab bar replaces the icon rail column.
-        // It is a Root row between PinnedStrip and MainRow, exactly 7 nodes
-        // (6 tabs + spacer), fixed height TabBarHeight.
+        // Phase B/P6: the labeled 5-group tab bar replaces the icon rail column.
+        // It is a Root row between PinnedStrip and MainRow, exactly 6 nodes
+        // (5 tabs + spacer), fixed height TabBarHeight.
         const FPLayout::FPLayoutNode* RootNode = nullptr;
         const FPLayout::FPLayoutNode* Tabs = nullptr;
         for (const FPLayout::FPLayoutNode& n : Spec)
@@ -6335,9 +6336,9 @@ void TestPhaseHUIDesign() {
             if (std::string(n.Name) == "Root") RootNode = &n;
             if (std::string(n.Name) == "TopTabs") Tabs = &n;
         }
-        bool bTabs = Tabs && Tabs->Children.size() == 7 && Tabs->FixedH == FPLayout::TabBarHeight;
+        bool bTabs = Tabs && Tabs->Children.size() == 6 && Tabs->FixedH == FPLayout::TabBarHeight;
         if (bTabs)
-            for (int i = 0; i < 6; ++i)
+            for (int i = 0; i < 5; ++i)
                 if (std::string(Spec[(size_t)Tabs->Children[(size_t)i]].Name) !=
                         std::string("TT-Tab") + char('0' + i))
                     bTabs = false;
@@ -6348,21 +6349,21 @@ void TestPhaseHUIDesign() {
                 if (&Spec[i] == Tabs) TabIdx = (int)i;
                 if (std::string(Spec[i].Name) == "PinnedStrip") StripIdx = (int)i;
             }
-        TEST("Phase H: TopTabs is a 7-node fixed-height tab row (Phase B)",
+        TEST("Phase H: TopTabs is a 6-node fixed-height tab row (P6)",
             bTabs && RootNode && RootNode->Children.size() == 10
             && RootNode->Children[3] == StripIdx && RootNode->Children[4] == TabIdx
             && std::string(Spec[(size_t)RootNode->Children[5]].Name) == "MainRow");
     }
     {
         // Dev tools relocated (A5): Tag Validator + Material Cross-Reference
-        // are Advanced-rail accordion sections, NOT bottom-bar leaves. Their
-        // leaves must be children of the Advanced rail, not of BotArea.
+        // are Diagnostics-rail accordion sections, NOT bottom-bar leaves. Their
+        // leaves must be children of the Diagnostics rail, not of BotArea.
         const FPLayout::FPLayoutNode* BotArea = nullptr;
         const FPLayout::FPLayoutNode* Adv = nullptr;
         for (const FPLayout::FPLayoutNode& n : Spec)
         {
             if (std::string(n.Name) == "BotArea") BotArea = &n;
-            if (std::string(n.Name) == "RL-Advanced") Adv = &n;
+            if (std::string(n.Name) == "RL-Diagnostics") Adv = &n;
         }
         bool bTagInBottom = false, bMCInBottom = false;
         bool bTagInAdv = false, bMCInAdv = false;
@@ -6381,7 +6382,7 @@ void TestPhaseHUIDesign() {
                 if (std::string(Spec[(size_t)c].Name) == "Sec-MatCrossRef") bMCInAdv = true;
         }
         TEST("Phase H: TagValidator moved out of bottom bar (A5)", !bTagInBottom && !bMCInBottom);
-        TEST("Phase H: TagValidator is an Advanced accordion section (A5)", bTagInAdv && bMCInAdv);
+        TEST("Phase H: TagValidator is a Diagnostics accordion section (A5)", bTagInAdv && bMCInAdv);
     }
 
     // Negative controls: every principle must fire on a planted violation.
@@ -6546,10 +6547,11 @@ void TestPhaseHUIDesign() {
     }
     {
         // Real manifest: the dense rails must be accordion-marked. Phase B
-        // regroup: Import + OutlineDepth (Art), Viseme + Hull (Animated),
-        // all of Nested & Pins, and all six Advanced sections are accordions.
-        // The props sections were converted to carousel pages (P18) - one
-        // visible at a time - so they no longer need accordion collapse.
+        // regroup: Import + OutlineDepth (Art), NestedPins + Viseme + Hull
+        // (Nested & Animated, P6 merge), and all eight Diagnostics sections are
+        // accordions. The props sections were converted to carousel pages
+        // (P18) - one visible at a time - so they no longer need accordion
+        // collapse.
         const char* AccordionSections[] = { "Sec-Import", "Sec-OutlineDepth",
             "Sec-VisemeGrid", "Sec-HullReview", "Sec-ParamRef", "Sec-ParamTable", "Sec-NestedPins",
             "Sec-Config", "Sec-EdgeAnalysis", "Sec-DepthDebug", "Sec-Problems",
@@ -6633,6 +6635,88 @@ void TestPhaseHUIDesign() {
         }
         TEST("Phase H: viewport sections auto-stack without overlap", bStacked);
     }
+
+    // ============ P22 NoHorizontalOverflow + P23 AspectRatioBroken ============
+    TEST("Phase H: FaceAspectRatio=1 (square render target)",
+        FPLayout::FaceAspectRatio == 1.0);
+    TEST("Phase H: FaceCanvasWidth = height x aspect (P23)",
+        FPLayout::FaceCanvasWidth == FPLayout::PreviewCanvasHeight * FPLayout::FaceAspectRatio);
+    {
+        // CN-Preview must be aspect-locked at the design square so the face
+        // schematic is never stretched by the window.
+        const FPLayout::FPLayoutNode* Prev = nullptr;
+        for (const FPLayout::FPLayoutNode& n : Spec)
+            if (std::string(n.Name) == "CN-Preview") { Prev = &n; break; }
+        TEST("Phase H: CN-Preview is aspect-locked 450x450 (P23)",
+            Prev && Prev->bAspectRatio && Prev->FixedW == FPLayout::FaceCanvasWidth
+            && Prev->FixedH == FPLayout::PreviewCanvasHeight);
+        bool bRatio = false;
+        if (Prev)
+        {
+            for (size_t i = 0; i < Spec.size(); ++i)
+                if (&Spec[i] == Prev)
+                {
+                    const FPLayout::FPRect& pr = Rects[(size_t)i];
+                    bRatio = pr.W > 0.0 && pr.H > 0.0
+                        && std::abs(pr.W / pr.H - FPLayout::FaceAspectRatio) < 0.001;
+                }
+        }
+        TEST("Phase H: CN-Preview resolved rect keeps the aspect ratio (P23)", bRatio);
+    }
+    {
+        // P22 positive: NO rail content may be wider than its 180px viewport -
+        // a wider row would scroll left-to-right under the face schematic.
+        bool bNoOverflow = true;
+        for (const FPLayout::FPViolation& v : V)
+            if (v.Rule == FPLayout::DesignRule::NoHorizontalOverflow) bNoOverflow = false;
+        TEST("Phase H: no rail content overflows 180px (P22)", bNoOverflow);
+    }
+    {
+        // P22 negative: a wide row inside a 180px clipped viewport must fire.
+        FPLayout::Builder B;
+        const int Root = FPLayout::VF(B, "Root",
+            FPLayout::VF(B, "Viewport", FPLayout::LF(B, "Wide", 220, 20)));
+        B.N[(size_t)B.N[(size_t)Root].Children[0]].bClipH = true;
+        B.N[(size_t)B.N[(size_t)Root].Children[0]].FixedW = 180.0;
+        B.N[(size_t)B.N[(size_t)Root].Children[0]].FixedH = 560.0;
+        TEST("Phase H: validator fires NoHorizontalOverflow (P22)",
+            Violates(B.N, FPLayout::DesignRule::NoHorizontalOverflow));
+    }
+    {
+        // P23 negative: an aspect-locked node with a stretched rect must fire.
+        FPLayout::Builder B;
+        const int Root = FPLayout::VF(B, "Root", FPLayout::LF(B, "Stretched", 600, 450));
+        B.N[(size_t)B.N[(size_t)Root].Children[0]].bAspectRatio = true;
+        TEST("Phase H: validator fires AspectRatioBroken (P23)",
+            Violates(B.N, FPLayout::DesignRule::AspectRatioBroken));
+    }
+    {
+        // P23 exemption: a square aspect-locked node must NOT fire.
+        FPLayout::Builder B;
+        const int Root = FPLayout::VF(B, "Root", FPLayout::LF(B, "Square", 450, 450));
+        B.N[(size_t)B.N[(size_t)Root].Children[0]].bAspectRatio = true;
+        TEST("Phase H: square aspect-locked node passes (P23)",
+            !Violates(B.N, FPLayout::DesignRule::AspectRatioBroken));
+    }
+    {
+        // Terminal-overlap guard: every row under the schematic (legend,
+        // parts strip, layer label) stays inside the 560px MainRow - nothing
+        // may extend into the timeline / terminal output window below.
+        bool bContained = true;
+        for (size_t i = 0; i < Spec.size() && bContained; ++i)
+        {
+            if (std::string(Spec[i].Name) != "CENTER") continue;
+            const FPLayout::FPRect& cr = Rects[i];
+            for (size_t c = 0; c < Spec[i].Children.size(); ++c)
+            {
+                const int ci = Spec[i].Children[c];
+                const FPLayout::FPRect& chr = Rects[(size_t)ci];
+                if (chr.Y + chr.H > cr.Y + cr.H + 0.001)
+                    bContained = false;
+            }
+        }
+        TEST("Phase H: schematic text rows never reach the terminal band", bContained);
+    }
 }
 
 // --- Phase I: UI testing procedures (fit-first / carousel / reserve) ---
@@ -6679,7 +6763,7 @@ void TestPhaseIUITesting() {
     const std::vector<FPLayout::FPLayoutNode> Spec = FPLayout::BuildSpec();
     TEST("UI: manifest builds (507 nodes)", Spec.size() == 507u);
     {
-        const char* RailNames[6] = { "RL-ViewLayer", "RL-Art", "RL-Animated", "RL-NestedPins", "RL-CameraPrev", "RL-Advanced" };
+        const char* RailNames[5] = { "RL-ViewLayer", "RL-Art", "RL-NestedAnimated", "RL-CameraPrev", "RL-Diagnostics" };
         bool bNoV = true;
         for (const char* nm : RailNames)
         {
@@ -6688,7 +6772,7 @@ void TestPhaseIUITesting() {
                 if (std::string(n.Name) == nm) { found = &n; break; }
             if (!found || !found->bNoVScroll) bNoV = false;
         }
-        TEST("UI: all 6 rails are fit-first (no vertical scroll)", bNoV);
+        TEST("UI: all 5 rails are fit-first (no vertical scroll)", bNoV);
     }
     const std::vector<FPLayout::FPViolation> V = FPLayout::ValidateDesign(Spec);
     {
@@ -7870,7 +7954,7 @@ void TestAccessibilityMirrors() {
 
     // ---- Rail section registry (chips + search jump source of truth) ----
     const std::vector<std::vector<std::string>>& Titles = FPLayout::RailSectionTitles();
-    TEST("Registry: 6 rails", Titles.size() == 6);
+    TEST("Registry: 5 rails", Titles.size() == 5);
     TEST("Registry: rail 0 View & Layer 3 sections", Titles[0].size() == 3
         && Titles[0][0] == "Layers" && Titles[0][1] == "Status Detail"
         && Titles[0][2] == "All Layers (current state)");
@@ -7878,47 +7962,46 @@ void TestAccessibilityMirrors() {
         && Titles[1][0] == "Quick Actions" && Titles[1][1] == "Cross-View Transform"
         && Titles[1][2] == "Import" && Titles[1][3] == "Outline -> Depth"
         && Titles[1][4] == "Bulk Assign" && Titles[1][5] == "Assign Ops");
-    TEST("Registry: rail 2 Animated 2 sections", Titles[2].size() == 2
-        && Titles[2][0] == "Viseme Frames (click filled cell = play)"
-        && Titles[2][1] == "Hull Review (click thumb = jump)");
-    TEST("Registry: rail 3 Nested & Pins 1 section", Titles[3].size() == 1
-        && Titles[3][0] == "Nested Art / Pins");
-    TEST("Registry: rail 4 Camera/Preview 3 sections", Titles[4].size() == 3
-        && Titles[4][0] == "Camera Follow" && Titles[4][1] == "Camera"
-        && Titles[4][2] == "Blend Preview");
-    TEST("Registry: rail 5 Advanced 8 sections", Titles[5].size() == 8
-        && Titles[5][0] == "Config" && Titles[5][1] == "Param Reference"
-        && Titles[5][2] == "Param Bindings (state + layer)"
-        && Titles[5][3] == "Edge Analysis" && Titles[5][4] == "Depth Debug"
-        && Titles[5][5] == "Problems (click row = jump)"
-        && Titles[5][6] == "Tag Validator" && Titles[5][7] == "Material Cross-Reference");
+    TEST("Registry: rail 2 Nested & Animated 3 sections", Titles[2].size() == 3
+        && Titles[2][0] == "Nested Art / Pins"
+        && Titles[2][1] == "Viseme Frames (click filled cell = play)"
+        && Titles[2][2] == "Hull Review (click thumb = jump)");
+    TEST("Registry: rail 3 Camera/Preview 3 sections", Titles[3].size() == 3
+        && Titles[3][0] == "Camera Follow" && Titles[3][1] == "Camera"
+        && Titles[3][2] == "Blend Preview");
+    TEST("Registry: rail 4 Diagnostics 8 sections (P6 diagnostics lead)", Titles[4].size() == 8
+        && Titles[4][0] == "Tag Validator" && Titles[4][1] == "Material Cross-Reference"
+        && Titles[4][2] == "Param Reference" && Titles[4][3] == "Edge Analysis"
+        && Titles[4][4] == "Config" && Titles[4][5] == "Param Bindings (state + layer)"
+        && Titles[4][6] == "Depth Debug"
+        && Titles[4][7] == "Problems (click row = jump)");
 
     // ---- Cross-rail search jump (mirror of OnRailSearchCommitted) ----
     int OutRail = -1, OutIdx = -1;
-    TEST("Search: 'config' -> Advanced/Config",
+    TEST("Search: 'config' -> Diagnostics/Config",
         FPLayout::FindRailSectionByTitle("config", OutRail, OutIdx) == 0
-        && OutRail == 5 && OutIdx == 0);
+        && OutRail == 4 && OutIdx == 4);
     TEST("Search: 'CONFIG' case-insensitive",
         FPLayout::FindRailSectionByTitle("CONFIG", OutRail, OutIdx) == 0
-        && OutRail == 5 && OutIdx == 0);
-    TEST("Search: 'viseme' -> Animated/Viseme",
+        && OutRail == 4 && OutIdx == 4);
+    TEST("Search: 'viseme' -> Nested & Animated/Viseme",
         FPLayout::FindRailSectionByTitle("viseme", OutRail, OutIdx) == 0
-        && OutRail == 2 && OutIdx == 0);
+        && OutRail == 2 && OutIdx == 1);
     TEST("Search: 'quick' -> Art/Quick Actions",
         FPLayout::FindRailSectionByTitle("quick", OutRail, OutIdx) == 0
         && OutRail == 1 && OutIdx == 0);
-    TEST("Search: 'camera' first match is rail 4",
+    TEST("Search: 'camera' first match is rail 3",
         FPLayout::FindRailSectionByTitle("camera", OutRail, OutIdx) == 0
-        && OutRail == 4 && OutIdx == 0);
-    TEST("Search: 'blend' -> rail 4 idx 2",
+        && OutRail == 3 && OutIdx == 0);
+    TEST("Search: 'blend' -> rail 3 idx 2",
         FPLayout::FindRailSectionByTitle("blend", OutRail, OutIdx) == 0
-        && OutRail == 4 && OutIdx == 2);
+        && OutRail == 3 && OutIdx == 2);
     TEST("Search: 'status' -> rail 0 Status Detail",
         FPLayout::FindRailSectionByTitle("status", OutRail, OutIdx) == 0
         && OutRail == 0 && OutIdx == 1);
-    TEST("Search: 'problem' -> rail 5 Problems",
+    TEST("Search: 'problem' -> rail 4 Problems",
         FPLayout::FindRailSectionByTitle("problem", OutRail, OutIdx) == 0
-        && OutRail == 5 && OutIdx == 5);
+        && OutRail == 4 && OutIdx == 7);
     TEST("Search: 'xyzzy' no match -> -1",
         FPLayout::FindRailSectionByTitle("xyzzy", OutRail, OutIdx) == -1);
     TEST("Search: empty query -> no match",
@@ -7949,12 +8032,13 @@ void TestAccessibilityMirrors() {
     TEST("Drag: half delta rounds up", FPLayout::RailWidthAfterDrag(180.0, 49.5) == 230.0);
 
     // ---- Persistent quick-actions bar button set (rail-independent) ----
+    // P7-B: 3 actions (Sync All -> All removed — the apply-to-views picker
+    // and per-layer Sync Tex->All are the sync mechanisms now).
     const std::vector<std::string>& QL = FPLayout::QuickActionLabels();
-    TEST("Quick bar: exactly 4 actions", QL.size() == 4);
+    TEST("Quick bar: exactly 3 actions", QL.size() == 3);
     TEST("Quick bar: Import Art... first", QL[0] == "Import Art...");
-    TEST("Quick bar: Sync All -> All", QL[1] == "Sync All -> All");
-    TEST("Quick bar: Auto-Fit All", QL[2] == "Auto-Fit All");
-    TEST("Quick bar: Clear All Overrides last", QL[3] == "Clear All Overrides");
+    TEST("Quick bar: Auto-Fit All second", QL[1] == "Auto-Fit All");
+    TEST("Quick bar: Clear All Overrides last", QL[2] == "Clear All Overrides");
 
     printf("  [Accessibility Mirrors: 38 tests]\n");
 }
@@ -7987,26 +8071,26 @@ void TestPinnedActionsRule() {
     TEST("P21: PinnedStrip node exists", Strip != nullptr);
     TEST("P21: strip is fixed-height 26", Strip && Strip->FixedH == FPLayout::PinnedStripHeight);
     TEST("P21: strip is a full-width row (flex width)",
-        Strip && Strip->bFlexW && Strip->Children.size() == 5);
+        Strip && Strip->bFlexW && Strip->Children.size() == 4);
 
     // Strip children map 1:1 to the canonical labels, all flagged, all
     // directly under the strip (never in a scroll viewport).
     const std::vector<std::string>& QL = FPLayout::QuickActionLabels();
-    bool bStripOk = Strip && Strip->Children.size() == 5;
+    bool bStripOk = Strip && Strip->Children.size() == 4;
     int StripIdx = -1;
     if (Strip)
         for (size_t i = 0; i < Spec.size(); ++i)
             if (&Spec[i] == Strip) { StripIdx = (int)i; break; }
     if (bStripOk)
     {
-        for (int c = 0; c < 4 && bStripOk; ++c)
+        for (int c = 0; c < 3 && bStripOk; ++c)
         {
             const FPLayout::FPLayoutNode& btn = Spec[(size_t)Strip->Children[(size_t)c]];
             if (!btn.bPinnedAction || std::string(btn.Name) != QL[(size_t)c])
                 bStripOk = false;
         }
     }
-    TEST("P21: strip holds exactly the 4 canonical actions, flagged", bStripOk);
+    TEST("P21: strip holds exactly the 3 canonical actions, flagged", bStripOk);
     TEST("P21: strip is a direct root child above the main row",
         RootNode && StripIdx >= 0
         && (int)RootNode->Children.size() == 10
@@ -8366,7 +8450,7 @@ void TestPhaseP3Mirrors() {
 // --- Phase C (remediation): canvas selection + unified inspect mode. All
 // helpers are pure FPLayout functions consumed 1:1 by SFaceHotspotLayer and
 // the widget (canvas quad hit-test + selection outline + right/ctrl cycling,
-// and the 5-segment inspect row derived from the Advanced rail Config checks).
+// and the 5-segment inspect row derived from the Diagnostics rail Config checks).
 void TestPhaseCIntegration() {
     printf("\n=== Phase C Integration (canvas selection + inspect mode) ===\n");
 
@@ -8912,6 +8996,166 @@ void TestSchematicFilters() {
     }
 }
 
+// --- Phase I: group-colored edge map ---
+void TestEdgeMapMirrors() {
+    printf("\n=== EdgeMapMirrors ===\n");
+    using namespace FPSchematic;
+    using C = FPDepthClass;
+
+    // Part-name -> group: the two facial-feature groups are explicit, hair
+    // is its own system, everything else is Surface.
+    TEST("edge map: EyeL -> Eyes", FPEdgeGroupForPartName("EyeL") == FPEdgeGroup::Eyes);
+    TEST("edge map: EyeR -> Eyes", FPEdgeGroupForPartName("EyeR") == FPEdgeGroup::Eyes);
+    TEST("edge map: BrowL -> Eyes", FPEdgeGroupForPartName("BrowL") == FPEdgeGroup::Eyes);
+    TEST("edge map: BrowR -> Eyes", FPEdgeGroupForPartName("BrowR") == FPEdgeGroup::Eyes);
+    TEST("edge map: Mouth -> Mouth", FPEdgeGroupForPartName("Mouth") == FPEdgeGroup::Mouth);
+    TEST("edge map: Teeth -> Mouth via alias", FPEdgeGroupForPartName("Teeth") == FPEdgeGroup::Mouth);
+    TEST("edge map: Bangs -> Hair", FPEdgeGroupForPartName("Bangs") == FPEdgeGroup::Hair);
+    TEST("edge map: Hair -> Hair", FPEdgeGroupForPartName("Hair") == FPEdgeGroup::Hair);
+    TEST("edge map: BackHair -> Hair", FPEdgeGroupForPartName("BackHair") == FPEdgeGroup::Hair);
+    TEST("edge map: Nose -> Surface", FPEdgeGroupForPartName("Nose") == FPEdgeGroup::Surface);
+    TEST("edge map: CheekL -> Surface", FPEdgeGroupForPartName("CheekL") == FPEdgeGroup::Surface);
+    TEST("edge map: CheekR -> Surface", FPEdgeGroupForPartName("CheekR") == FPEdgeGroup::Surface);
+    TEST("edge map: Chin -> Surface", FPEdgeGroupForPartName("Chin") == FPEdgeGroup::Surface);
+    TEST("edge map: Neck -> Surface", FPEdgeGroupForPartName("Neck") == FPEdgeGroup::Surface);
+    TEST("edge map: EarL -> Surface", FPEdgeGroupForPartName("EarL") == FPEdgeGroup::Surface);
+    TEST("edge map: EarR -> Surface", FPEdgeGroupForPartName("EarR") == FPEdgeGroup::Surface);
+    TEST("edge map: Head -> Surface", FPEdgeGroupForPartName("Head") == FPEdgeGroup::Surface);
+    TEST("edge map: empty name -> Surface", FPEdgeGroupForPartName("") == FPEdgeGroup::Surface);
+    TEST("edge map: null name -> Surface", FPEdgeGroupForPartName(nullptr) == FPEdgeGroup::Surface);
+
+    // All 17 schematic parts land in a valid group (never MAX).
+    static const char* Parts17[] = { "BrowL", "BrowR", "EyeL", "EyeR", "Nose",
+        "CheekL", "CheekR", "Teeth", "Mouth", "Chin", "EarL", "EarR", "Neck",
+        "Bangs", "Hair", "BackHair", "Head" };
+    {
+        bool bAllValid = true;
+        for (const char* P : Parts17)
+            if ((unsigned char)FPEdgeGroupForPartName(P) >= (unsigned char)FPEdgeGroup::MAX)
+                bAllValid = false;
+        TEST("edge map: all 17 parts land in a valid group", bAllValid);
+    }
+
+    // Resolved layer tag -> group (what the paint path consults).
+    TEST("edge map: tag Eyes -> Eyes", FPEdgeGroupForTag("Eyes") == FPEdgeGroup::Eyes);
+    TEST("edge map: tag Brows -> Eyes", FPEdgeGroupForTag("Brows") == FPEdgeGroup::Eyes);
+    TEST("edge map: tag Mouth -> Mouth", FPEdgeGroupForTag("Mouth") == FPEdgeGroup::Mouth);
+    TEST("edge map: tag Bangs -> Hair", FPEdgeGroupForTag("Bangs") == FPEdgeGroup::Hair);
+    TEST("edge map: tag Hair -> Hair", FPEdgeGroupForTag("Hair") == FPEdgeGroup::Hair);
+    TEST("edge map: tag BackHair -> Hair", FPEdgeGroupForTag("BackHair") == FPEdgeGroup::Hair);
+    TEST("edge map: tag Cheeks -> Surface", FPEdgeGroupForTag("Cheeks") == FPEdgeGroup::Surface);
+    TEST("edge map: tag Head -> Surface", FPEdgeGroupForTag("Head") == FPEdgeGroup::Surface);
+    TEST("edge map: tag Ears -> Surface", FPEdgeGroupForTag("Ears") == FPEdgeGroup::Surface);
+    TEST("edge map: unknown tag -> Surface", FPEdgeGroupForTag("Scarf") == FPEdgeGroup::Surface);
+    TEST("edge map: empty tag -> Surface", FPEdgeGroupForTag("") == FPEdgeGroup::Surface);
+
+    // Hair detail levels: Bangs = 0, Hair = 1, BackHair = 2, else -1.
+    TEST("edge map: Bangs level 0", FPHairLevelForTag("Bangs") == 0);
+    TEST("edge map: Hair level 1", FPHairLevelForTag("Hair") == 1);
+    TEST("edge map: BackHair level 2", FPHairLevelForTag("BackHair") == 2);
+    TEST("edge map: non-hair tag level -1", FPHairLevelForTag("Eyes") == -1);
+    TEST("edge map: empty tag level -1", FPHairLevelForTag("") == -1);
+    TEST("edge map: part-name level matches tag", FPHairLevelForPartName("Bangs") == 0);
+    TEST("edge map: three distinct hair levels", ([&]() {
+        const int A = FPHairLevelForTag("Bangs"), B = FPHairLevelForTag("Hair"),
+            D = FPHairLevelForTag("BackHair");
+        return A < B && B < D;
+    }()));
+
+    // Luminance: FRONT is LIGHTER than BACK; Base sits between.
+    TEST("edge map: front luminance lighter than base",
+        FPEdgeLuminanceForClass(C::Front) > FPEdgeLuminanceForClass(C::Base));
+    TEST("edge map: base luminance lighter than back",
+        FPEdgeLuminanceForClass(C::Base) > FPEdgeLuminanceForClass(C::Back));
+    TEST("edge map: front luminance 1.0", FPEdgeLuminanceForClass(C::Front) == 1.0);
+    TEST("edge map: luminance strictly ordered", [&]() {
+        return FPEdgeLuminanceForClass(C::Front) > FPEdgeLuminanceForClass(C::Base)
+            && FPEdgeLuminanceForClass(C::Base) > FPEdgeLuminanceForClass(C::Back);
+    }());
+
+    // Group colors: all four groups pairwise distinct.
+    TEST("edge map: group colors pairwise distinct", [&]() {
+        const FPEdgeColor E = FPEdgeGroupColor(FPEdgeGroup::Eyes);
+        const FPEdgeColor M = FPEdgeGroupColor(FPEdgeGroup::Mouth);
+        const FPEdgeColor H = FPEdgeGroupColor(FPEdgeGroup::Hair);
+        const FPEdgeColor S = FPEdgeGroupColor(FPEdgeGroup::Surface);
+        auto Distinct = [](const FPEdgeColor& A, const FPEdgeColor& B) {
+            return A.R != B.R || A.G != B.G || A.B != B.B;
+        };
+        return Distinct(E, M) && Distinct(E, H) && Distinct(E, S)
+            && Distinct(M, H) && Distinct(M, S) && Distinct(H, S);
+    }());
+
+    // Hair color is DISTINCT from everything else at any class.
+    TEST("edge map: hair color differs from surface at same class", [&]() {
+        const FPEdgeColor H = FPEdgeColorForPart("Hair", C::Back);
+        const FPEdgeColor S = FPEdgeColorForPart("Head", C::Back);
+        return H.R != S.R || H.G != S.G || H.B != S.B;
+    }());
+
+    // Depth-class scaling: the same surface part is lighter in Front than Back.
+    TEST("edge map: surface part front lighter than back", [&]() {
+        const FPEdgeColor F = FPEdgeColorForPart("Nose", C::Front);
+        const FPEdgeColor B = FPEdgeColorForPart("Nose", C::Back);
+        return F.R > B.R && F.G > B.G && F.B > B.B;
+    }());
+
+    // Eyes vs Mouth at the same class: distinct edges.
+    TEST("edge map: eyes and mouth distinct at same class", [&]() {
+        const FPEdgeColor E = FPEdgeColorForPart("EyeL", C::Front);
+        const FPEdgeColor M = FPEdgeColorForPart("Mouth", C::Front);
+        return E.R != M.R || E.G != M.G || E.B != M.B;
+    }());
+
+    // Hair keeps full luminance through its levels (level-distinct, not
+    // class-dimmed): Bangs (Front) and BackHair (Back) share the hair color.
+    TEST("edge map: hair exempt from class dimming", [&]() {
+        const FPEdgeColor A = FPEdgeColorForPart("Bangs", C::Front);
+        const FPEdgeColor B = FPEdgeColorForPart("Bangs", C::Back);
+        return A.R == B.R && A.G == B.G && A.B == B.B;
+    }());
+
+    // Hair detail-level luminance: front lighter than back, mirroring the
+    // depth-class rule; non-hair levels are full.
+    TEST("edge map: hair level luminance ordered", [&]() {
+        return FPHairLevelLuminance(0) > FPHairLevelLuminance(1)
+            && FPHairLevelLuminance(1) > FPHairLevelLuminance(2);
+    }());
+    TEST("edge map: bang level full luminance", FPHairLevelLuminance(0) == 1.0);
+    TEST("edge map: non-hair level full luminance", FPHairLevelLuminance(-1) == 1.0);
+
+    // The three detailed levels are visually distinct steps: each hair part
+    // color differs from every other hair part color (same violet family,
+    // level-scaled), and the level drives brightness — Bangs lightest.
+    TEST("edge map: hair level colors pairwise distinct", [&]() {
+        const FPEdgeColor B = FPEdgeColorForPart("Bangs", C::Back);
+        const FPEdgeColor H = FPEdgeColorForPart("Hair", C::Back);
+        const FPEdgeColor BH = FPEdgeColorForPart("BackHair", C::Back);
+        auto Distinct = [](const FPEdgeColor& A, const FPEdgeColor& X) {
+            return A.R != X.R || A.G != X.G || A.B != X.B;
+        };
+        return Distinct(B, H) && Distinct(B, BH) && Distinct(H, BH);
+    }());
+    TEST("edge map: hair level order matches luminance (Bangs brightest)", [&]() {
+        const FPEdgeColor B = FPEdgeColorForPart("Bangs", C::Front);
+        const FPEdgeColor H = FPEdgeColorForPart("Hair", C::Front);
+        const FPEdgeColor BH = FPEdgeColorForPart("BackHair", C::Front);
+        return B.R > H.R && H.R > BH.R && B.G > H.G && H.G > BH.G;
+    }());
+
+    // Toggle: hair edges hide wholesale; every other group always shows.
+    TEST("edge map: hair hidden when hair toggle off",
+        !FPEdgeMapShows(FPEdgeGroup::Hair, false));
+    TEST("edge map: hair shown when hair toggle on",
+        FPEdgeMapShows(FPEdgeGroup::Hair, true));
+    TEST("edge map: non-hair always shown regardless of hair toggle", [&]() {
+        return FPEdgeMapShows(FPEdgeGroup::Eyes, false)
+            && FPEdgeMapShows(FPEdgeGroup::Eyes, true)
+            && FPEdgeMapShows(FPEdgeGroup::Mouth, false)
+            && FPEdgeMapShows(FPEdgeGroup::Surface, false);
+    }());
+}
+
 // --- Central canvas redesign: front/base/back yaw-motion rule ---
 void TestYawRule() {
     printf("\n=== YawRule ===\n");
@@ -9063,6 +9307,7 @@ int main() {
     TestHairSystem();
     TestHairMidpointJiggle();
     TestSchematicFilters();
+    TestEdgeMapMirrors();
     TestYawRule();
 
     printf("\n===== Results: %d/%d passed (%d failed) =====\n",

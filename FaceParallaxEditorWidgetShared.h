@@ -15,6 +15,11 @@
 #include "Rendering/SlateLayoutTransform.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Editor.h"
+#include "Widgets/SCompoundWidget.h"
+#include "Input/DragAndDrop.h"
+#include "DragAndDrop/AssetDragDropOp.h"
+#include "ContentBrowserDataDragDropOp.h"
+#include "Misc/Paths.h"
 
 // Internal helpers shared by the FaceParallaxEditorWidget translation units:
 // import channel/view-state parsing, preset transaction scope, Slate label
@@ -208,7 +213,119 @@ static TSharedRef<SButton> MakeBtn(const FString& T, TFunction<void()>&& Fn,
             .ColorAndOpacity(FG)];
 }
 
+    // Drag-drop wrapper used by every texture-slot display and the import
+    // wizard drop zone: accepts Content Browser asset drags (legacy
+    // FAssetDragDropOp and FContentBrowserDataDragDropOp) and OS file drags
+    // (FExternalDragOperation). The lambdas attached here decide validity and
+    // perform the channel assignment.
+    DECLARE_DELEGATE_RetVal_TwoParams(FReply, FOnFaceDragOver, const FGeometry&, const FDragDropEvent&);
+    DECLARE_DELEGATE_RetVal_TwoParams(FReply, FOnFaceDrop, const FGeometry&, const FDragDropEvent&);
+
+    class SFaceDropTarget : public SCompoundWidget
+    {
+    public:
+        SLATE_BEGIN_ARGS(SFaceDropTarget) {}
+            SLATE_DEFAULT_SLOT(FArguments, Content)
+            SLATE_EVENT(FOnFaceDragOver, OnFaceDragOver)
+            SLATE_EVENT(FOnFaceDrop, OnFaceDrop)
+        SLATE_END_ARGS()
+
+        void Construct(const FArguments& InArgs)
+        {
+            DragOver = InArgs._OnFaceDragOver;
+            Drop = InArgs._OnFaceDrop;
+            ChildSlot[InArgs._Content.Widget];
+        }
+
+        virtual FReply OnDragOver(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent) override
+        {
+            return DragOver.IsBound() ? DragOver.Execute(MyGeometry, DragDropEvent) : FReply::Unhandled();
+        }
+
+        virtual FReply OnDrop(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent) override
+        {
+            return Drop.IsBound() ? Drop.Execute(MyGeometry, DragDropEvent) : FReply::Unhandled();
+        }
+
+    private:
+        FOnFaceDragOver DragOver;
+        FOnFaceDrop Drop;
+    };
+
+    static bool IsDroppableImageFile(const FString& Path)
+    {
+        const FString Ext = FPaths::GetExtension(Path).ToLower();
+        return Ext == TEXT("png") || Ext == TEXT("jpg") || Ext == TEXT("jpeg") ||
+            Ext == TEXT("tga") || Ext == TEXT("bmp");
+    }
+
 }
+
+// ====================================================================
+// P6: action-point confirmation button — flashes green with a "\u2713"
+// suffix for ~0.7s after a click, confirming the action landed right at the
+// clicked control (undo pushes, adds, applies). Uses the same CLICK log as
+// MakeBtn so the probe audit trail stays uniform. Rebuilt widgets lose the
+// flash naturally (state is per-instance, never a member). Defined at
+// namespace scope like every SFace* widget in this header (the anonymous
+// namespace above closes with the MakeBtn helpers).
+// ====================================================================
+class UFaceParallaxEditorWidget::SFaceFlashButton : public SCompoundWidget
+{
+public:
+    SLATE_BEGIN_ARGS(SFaceFlashButton) {}
+        SLATE_ARGUMENT(FString, Text)
+        SLATE_EVENT(FOnClicked, OnClicked)
+    SLATE_END_ARGS()
+
+    void Construct(const FArguments& InArgs)
+    {
+        Label = InArgs._Text;
+        Clicked = InArgs._OnClicked;
+        Flash = false;
+        FlashUntil = 0.0;
+        SetCanTick(true);
+        ChildSlot
+            [ SNew(SButton)
+                .OnClicked_Lambda([this]()
+                {
+                    UE_LOG(LogTemp, Warning, TEXT("[FaceParallaxWidget] CLICK '%s'"), *Label);
+                    Flash = true;
+                    FlashUntil = FSlateApplication::Get().GetCurrentTime() + 0.7;
+                    return Clicked.IsBound() ? Clicked.Execute() : FReply::Handled();
+                })
+                .ButtonColorAndOpacity_Lambda([this]()
+                {
+                    return Flash ? FLinearColor(0.14f, 0.5f, 0.2f) : FLinearColor(0.15f, 0.15f, 0.15f);
+                })
+                .Content()
+                [ SNew(STextBlock)
+                    .Text_Lambda([this]()
+                    {
+                        return FText::FromString(Flash ? Label + TEXT(" \u2713") : Label);
+                    })
+                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 10))
+                    .ColorAndOpacity_Lambda([this]()
+                    {
+                        return Flash ? FLinearColor(0.9f, 1.0f, 0.9f) : FLinearColor(0.85f, 0.85f, 0.85f);
+                    }) ] ];
+    }
+
+    virtual void Tick(const FGeometry& AllottedGeometry, double InCurrentTime, float InDeltaTime) override
+    {
+        if (Flash && InCurrentTime > FlashUntil)
+        {
+            Flash = false;
+            SetCanTick(false);
+        }
+    }
+
+private:
+    FString Label;
+    FOnClicked Clicked;
+    bool Flash = false;
+    double FlashUntil = 0.0;
+};
 
 // ====================================================================
 // SFaceLayerGizmo — canvas transform gizmo (Phase B)
@@ -741,9 +858,14 @@ private:
 // PHASE 0: this layer is THE canvas click router. It is the topmost
 // interactive widget in the preview SOverlay (the gizmo above it is
 // SelfHitTestInvisible / paint-only), so every canvas click lands here and is
-// resolved in one order: pin-drag (pin mode) -> named region -> schematic
-// glyph -> layer-art quad -> miss (swallowed — nothing below may receive
-// clicks). Hover is forwarded to SFaceSchematicLayer (lens- and filter-aware).
+// resolved in one order: pin-drag (pin mode) -> schematic glyph -> miss
+// (swallowed — nothing below may receive clicks). P1 one-map: the schematic
+// glyph is the SINGLE map — left-click selects/imports, right-click opens the
+// remap menu; the old hotspot-region and layer-art-quad click layers were
+// deleted (the region outline paint is gone too — the schematic is the only
+// map). Hover is forwarded to SFaceSchematicLayer (lens- and filter-aware).
+// The layer still paints the persistent selection outline and the post-assign
+// flash ring (overlays on the art quad, not a second map).
 class UFaceParallaxEditorWidget::SFaceHotspotLayer : public SLeafWidget
 {
 public:
@@ -803,15 +925,10 @@ public:
         int32 LayerId, const FWidgetStyle&, bool) const override
     {
         const FVector2D Size = AllottedGeometry.GetLocalSize();
-        if (Size.X <= 0.0f || Size.Y <= 0.0f || Regions.empty()) return LayerId;
-        const FLinearColor Tint(0.6f, 0.8f, 1.0f, 0.14f);
-        for (const FPLayout::FPHotspotRegion& R : Regions)
-        {
-            DrawLoop(AllottedGeometry, OutDrawElements, LayerId, R.Outer, Size, Tint);
-            for (const std::vector<FPLayout::FPHotspotPoint>& Hole : R.Holes)
-                DrawLoop(AllottedGeometry, OutDrawElements, LayerId, Hole, Size, Tint);
-        }
-        // Phase C: persistent selection outline — the selected layer's quad,
+        if (Size.X <= 0.0f || Size.Y <= 0.0f || LayerQuads.size() != (size_t)QuadLayerTags.Num()) return LayerId;
+        // P1 one-map: the schematic glyph is the single map — no region
+        // outline paint here (the SFaceSchematicLayer below draws it).
+        // Persistent selection outline — the selected layer's quad,
         // always visible (not hover-only), in AccentBlue at 2px so the
         // current selection is confirmable at a glance.
         if (!SelectedLayerTag.IsEmpty() && LayerQuads.size() == (size_t)QuadLayerTags.Num())
@@ -893,17 +1010,24 @@ private:
 };
 
 // SFaceSchematicLayer - the central-canvas DEFAULT VIEW (redesign): paints the
-// part schematic glyphs (FaceParallaxSchematic.h) for every part whose mapped
-// layer has NO assigned art — assigned art replaces the default outline on
-// the live preview automatically. Glyph color encodes the depth class
-// (front = amber, base = grey, back = cyan) so the front/base/back yaw rule
-// is visible at a glance. The canvas filter row drops filtered parts
+// part schematic glyphs (FaceParallaxSchematic.h) for every part — P1 one-map:
+// the glyph layer is the SINGLE map (artful parts render solid instead of
+// dashed — the live preview art replaces the outline visually, but the map
+// stays clickable). Glyph color encodes the Phase I EDGE MAP by default:
+// every part edge paints in its FPEdgeGroup color (eyes green, mouth red,
+// hair violet, surface grey-blue) scaled by depth-class luminance (front
+// lighter than back) so the group structure reads at a glance; the Canvas
+// Options "Edge map" checkbox reverts to the legacy depth-class tint (front
+// = amber, base = grey, back = cyan) and "Hair edges" hides the hair system's
+// detailed edge levels wholesale. The canvas filter row drops filtered parts
 // (FPSchematicFilterAllows mirror); the SELECTED layer's glyphs render thick
 // with a soft fill while the rest dim to 25% alpha; the Focus lens zooms the
-// selected layer's glyphs to fit. PHASE 0: the layer is SelfHitTestInvisible
-// — SFaceHotspotLayer routes clicks and forwards hover here (lens- and
-// filter-aware, so what you see is exactly what you can click). Lives between
-// the edge overlay and the hotspot layer in the preview SOverlay.
+// selected layer's glyphs to fit; a click pulse ring flashes the part that
+// was just picked (P1 inline feedback at the point of action). PHASE 0: the
+// layer is SelfHitTestInvisible — SFaceHotspotLayer routes clicks and
+// forwards hover here (lens- and filter-aware, so what you see is exactly
+// what you can click). Lives between the edge overlay and the hotspot layer
+// in the preview SOverlay.
 class UFaceParallaxEditorWidget::SFaceSchematicLayer : public SLeafWidget
 {
 public:
@@ -929,6 +1053,14 @@ public:
         Invalidate(EInvalidateWidgetReason::Paint);
     }
 
+    // P1 one-map: parallel per-part art flags (1 = the mapped layer carries
+    // Front albedo). Artful glyphs render SOLID (art replaces the outline on
+    // the live preview) while artless ones stay dashed — one map, two states.
+    void SetPartStatus(const std::vector<char>& InStatus)
+    {
+        PartStatus = InStatus;
+    }
+
     // Phase 3: the canvas filter row mirror (layer chips + depth radio).
     void SetFilters(const std::vector<std::string>& InLayerFilter, int32 InDepthFilter)
     {
@@ -940,6 +1072,24 @@ public:
         }
         Invalidate(EInvalidateWidgetReason::Paint);
     }
+
+    // Phase I: group-colored edge map. When enabled, glyphs paint with
+    // FPEdgeGroup colors (eyes/mouth/hair/surface) scaled by depth-class
+    // luminance (front lighter than back); hair edges can be toggled off
+    // wholesale while every other group stays.
+    void SetEdgeMap(bool bInEdgeMap, bool bInHairEdges)
+    {
+        bEdgeMap = bInEdgeMap;
+        bEdgeMapHairEdges = bInHairEdges;
+        if (HoveredIndex >= 0)
+        {
+            HoveredIndex = -1;
+        }
+        Invalidate(EInvalidateWidgetReason::Paint);
+    }
+
+    bool GetEdgeMap() const { return bEdgeMap; }
+    bool GetEdgeMapHairEdges() const { return bEdgeMapHairEdges; }
 
     // Phase 3: zoom-to-fit lens. Min/Max are the selected layer's glyph
     // bounds in part-UV space (already view-transformed); the lens maps
@@ -1030,30 +1180,89 @@ public:
         if (Size.X <= 0.0f || Size.Y <= 0.0f || Parts.empty()) return LayerId;
         const FString SelTag = (Owner && Owner->GetSelectedLayerName().IsValid())
             ? Owner->GetSelectedLayerName().ToString() : FString();
+        const double Now = FSlateApplication::Get().GetCurrentTime();
+        const double FlashAge = (Owner && !Owner->GetSchematicFlashPart().IsEmpty())
+            ? Now - Owner->GetSchematicFlashTimestamp() : -1.0;
         for (size_t i = 0; i < Parts.size(); ++i)
         {
             const FPSchematic::FPSchematicPart& P = Parts[i];
             if (!P.Name || P.Outline.size() < 2) continue;
             if (!FilterAllows((int32)i)) continue;
+            // Phase I edge map: hair edges toggle off wholesale while every
+            // other group stays; group colors replace the depth-class tint.
+            if (bEdgeMap && !FPSchematic::FPEdgeMapShows(
+                    FPSchematic::FPEdgeGroupForPartName(P.Name), bEdgeMapHairEdges))
+                continue;
             const bool bHovered = (int32)i == HoveredIndex;
             const bool bSelected = !SelTag.IsEmpty()
                 && (size_t)i < PartLayerTags.size() && PartLayerTags[i] == TCHAR_TO_UTF8(*SelTag);
-            FLinearColor Color = DepthClassColor(P.DepthClass);
+            // P1 one-map: artful parts draw SOLID (their art replaced the
+            // outline on the live preview); artless parts stay dashed.
+            const bool bArt = (size_t)i < PartStatus.size() && PartStatus[i] != 0;
+            FLinearColor Color = bEdgeMap
+                ? EdgeMapColor(P) : DepthClassColor(P.DepthClass);
             if (bSelected)
             {
                 Color.A = 1.0f;
                 // Soft fill pass: a thick low-alpha halo behind the crisp
                 // outline makes the selected layer read as "filled".
                 DrawDashedLoop(AllottedGeometry, OutDrawElements, LayerId,
-                    P.Outline, Size, FLinearColor(Color.R, Color.G, Color.B, 0.08f), 14.0f);
+                    P.Outline, Size, FLinearColor(Color.R, Color.G, Color.B, 0.08f), 14.0f,
+                    bArt);
             }
             else
             {
-                Color.A = bHovered ? 1.0f : 0.25f;
+                // Edge-map mode paints at full alpha so the group coloring
+                // actually reads; the legacy depth-class tint keeps its
+                // subdued look.
+                Color.A = bHovered ? 1.0f : (bEdgeMap ? 0.9f : 0.25f);
             }
-            const float Thickness = bSelected ? 3.0f : (bHovered ? 2.5f : 1.5f);
+            const float Thickness = bSelected ? 3.0f
+                : (bHovered ? 2.5f : (bEdgeMap ? 2.0f : 1.5f));
             DrawDashedLoop(AllottedGeometry, OutDrawElements, LayerId,
-                P.Outline, Size, Color, Thickness);
+                P.Outline, Size, Color, Thickness, bArt);
+            // P1 click pulse: bright fading ring on the part just picked
+            // (0.5s) — inline feedback at the point of action.
+            if (FlashAge >= 0.0 && FlashAge < 0.5
+                && Owner && Owner->GetSchematicFlashPart() == UTF8_TO_TCHAR(P.Name))
+            {
+                const float Alpha = 1.0f - (float)(FlashAge / 0.5);
+                DrawDashedLoop(AllottedGeometry, OutDrawElements, LayerId + 1,
+                    P.Outline, Size, FLinearColor(1.0f, 1.0f, 0.7f, Alpha), 4.0f, true);
+            }
+        }
+        // P2 per-part status chip: a small dot at each glyph's centroid
+        // encodes slot completeness in the ACTIVE view (red = no art,
+        // amber = partial A/N/D, green = full). Painted after the loops so
+        // dots always sit on top of outlines and halos.
+        const FSlateBrush* WhiteBrush = FCoreStyle::Get().GetBrush("WhiteBrush");
+        for (size_t i = 0; i < Parts.size(); ++i)
+        {
+            const FPSchematic::FPSchematicPart& P = Parts[i];
+            if (!P.Name || P.Outline.size() < 3) continue;
+            if (!FilterAllows((int32)i)) continue;
+            if (bEdgeMap && !FPSchematic::FPEdgeMapShows(
+                    FPSchematic::FPEdgeGroupForPartName(P.Name), bEdgeMapHairEdges))
+                continue;
+            const int32 Status = (size_t)i < PartStatus.size() ? (int32)PartStatus[i] : 0;
+            const FLinearColor DotColor = Status >= 2
+                ? FLinearColor(0.35f, 0.85f, 0.45f)                       // green: full A/N/D
+                : (Status == 1 ? FLinearColor(1.0f, 0.75f, 0.25f)         // amber: partial
+                               : FLinearColor(0.8f, 0.35f, 0.35f));       // red: missing
+            double CX = 0.0, CY = 0.0;
+            for (const FPSchematic::FPSchematicPoint& Pt : P.Outline)
+            {
+                const FPSchematic::FPSchematicPoint F = FocusPoint(Pt);
+                CX += F.X;
+                CY += F.Y;
+            }
+            CX /= (double)P.Outline.size();
+            CY /= (double)P.Outline.size();
+            const FVector2D C((float)(CX * Size.X), (float)(CY * Size.Y));
+            FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 1,
+                AllottedGeometry.ToPaintGeometry(FVector2D(5.0f, 5.0f),
+                    FSlateLayoutTransform(C - FVector2D(2.5f, 2.5f))),
+                WhiteBrush, ESlateDrawEffect::None, DotColor);
         }
         return LayerId + 1;
     }
@@ -1086,6 +1295,15 @@ private:
         }
     }
 
+    // Phase I edge map: group color scaled by depth-class luminance
+    // (front lighter than back). Hair parts carry their own distinct
+    // color at full luminance — the detailed levels stay recognizable.
+    static FLinearColor EdgeMapColor(const FPSchematic::FPSchematicPart& P)
+    {
+        const FPSchematic::FPEdgeColor C = FPSchematic::FPEdgeColorForPart(P.Name, P.DepthClass);
+        return FLinearColor((float)C.R, (float)C.G, (float)C.B, 0.9f);
+    }
+
     // Phase 3 focus lens: part UV -> canvas UV (identity when off).
     FPSchematic::FPSchematicPoint FocusPoint(const FPSchematic::FPSchematicPoint& P) const
     {
@@ -1105,11 +1323,14 @@ private:
     }
 
     // Dashed outline: each edge is split into ~8px dashes, every other one
-    // drawn (closed loop — first point repeated at the end). The focus lens
-    // is applied to every point here so hover/hit and paint stay in sync.
+    // drawn (closed loop — first point repeated at the end). P1: artful parts
+    // pass bSolid=true to draw full edges instead (one map, solid = has art).
+    // The focus lens is applied to every point here so hover/hit and paint
+    // stay in sync.
     void DrawDashedLoop(const FGeometry& G, FSlateWindowElementList& L, int32 Id,
         const std::vector<FPSchematic::FPSchematicPoint>& Loop,
-        const FVector2D& Size, const FLinearColor& Color, float Thickness) const
+        const FVector2D& Size, const FLinearColor& Color, float Thickness,
+        bool bSolid = false) const
     {
         constexpr float DashLen = 8.0f;
         TArray<FVector2D> Segs;
@@ -1127,6 +1348,11 @@ private:
             const FVector2D B((float)(P1.X * Size.X), (float)(P1.Y * Size.Y));
             const float Len = (B - A).Size();
             if (Len <= 0.0f) continue;
+            if (bSolid)
+            {
+                PushSegment(A, B);
+                continue;
+            }
             const int32 NumDashes = FMath::Max(1, FMath::CeilToInt(Len / DashLen));
             for (int32 D = 0; D < NumDashes; ++D)
             {
@@ -1145,9 +1371,12 @@ private:
 
     std::vector<FPSchematic::FPSchematicPart> Parts;
     std::vector<std::string> PartLayerTags;      // Phase 0/3: resolved tag per part (parallel)
+    std::vector<char> PartStatus;                // P2: per-part slot completeness in the ACTIVE view (0 none, 1 partial, 2 full)
     std::vector<std::string> LayerFilter;        // Phase 3: selected layer chips (empty = all)
     int32 DepthFilter = 0;                       // Phase 3: 0 all, 1 Front, 2 Base, 3 Back
     bool bFocus = false;                         // Phase 3: zoom-to-fit lens
+    bool bEdgeMap = false;                       // Phase I: group-colored edge map
+    bool bEdgeMapHairEdges = true;               // Phase I: hair edges visible (edge map only)
     FPSchematic::FPSchematicPoint FocusMin;      // selected layer's glyph bounds (part UV)
     FPSchematic::FPSchematicPoint FocusMax;
     FPSchematic::FPSchematicPoint FocusCenter{ 0.5, 0.5 };
@@ -1158,8 +1387,9 @@ private:
 // ====================================================================
 // SFaceHotspotLayer router bodies (Phase 0). Defined after
 // SFaceSchematicLayer so the glyph step and hover forwarding can call its
-// lens- and filter-aware API. Click order: pin -> region -> glyph -> quad
-// -> miss (swallowed so no image below ever receives a canvas click).
+// lens- and filter-aware API. Click order (P1 one-map): pin-drag -> glyph
+// (left select/import, right remap) -> miss (swallowed so no image below
+// ever receives a canvas click).
 // ====================================================================
 inline FReply UFaceParallaxEditorWidget::SFaceHotspotLayer::OnMouseButtonDown(
     const FGeometry& Geo, const FPointerEvent& Ev)
@@ -1173,56 +1403,37 @@ inline FReply UFaceParallaxEditorWidget::SFaceHotspotLayer::OnMouseButtonDown(
     const bool bRight = Ev.GetEffectingButton() == EKeys::RightMouseButton;
     if (!bLeft && !bRight) return FReply::Handled();   // other buttons: keep the canvas inert
 
-    // (0) Pin mode: drag the selected pinned element's handle (moved here
-    // from the gizmo — the gizmo is paint-only now).
-    if (bLeft && NearPin(Local, CanvasSize))
+    // (0) P7-C: pins are always live — dragging an existing pin handle (the
+    // selected element's pin, or the layer pin when no element is selected)
+    // moves the pin. A click NOT on a handle falls through to one-map part
+    // selection below (the old toggle's unconditional place-on-click is gone:
+    // pins are placed via the Pins list / element rows, not canvas clicks).
+    if (bLeft && bCanvasPinMode && NearPin(Local, CanvasSize))
     {
         PinDragMode = 1;
         return FReply::Handled().CaptureMouse(AsShared());
     }
 
-    // (1) Named region (spatial part pick). Alt+click: straight to the import
-    // wizard for that part. Plain click: select the mapped layer, and when
-    // the layer is artless open the import wizard preselected on the part.
-    if (bLeft)
-    {
-        const char* Name = FPLayout::FPHotspotHit(Regions, UV.X, UV.Y);
-        if (Name && Name[0])
-        {
-            if (Ev.IsAltDown())
-                Owner->ImportHotspotRegion(FString(Name));
-            else
-                Owner->HandleHotspotClick(FString(Name));
-            return FReply::Handled();
-        }
-    }
-
-    // (2) Schematic glyph (lens- and filter-aware): clicking an artless
-    // part selects its layer and opens the import wizard; artful parts are
-    // selected for review only.
+    // (1) Schematic glyph (lens- and filter-aware) — P1 one-map: the glyph
+    // is the SINGLE canvas map. Left-click selects the resolved layer (and
+    // opens the import wizard when it has no art); right-click opens the
+    // remap menu. The old named-region and layer-art-quad click layers are
+    // gone — no Alt/Ctrl modifier paths remain.
     if (Schematic.IsValid())
     {
         const FPSchematic::FPSchematicPart* Part = Schematic->HitTest(UV);
         if (Part && Part->Name && Part->Name[0])
         {
-            Owner->HandleSchematicPartClick(FString(Part->Name));
+            const FString PartName(Part->Name);
+            if (bRight)
+                Owner->OpenHotspotRemapMenu(PartName, Ev);
+            else
+                Owner->HandleSchematicPartClick(PartName);
             return FReply::Handled();
         }
     }
 
-    // (3) Layer-art quad (topmost wins). Right/ctrl-click cycles the
-    // overlapping layers.
-    const int32 Top = FPLayout::FPHitTopmostQuad(UV.X, UV.Y, LayerQuads);
-    if (Top >= 0 && (size_t)Top < (size_t)QuadLayerTags.Num())
-    {
-        if (!bLeft || Ev.IsControlDown())
-            Owner->CycleCanvasLayerAt(UV);
-        else
-            Owner->SelectCanvasLayerAt(UV);
-        return FReply::Handled();
-    }
-
-    // (4) Miss: swallow. SOverlay does NOT re-route Unhandled to sibling
+    // (2) Miss: swallow. SOverlay does NOT re-route Unhandled to sibling
     // layers — without this the click would be dead (and the SImages below
     // would swallow it instead).
     return FReply::Handled();

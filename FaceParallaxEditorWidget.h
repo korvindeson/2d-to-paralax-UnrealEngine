@@ -21,7 +21,10 @@
 #include "Widgets/Layout/SWrapBox.h"
 #include "Widgets/SBoxPanel.h"
 #include "FaceParallaxTypes.h"
+#include "FaceParallaxLayoutSpec.h"
 #include "FaceParallaxEditorWidget.generated.h"
+
+class FDragDropEvent;
 
 class AFaceParallaxPreviewActor;
 class UFaceParallaxPreset;
@@ -932,9 +935,6 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Face Editor|UI")
     void SetSelectedLayer(const FString& LayerName);
 
-    UFUNCTION(BlueprintCallable, Category = "Face Editor|UI")
-    class UTexture2D* GetSelectedContentBrowserTexture();
-
     // ===== ZONE DIAGRAM =====
     UFUNCTION(BlueprintCallable, Category = "Face Editor|UI")
     void SetBlendPreview(float Alpha);
@@ -1018,9 +1018,9 @@ public:
 
     // ===== PHASE C: IMPORT =====
     void OpenImportFolderWizard(const FString& PreselectPart = FString());
-    void HandleHotspotClick(const FString& RegionName);   // canvas/parts-strip pick: select mapped layer + open import wizard
-    void ImportHotspotRegion(const FString& RegionName);  // Alt+click path: open the import wizard preselected on that part
-    void RebuildPartsStrip();                             // 13 anatomical chips under the canvas
+    void HandleHotspotClick(const FString& RegionName);   // legend-chip pick: select mapped layer + open import wizard
+    void RebuildPartsStrip();                             // 17-part legend chips under the canvas (one map)
+    TSharedRef<SWidget> BuildApplyToViewsContent();       // P2: THE apply-to-views picker (10 views + All + copy-from-Front)
     void OpenHotspotRemapMenu(const FString& RegionName, const FPointerEvent& Ev); // right-click: map region -> layer
     void RemapHotspotLayer(const FString& RegionName, FName LayerTag);             // writes preset HotspotLayerMap
     FName ResolveHotspotLayer(const FString& RegionName) const; // explicit map first, then derived match
@@ -1030,7 +1030,8 @@ public:
 
     // ===== CENTRAL CANVAS REDESIGN: SCHEMATIC DEFAULT VIEW =====
     void HandleSchematicPartClick(const FString& PartName); // canvas glyph pick: select layer; empty layer -> Import Wizard
-    void RefreshSchematic();                                // repaint part glyphs for artless layers (RefreshUI)
+    void SelectPartOrImport(const FString& PartName);       // P1 one-map core: select layer + import/review + breadcrumb + glyph flash
+    void RefreshSchematic();                                // repaint part glyphs for every part (RefreshUI)
     bool LayerHasFrontArt(FName LayerTag) const;            // does the Front slot carry an albedo texture?
     void BuildDepthOverlay();                               // depth-map composite over the live preview (checkbox)
     void ToggleDepthOverlay(bool bEnable);
@@ -1038,7 +1039,10 @@ public:
     void SetCanvasHeight(float Height);
     const FString& GetAssignFlashLayer() const { return AssignFlashLayer; }       // post-assign pulse ring
     double GetAssignFlashTimestamp() const { return AssignFlashTimestamp; }        // post-assign pulse ring
+    const FString& GetSchematicFlashPart() const { return SchematicFlashPart; }    // P1 glyph click pulse
+    double GetSchematicFlashTimestamp() const { return SchematicFlashTimestamp; }  // P1 glyph click pulse
     FName GetSelectedLayerName() const { return SelectedLayerName; }               // schematic selection emphasis
+    void SetBreadcrumb(const FString& Text);                // P1: 'Front -> Eyes' map navigation breadcrumb
 
     // ===== CENTRAL CANVAS REDESIGN: FILTERS + FOCUS =====
     void ToggleSchematicLayerFilter(const FString& LayerTag); // add/remove a layer chip in the schematic filter
@@ -1046,12 +1050,13 @@ public:
     void ClearSchematicFilters();                             // reset the depth radio + all layer chips
     void ToggleSchematicFocus();                              // zoom-to-fit the selected layer's glyphs
     void RebuildSchematicFilterRow();                         // rebuild the filter row chips (after any toggle)
+    // Phase I: group-colored edge map (Canvas Options toggles).
+    void SetSchematicEdgeMap(bool bOn);                       // group colors + hair sub-toggle
+    void SetEdgeMapHairEdges(bool bOn);                       // hair system's detailed levels on/off
 
     // ===== PHASE D: DISPLAY + DEBUG =====
     void SetDisplayMode(int32 Mode);
     void SetInspectMode(int32 Mode);                 // Phase C: apply a canonical inspect combo (0-4)
-    void SelectCanvasLayerAt(const FVector2D& UV);   // Phase C: canvas click -> topmost layer-quad hit
-    void CycleCanvasLayerAt(const FVector2D& UV);    // Phase C: right/ctrl-click cycles overlapping layers
     void RefreshDebugSliders();
     void BuildEdgeOverlay();
     void RebuildHistogramBars();
@@ -1103,6 +1108,15 @@ private:
     bool GetSelectedPinElement(FFaceNestedArt& OutEl, int32& OutCount);
     FVector2D GetSelectedPinUV();
     void SetGizmoPinUV(const FVector2D& UV);
+    void PlacePinAtUV(const FVector2D& UV);   // P3: pin-mode primary interaction — canvas click places a pin
+    void FlashTab(int32 RailIndex);           // P7-A: amber pulse on the destination rail tab (rail-jump transition)
+void RebuildPinList();                    // P7-C: View & Layer rail "Pins" section (named pins + layer pin)
+    void AddLayerPinAtDefault();              // P7-C: [+ Add Pin] — pins the selected layer at screen center
+    // P7-F: layer/state-aware image-drop pipeline (layer rows, assign grid,
+    // blink frames). Routes content-browser texture drops and file drops onto
+    // the target slot/blink-frame channel set by name suffix.
+    bool AssignImageDropToSlot(EFaceAngleState State, const FName& Tag, const FDragDropEvent& Ev);
+    bool AssignImageDropToBlinkFrame(EFaceAngleState State, const FName& Tag, int32 FrameIdx, const FDragDropEvent& Ev);
 
     // Diagnostic overlay
     TSharedPtr<class SMultiLineEditableTextBox> DiagnosticLog;
@@ -1149,6 +1163,8 @@ private:
     TArray<TSharedPtr<FString>> CameraSourceOptions;
     TSharedPtr<FString> CameraSourceSelection;
     TSharedPtr<STextBlock> TextLayerName;
+    TSharedPtr<STextBlock> BreadcrumbText;              // P1: 'Front -> Eyes' map navigation breadcrumb
+    FString SchematicBreadcrumb;                        // P1: breadcrumb text state (depth class -> layer)
     TSharedPtr<SVerticalBox> LayerPanelBox;
     // Carousel state (P17/P18): dynamic row lists flip through fixed-height
     // pages; the page index is clamped by each refresh on the real page count.
@@ -1197,9 +1213,11 @@ private:
     TSharedPtr<SSlider> SliderPinMinRot;
     TSharedPtr<SSlider> SliderPinMaxRot;
     TSharedPtr<SSlider> SliderPinRotSens;
+    TSharedPtr<SSlider> SliderPinMinScale;
     TSharedPtr<STextBlock> TextPinMinRot;
     TSharedPtr<STextBlock> TextPinMaxRot;
     TSharedPtr<STextBlock> TextPinRotSens;
+    TSharedPtr<STextBlock> TextPinMinScale;
     TSharedPtr<STextBlock> TextPinIndex;
 
     // Jiggle controls (nested elements only; layer pins have no jiggle)
@@ -1218,6 +1236,12 @@ private:
     TSharedPtr<STextBlock> TextJiggleEndStiffness;
     TSharedPtr<STextBlock> TextJiggleEndDamping;
     TSharedPtr<STextBlock> TextJiggleEndImpulse;
+
+    // P3: idle-animation controls (nested elements only)
+    TSharedPtr<SSlider> SliderIdleDuration;
+    TSharedPtr<SSlider> SliderIdleSpeed;
+    TSharedPtr<STextBlock> TextIdleDuration;
+    TSharedPtr<STextBlock> TextIdleSpeed;
 
     // Config checkboxes
     TSharedPtr<SCheckBox> CheckBlinking;
@@ -1282,7 +1306,7 @@ private:
     // ===== WORKSPACE RAIL (Phase A) =====
     int32 ActiveRailIndex = 0;
     TSharedPtr<SWidgetSwitcher> RailSwitcher;
-    TArray<TSharedPtr<SVerticalBox>> RailContent;   // 0 Layers 1 Art 2 Animated 3 NestedPins 4 Camera 5 Advanced
+    TArray<TSharedPtr<SVerticalBox>> RailContent;   // 0 Layers 1 Art 2 Animated 3 NestedPins 4 Camera 5 Diagnostics
     TSharedPtr<SVerticalBox> SlotPropsBox;          // right pane: selected slot properties
     TSharedPtr<SBox> PreviewHost;                   // center canvas container
     TSharedPtr<SImage> OnionSkinImage;              // onion-skin ghost (Phase B)
@@ -1291,14 +1315,15 @@ private:
     TSharedPtr<SImage> EdgeOverlayImage;            // edge-detection overlay (Phase D)
     class SFaceLayerGizmo;
     TSharedPtr<SFaceLayerGizmo> GizmoWidget;        // canvas transform gizmo (Phase B)
-    class SFaceAccordion;
-    TSharedPtr<SFaceAccordion> ArtAccordion;        // Art rail: 2 collapsible sections (P16)
-    TSharedPtr<SFaceAccordion> AnimatedAccordion;   // Animated rail: 2 collapsible sections (P16)
-    TSharedPtr<SFaceAccordion> NestedAccordion;     // NestedPins rail: 3 collapsible sections (P16)
-    TSharedPtr<SFaceAccordion> AdvancedAccordion;   // Advanced rail: 6 collapsible sections (P16)
+class SFaceAccordion;
+TSharedPtr<SFaceAccordion> ArtAccordion;         // Art rail: 2 collapsible sections (P16)
+TSharedPtr<SFaceAccordion> NestedAccordion;      // Nested & Animated rail: 3 collapsible sections (P16/P6)
+TSharedPtr<SFaceAccordion> DiagnosticsAccordion; // Diagnostics rail: 8 collapsible sections (P16/P6)
+TSharedPtr<SFaceAccordion> LayersPinsAccordion;  // P7-C: View & Layer rail Pins section (collapsed while no pins)
     class SFaceDisclosure;
     TSharedPtr<SFaceDisclosure> ConfigDisclosure;   // Config checks progressive disclosure (Phase 4b)
     TSharedPtr<SFaceDisclosure> VisemeDisclosure;   // Viseme grid progressive disclosure (Phase 4b)
+    class SFaceFlashButton;                         // P6: action-point confirmation button (Shared.h)
     class SFaceRailResizer;
     TSharedPtr<SFaceRailResizer> RailResizer;       // drag-resize handle rail/canvas (Phase 4b)
     class SFaceHotspotLayer;
@@ -1327,19 +1352,32 @@ private:
     bool bShowPins = false;                         // Phase 3: paint all nested-element pin markers on the gizmo
     TSharedPtr<SCheckBox> CheckShowPins;            // Phase 3: Show Pins toggle on the canvas mode row
     // Redesign: canvas state
-    float CanvasHeight = 450.0f;                    // canvas height override (drag-resize; default = design constant)
+    float CanvasHeight = (float)FPLayout::PreviewCanvasHeight;   // canvas height override (drag-resize; default = design constant)
     bool bDepthOverlayVisible = false;              // depth-map composite over the live preview
     TSharedPtr<SCheckBox> CheckDepthOverlay;        // depth overlay toggle on the canvas mode row
     TSharedPtr<SImage> DepthOverlayImage;           // depth composite overlay (redesign)
     double AssignFlashTimestamp = -1.0;             // post-assign pulse ring: start time (FSlateApplication time)
     FString AssignFlashLayer;                       // post-assign pulse ring: layer that just received art
+    double SchematicFlashTimestamp = -1.0;          // P1 glyph click pulse: start time (FSlateApplication time)
+    FString SchematicFlashPart;                     // P1 glyph click pulse: part name that was clicked
+    double TabFlashUntil = 0.0;                     // P7-A tab flash: rail-jump pulse end time (FSlateApplication time)
+    int32 TabFlashIndex = -1;                       // P7-A tab flash: destination rail tab that flashes
+    TSharedPtr<SHorizontalBox> TopTabBar;           // P7-A tab flash: invalidated while the pulse is live
     // Redesign: canvas interactivity (Phase 0) + schematic filters/focus
     bool bCanvasPinMode = false;                    // canvas click router: pin-drag handled by the hotspot layer
+    TSharedPtr<SVerticalBox> PinListBox;            // P7-C: pinned-elements list in the View & Layer rail
+    TArray<TSharedPtr<FSlateBrush>> PinThumbBrushes; // P7-C: per-row pin thumbnails (owned, cleared on rebuild)
     bool bSchematicFilterVisible = true;            // filter row under the canvas mode row (Filter checkbox)
     TSharedPtr<SWrapBox> SchematicFilterBox;        // filter row: depth segments + layer chips + focus/clear
     TArray<FString> SchematicLayerFilter;           // selected layer chips (empty = all layers)
     int32 SchematicDepthFilter = 0;                 // 0 all, 1 Front, 2 Base, 3 Back
     bool bSchematicFocus = false;                   // zoom-to-fit the selected layer's glyphs
+    // Phase I: group-colored edge map — glyphs tinted by FPEdgeGroup
+    // (eyes/mouth/hair/surface) with depth-class luminance (front lighter
+    // than back); hair edges toggle off wholesale. ON by default: the group
+    // edge map is the canvas's default look.
+    bool bSchematicEdgeMap = true;
+    bool bEdgeMapHairEdges = true;
 
     // ===== PHASE D: DEBUG VIEW =====
     TSharedPtr<SVerticalBox> HistogramBox;          // 16 luminance bars
@@ -1515,10 +1553,10 @@ private:
     TSharedRef<SVerticalBox> BuildPanelCanvas(const TSharedRef<SVerticalBox>& Root);
     void BuildPanelSlotProps(const TSharedRef<SVerticalBox>& Root, TSharedRef<SVerticalBox>& PropPanelOut);
     void BuildPanelArtRail();
-    void BuildPanelAnimatedRail();
-    void BuildPanelCameraRail();
     void BuildPanelNestedRail();
-    void BuildPanelAdvancedRail();
+    void BuildPanelAnimatedSections();
+    void BuildPanelCameraRail();
+    void BuildPanelDiagnosticsRail();
     void RefreshAssignGrid();
     void BuildPanelTimeline(const TSharedRef<SVerticalBox>& Root);
     void BuildPanelBottomBar(const TSharedRef<SVerticalBox>& Root);
