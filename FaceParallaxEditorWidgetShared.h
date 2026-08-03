@@ -19,6 +19,7 @@
 #include "Input/DragAndDrop.h"
 #include "DragAndDrop/AssetDragDropOp.h"
 #include "ContentBrowserDataDragDropOp.h"
+#include "Engine/Texture2D.h"
 #include "Misc/Paths.h"
 
 // Internal helpers shared by the FaceParallaxEditorWidget translation units:
@@ -332,10 +333,14 @@ private:
 // Drag body = move, bottom-right corner = scale, top handle = rotate.
 // Writes through UFaceParallaxEditorWidget::SetGizmoTransform so
 // canonical/override/link semantics stay in one place.
-// INTERACTIVITY (Phase 0): the gizmo is PAINT-ONLY. Its visibility is
-// EVisibility::SelfHitTestInvisible, so it can never intercept a click;
-// every canvas click is routed by SFaceHotspotLayer (the topmost
-// interactive overlay), which handles pin-drag in pin mode.
+// INTERACTIVITY (Phase 1): the gizmo stays a PAINT-ONLY leaf. Its visibility
+// is EVisibility::SelfHitTestInvisible so it can never intercept a click;
+// every canvas click is routed by SFaceHotspotLayer (the topmost interactive
+// overlay), which now ALSO resolves the gizmo handles via the pure static
+// contract UFaceParallaxEditorWidget::GizmoHitTest/GizmoApplyDrag — move
+// (box edge ring), rotate (top handle), scale (bottom-right corner) — so the
+// transform can be dragged directly on canvas while the box interior stays a
+// part-click miss (P1 one-map) and pin-drag keeps priority in pin mode.
 // ====================================================================
 
 class UFaceParallaxEditorWidget::SFaceLayerGizmo : public SLeafWidget
@@ -915,6 +920,13 @@ public:
         PinDragMode = 0;
     }
 
+    // Phase 1: interactive transform gizmo. The gizmo leaf stays paint-only
+    // (SelfHitTestInvisible); the hotspot owns ALL canvas input and routes
+    // its three handles — move (box edge ring), rotate (top handle), scale
+    // (bottom-right corner) — through the canonical transform path.
+    void SetGizmoDragMode(int32 Mode) { GizmoDragMode = Mode; }
+    int32 GetGizmoDragMode() const { return GizmoDragMode; }
+
     virtual FVector2D ComputeDesiredSize(float) const override
     {
         return FVector2D::ZeroVector;
@@ -963,6 +975,16 @@ public:
                 }
             }
         }
+        // Phase 2: live drop ring — the whole canvas border glows green while a
+        // valid image drag hovers, so the drop target is self-evident.
+        if (bDragActive)
+        {
+            const std::vector<FPLayout::FPHotspotPoint> Border = {
+                { 0.0, 0.0 }, { 1.0, 0.0 }, { 1.0, 1.0 }, { 0.0, 1.0 }
+            };
+            DrawLoop(AllottedGeometry, OutDrawElements, LayerId, Border, Size,
+                FLinearColor(0.3f, 1.0f, 0.5f, 0.9f), 3.0f);
+        }
         return LayerId + 1;
     }
 
@@ -973,7 +995,18 @@ public:
     virtual FReply OnMouseMove(const FGeometry& Geo, const FPointerEvent& Ev) override;
     virtual FReply OnMouseButtonUp(const FGeometry& Geo, const FPointerEvent& Ev) override;
     virtual void OnMouseLeave(const FPointerEvent& Ev) override;
+    virtual void OnMouseCaptureLost(const FCaptureLostEvent& Ev) override;
     virtual FCursorReply OnCursorQuery(const FGeometry& Geo, const FPointerEvent& Ev) const override;
+
+    // Phase 2: canvas drag-drop of face art. Accepts OS image files
+    // (FExternalDragOperation) and Content Browser texture assets; on drop the
+    // part glyph under the cursor is resolved (lens-aware, like clicks) and the
+    // payload routes through Owner->HandleCanvasDrop. A live drop ring paints
+    // while the drag hovers so the canvas is visibly a drop target.
+    virtual void OnDragEnter(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent) override;
+    virtual FReply OnDragOver(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent) override;
+    virtual FReply OnDrop(const FGeometry& MyGeometry, const FDragDropEvent& DragDropEvent) override;
+    virtual void OnDragLeave(const FDragDropEvent& DragDropEvent) override;
 
 private:
     bool NearPin(const FVector2D& Local, const FVector2D& CanvasSize) const
@@ -984,6 +1017,10 @@ private:
         return FVector2D::Distance(Local,
             UFaceParallaxEditorWidget::GizmoUVToPixels(PinUV, CanvasSize)) < 12.0f;
     }
+
+    // Phase 2: does the drag payload carry assignable art (image files or
+    // texture assets)?
+    bool DragHasImagePayload(const FDragDropEvent& Ev);
 
     void DrawLoop(const FGeometry& G, FSlateWindowElementList& L, int32 Id,
         const std::vector<FPLayout::FPHotspotPoint>& Loop,
@@ -1007,6 +1044,10 @@ private:
     TSharedPtr<SFaceSchematicLayer> Schematic;       // Phase 0: glyph hit-test/hover target
     bool bCanvasPinMode = false;                     // Phase 0: pin-drag routing (from the gizmo)
     int32 PinDragMode = 0;                           // 0 none, 1 pin drag (bCanvasPinMode only)
+    int32 GizmoDragMode = 0;                         // Phase 1: 0 none, 1 move, 2 rotate, 3 scale
+    FFaceArtTransform GizmoDragStart;                // Phase 1: transform snapshotted at mouse-down
+    FVector2D GizmoDragStartPx = FVector2D::ZeroVector; // Phase 1: grab point (canvas-local px)
+    bool bDragActive = false;                        // Phase 2: valid image drag hovering the canvas
 };
 
 // SFaceSchematicLayer - the central-canvas DEFAULT VIEW (redesign): paints the
@@ -1403,6 +1444,16 @@ inline FReply UFaceParallaxEditorWidget::SFaceHotspotLayer::OnMouseButtonDown(
     const bool bRight = Ev.GetEffectingButton() == EKeys::RightMouseButton;
     if (!bLeft && !bRight) return FReply::Handled();   // other buttons: keep the canvas inert
 
+    // (0) Add Pin one-shot placement: a left-click right after "Add Pin"
+    // places the newly-added pin at the cursor instead of routing to pin-drag /
+    // glyph select. The arm is consumed by exactly one click (ConsumePendingPinPlacement
+    // clears it), then the normal one-map order resumes.
+    if (bLeft && Owner && Owner->ConsumePendingPinPlacement())
+    {
+        Owner->PlacePinAtUV(UV);
+        return FReply::Handled();
+    }
+
     // (0) P7-C: pins are always live — dragging an existing pin handle (the
     // selected element's pin, or the layer pin when no element is selected)
     // moves the pin. A click NOT on a handle falls through to one-map part
@@ -1412,6 +1463,26 @@ inline FReply UFaceParallaxEditorWidget::SFaceHotspotLayer::OnMouseButtonDown(
     {
         PinDragMode = 1;
         return FReply::Handled().CaptureMouse(AsShared());
+    }
+
+    // (0.5) Phase 1: interactive transform gizmo handles. Left-drag only, and
+    // only when a layer is selected and we are NOT in canvas pin mode (the pin
+    // handle owns the pointer then). HitTest resolves move (box edge ring),
+    // rotate (top handle), scale (bottom-right corner); the box INTERIOR is a
+    // deliberate miss so part glyphs behind it stay clickable (P1 one-map).
+    // The transform is snapshotted once at mouse-down and recomputed from that
+    // snapshot every move (never incremental), so the drag cannot drift.
+    if (bLeft && !bCanvasPinMode && Owner && Owner->GetSelectedLayerName().IsValid())
+    {
+        const int32 Hit = UFaceParallaxEditorWidget::GizmoHitTest(
+            Owner->GetGizmoTransform(), Local, CanvasSize);
+        if (Hit != UFaceParallaxEditorWidget::kGizmoHitNone)
+        {
+            GizmoDragMode = Hit;
+            GizmoDragStart = Owner->GetGizmoTransform();
+            GizmoDragStartPx = Local;
+            return FReply::Handled().CaptureMouse(AsShared());
+        }
     }
 
     // (1) Schematic glyph (lens- and filter-aware) — P1 one-map: the glyph
@@ -1442,6 +1513,17 @@ inline FReply UFaceParallaxEditorWidget::SFaceHotspotLayer::OnMouseButtonDown(
 inline FReply UFaceParallaxEditorWidget::SFaceHotspotLayer::OnMouseMove(
     const FGeometry& Geo, const FPointerEvent& Ev)
 {
+    if (GizmoDragMode != 0 && Owner)
+    {
+        const FVector2D CanvasSize = Geo.GetLocalSize();
+        if (CanvasSize.X >= 1.0f && CanvasSize.Y >= 1.0f)
+        {
+            Owner->SetGizmoTransform(UFaceParallaxEditorWidget::GizmoApplyDrag(
+                GizmoDragStart, GizmoDragMode, GizmoDragStartPx,
+                Geo.AbsoluteToLocal(Ev.GetScreenSpacePosition()), CanvasSize));
+        }
+        return FReply::Handled();
+    }
     if (PinDragMode == 1 && Owner)
     {
         const FVector2D CanvasSize = Geo.GetLocalSize();
@@ -1466,9 +1548,21 @@ inline FReply UFaceParallaxEditorWidget::SFaceHotspotLayer::OnMouseMove(
 inline FReply UFaceParallaxEditorWidget::SFaceHotspotLayer::OnMouseButtonUp(
     const FGeometry&, const FPointerEvent&)
 {
+    if (GizmoDragMode != 0)
+    {
+        GizmoDragMode = 0;
+        return FReply::Handled().ReleaseMouseCapture();
+    }
     if (PinDragMode == 0) return FReply::Unhandled();
     PinDragMode = 0;
     return FReply::Handled().ReleaseMouseCapture();
+}
+
+inline void UFaceParallaxEditorWidget::SFaceHotspotLayer::OnMouseCaptureLost(
+    const FCaptureLostEvent&)
+{
+    GizmoDragMode = 0;
+    PinDragMode = 0;
 }
 
 inline void UFaceParallaxEditorWidget::SFaceHotspotLayer::OnMouseLeave(const FPointerEvent&)
@@ -1479,6 +1573,25 @@ inline void UFaceParallaxEditorWidget::SFaceHotspotLayer::OnMouseLeave(const FPo
 inline FCursorReply UFaceParallaxEditorWidget::SFaceHotspotLayer::OnCursorQuery(
     const FGeometry& Geo, const FPointerEvent& Ev) const
 {
+    // Phase 1: handle-specific cursors for the interactive gizmo (priority 1 —
+    // a handle is a bigger target than the glyph under it). Only outside pin
+    // mode, where the pin handle owns the pointer.
+    if (Owner && Owner->GetSelectedLayerName().IsValid() && !bCanvasPinMode)
+    {
+        const FVector2D CanvasSize = Geo.GetLocalSize();
+        if (CanvasSize.X >= 1.0f && CanvasSize.Y >= 1.0f)
+        {
+            const int32 Hit = UFaceParallaxEditorWidget::GizmoHitTest(
+                Owner->GetGizmoTransform(),
+                Geo.AbsoluteToLocal(Ev.GetScreenSpacePosition()), CanvasSize);
+            if (Hit == UFaceParallaxEditorWidget::kGizmoHitMove)
+                return FCursorReply::Cursor(EMouseCursor::CardinalCross);
+            if (Hit == UFaceParallaxEditorWidget::kGizmoHitRotate)
+                return FCursorReply::Cursor(EMouseCursor::Crosshairs);
+            if (Hit == UFaceParallaxEditorWidget::kGizmoHitScale)
+                return FCursorReply::Cursor(EMouseCursor::ResizeSouthEast);
+        }
+    }
     if (Schematic.IsValid() && Schematic->HasHover())
         return FCursorReply::Cursor(EMouseCursor::Hand);
     if (Owner && bCanvasPinMode)
@@ -1491,6 +1604,95 @@ inline FCursorReply UFaceParallaxEditorWidget::SFaceHotspotLayer::OnCursorQuery(
         }
     }
     return FCursorReply::Unhandled();
+}
+
+// Phase 2: does the drag payload carry anything assignable? OS image files
+// (FExternalDragOperation) and Content Browser texture assets (legacy
+// FAssetDragDropOp + FContentBrowserDataDragDropOp).
+inline bool UFaceParallaxEditorWidget::SFaceHotspotLayer::DragHasImagePayload(
+    const FDragDropEvent& Ev)
+{
+    if (TSharedPtr<FExternalDragOperation> FileOp = Ev.GetOperationAs<FExternalDragOperation>())
+    {
+        if (FileOp->HasFiles())
+        {
+            for (const FString& File : FileOp->GetFiles())
+                if (IsDroppableImageFile(File)) return true;
+        }
+        return false;
+    }
+    if (TSharedPtr<FAssetDragDropOp> AssetOp = Ev.GetOperationAs<FAssetDragDropOp>())
+    {
+        for (const FAssetData& Asset : AssetOp->GetAssets())
+            if (Asset.GetClass() && Asset.GetClass()->IsChildOf(UTexture2D::StaticClass())) return true;
+        return false;
+    }
+    if (TSharedPtr<FContentBrowserDataDragDropOp> DataOp = Ev.GetOperationAs<FContentBrowserDataDragDropOp>())
+    {
+        for (const FAssetData& Asset : DataOp->GetAssets())
+            if (Asset.GetClass() && Asset.GetClass()->IsChildOf(UTexture2D::StaticClass())) return true;
+        return false;
+    }
+    return false;
+}
+
+inline void UFaceParallaxEditorWidget::SFaceHotspotLayer::OnDragEnter(
+    const FGeometry&, const FDragDropEvent& Ev)
+{
+    const bool bOk = Owner && DragHasImagePayload(Ev);
+    if (bOk != bDragActive)
+    {
+        bDragActive = bOk;
+        Invalidate(EInvalidateWidgetReason::Paint);
+    }
+}
+
+inline FReply UFaceParallaxEditorWidget::SFaceHotspotLayer::OnDragOver(
+    const FGeometry&, const FDragDropEvent& Ev)
+{
+    const bool bOk = Owner && DragHasImagePayload(Ev);
+    if (bOk != bDragActive)
+    {
+        bDragActive = bOk;
+        Invalidate(EInvalidateWidgetReason::Paint);
+    }
+    return bOk ? FReply::Handled() : FReply::Unhandled();
+}
+
+inline FReply UFaceParallaxEditorWidget::SFaceHotspotLayer::OnDrop(
+    const FGeometry& Geo, const FDragDropEvent& Ev)
+{
+    bDragActive = false;
+    Invalidate(EInvalidateWidgetReason::Paint);
+    if (!Owner || !DragHasImagePayload(Ev)) return FReply::Unhandled();
+    const FVector2D CanvasSize = Geo.GetLocalSize();
+    if (CanvasSize.X < 1.0f || CanvasSize.Y < 1.0f) return FReply::Unhandled();
+    // Resolve the part glyph under the drop point (lens-aware, same hit-test
+    // the click path uses) so a drop lands on the part the cursor is over.
+    const FVector2D UV = UFaceParallaxEditorWidget::GizmoPixelsToUV(
+        Geo.AbsoluteToLocal(Ev.GetScreenSpacePosition()), CanvasSize);
+    FString PartName;
+    FName PartLayer;
+    if (Schematic.IsValid())
+    {
+        const FPSchematic::FPSchematicPart* Part = Schematic->HitTest(UV);
+        if (Part && Part->Name && Part->Name[0])
+        {
+            PartName = FString(Part->Name);
+            PartLayer = Owner->ResolveHotspotLayer(PartName);
+        }
+    }
+    Owner->HandleCanvasDrop(PartName, PartLayer, Ev);
+    return FReply::Handled();
+}
+
+inline void UFaceParallaxEditorWidget::SFaceHotspotLayer::OnDragLeave(const FDragDropEvent&)
+{
+    if (bDragActive)
+    {
+        bDragActive = false;
+        Invalidate(EInvalidateWidgetReason::Paint);
+    }
 }
 
 // SFaceCanvasResizer — drag handle between the canvas and the parts strip

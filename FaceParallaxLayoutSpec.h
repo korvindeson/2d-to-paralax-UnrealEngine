@@ -440,12 +440,10 @@ inline std::vector<FPLayoutNode> BuildSpec()
         LF(b, "ST-Tab2", 44, 20), LF(b, "ST-Tab3", 44, 20),
         LF(b, "ST-Tab4", 44, 20), LF(b, "ST-Tab5", 44, 20),
         LF(b, "ST-Tab6", 44, 20), LF(b, "ST-Tab7", 44, 20),
-        LF(b, "ST-Tab8", 44, 20), LF(b, "ST-Tab9", 44, 20),
-        LF(b, "ST-PickBtn", 52, 20));
+        LF(b, "ST-Tab8", 44, 20), LF(b, "ST-Tab9", 44, 20));
     S(StateStrip, StateTabPad);
     P(StateStrip, 2, 3, 2, 3);
     b.N[(size_t)StateStrip].FixedH = StateStripHeight;
-    M(b.N[(size_t)StateStrip].Children[10], 4, 0, 0, 0);
 
     // ========================== 2b. ZONE DIAGRAM ==========================
     const int ZoneDiagram = VF(b, "ZoneDiagram",
@@ -498,22 +496,6 @@ inline std::vector<FPLayoutNode> BuildSpec()
                         LF(b, "AL-Carousel", 0, 0),
                         LF(b, "AL-CarouselNav", 120, 22)))),
             VF(b, "RL-Art",
-                VF(b, "Sec-QuickActions",
-                    LF(b, "Sec-QA-Title", 120, 14),
-                    VF(b, "Sec-QA-Body",
-                        HF(b, "QA-Row0",
-                            LF(b, "QA-ApplyBtn", 119, 20)))),
-                VF(b, "Sec-CrossView",
-                    LF(b, "Sec-CV-Title", 120, 14),
-                    VF(b, "Sec-CV-Body",
-                        HF(b, "CV-RowA",
-                            LF(b, "CV-CopyLbl", 34, 14),
-                            LF(b, "CV-Combo", 64, 20),
-                            LF(b, "CV-CopyBtn", 52, 20),
-                            LF(b, "CV-Spacer", 0, 0)),
-                        HF(b, "CV-RowB",
-                            LF(b, "CV-LinkChk", 16, 20),
-                            LF(b, "CV-LinkLbl", 22, 14)))),
                 VF(b, "Sec-Import",
                     LF(b, "Sec-IM-Title", 120, 14),
                     VF(b, "Sec-IM-Body",
@@ -567,7 +549,6 @@ inline std::vector<FPLayoutNode> BuildSpec()
                     VF(b, "Sec-AO-Body",
                         HF(b, "AO-Row0",
                             LF(b, "AO-ClearRow", 64, 20),
-                            LF(b, "AO-ApplyViews", 84, 20),
                             LF(b, "AO-Spacer", 0, 0)),
                         HF(b, "AO-Row1",
                             LF(b, "AO-PerfLbl", 20, 14),
@@ -759,6 +740,9 @@ inline std::vector<FPLayoutNode> BuildSpec()
                     VF(b, "Sec-Transform",
                         LF(b, "Sec-XF-Title", 140, 14),
                         VF(b, "Sec-XF-Body",
+                            HF(b, "XF-VORow",
+                                LF(b, "XF-VOCheck", 20, 20), LF(b, "XF-VOLbl", 96, 14),
+                                LF(b, "XF-VOSpacer", 0, 0), LF(b, "XF-VOClearBtn", 119, 20)),
                             HF(b, "XF-PosXRow", LF(b, "XF-PosXLbl", 44, 14), LF(b, "XF-PosXEdit", 70, 20)),
                             HF(b, "XF-PosYRow", LF(b, "XF-PosYLbl", 44, 14), LF(b, "XF-PosYEdit", 70, 20)),
                             HF(b, "XF-ScaleXRow", LF(b, "XF-ScaleXLbl", 56, 14), LF(b, "XF-ScaleXEdit", 70, 20)),
@@ -767,16 +751,35 @@ inline std::vector<FPLayoutNode> BuildSpec()
                     VF(b, "Sec-SyncAlign",
                         LF(b, "Sec-SA-Title", 140, 14),
                         VF(b, "Sec-SA-Body",
-                            HF(b, "VO-Row",
-                                LF(b, "VO-Check", 20, 20), LF(b, "VO-Lbl", 96, 14),
-                                LF(b, "VO-Spacer", 0, 0), LF(b, "VO-ClearBtn", 119, 20)),
-                            HF(b, "SY-SyncRow",
-                                LF(b, "SY-Lbl", 72, 14), LF(b, "SY-TexCheck", 20, 20),
-                                LF(b, "SY-TexLbl", 22, 10), LF(b, "SY-Spacer", 0, 0), LF(b, "SY-SyncBtn", 124, 20)),
-                            HF(b, "SY-BothRow",
-                                LF(b, "SY-BothBtn", 126, 20)),
-                            HF(b, "AL-LinkRow",
-                                LF(b, "AL-LinkChk", 20, 20), LF(b, "AL-LinkLbl", 128, 14))))),
+                            HF(b, "SY-OpRow",
+                                LF(b, "SY-OpLbl", 72, 14), LF(b, "SY-OpTr", 48, 20),
+                                LF(b, "SY-OpTex", 48, 20), LF(b, "SY-OpBoth", 40, 20),
+                                LF(b, "SY-OpSpacer", 0, 0)),
+                            HF(b, "SY-DstHdr",
+                                LF(b, "SY-DstHdrLbl", 104, 14), LF(b, "SY-DstClear", 56, 16),
+                                LF(b, "SY-DstHdrSpacer", 0, 0)),
+                            HF(b, "SY-DstRow0",
+                                LF(b, "SY-D0C0", 18, 16), LF(b, "SY-D0L0", 30, 12),
+                                LF(b, "SY-D0C1", 18, 16), LF(b, "SY-D0L1", 30, 12),
+                                LF(b, "SY-D0C2", 18, 16), LF(b, "SY-D0L2", 30, 12),
+                                LF(b, "SY-D0C3", 18, 16), LF(b, "SY-D0L3", 30, 12),
+                                LF(b, "SY-D0C4", 18, 16), LF(b, "SY-D0L4", 30, 12)),
+                            HF(b, "SY-DstRow1",
+                                LF(b, "SY-D1C0", 18, 16), LF(b, "SY-D1L0", 30, 12),
+                                LF(b, "SY-D1C1", 18, 16), LF(b, "SY-D1L1", 30, 12),
+                                LF(b, "SY-D1C2", 18, 16), LF(b, "SY-D1L2", 30, 12),
+                                LF(b, "SY-D1C3", 18, 16), LF(b, "SY-D1L3", 30, 12),
+                                LF(b, "SY-D1C4", 18, 16), LF(b, "SY-D1L4", 30, 12)),
+                            HF(b, "SY-ActRow",
+                                LF(b, "SY-ActPicked", 84, 20), LF(b, "SY-ActAll", 84, 20),
+                                LF(b, "SY-ActSpacer", 0, 0)),
+                            HF(b, "SY-CopyRow",
+                                LF(b, "SY-CopyLbl", 30, 14), LF(b, "SY-CopyCombo", 60, 20),
+                                LF(b, "SY-CopyBtn", 40, 20), LF(b, "SY-FillBtn", 70, 20),
+                                LF(b, "SY-CopySpacer", 0, 0)),
+                            HF(b, "SY-LinkRow",
+                                LF(b, "SY-LinkChk", 18, 16), LF(b, "SY-LinkLbl", 86, 12),
+                                LF(b, "SY-DriftLbl", 56, 12), LF(b, "SY-LinkSpacer", 0, 0))))),
                 LF(b, "PR-CarouselNav", 120, 22)),
             LF(b, "PR-Status", 220, 12)));
 
@@ -870,8 +873,9 @@ inline std::vector<FPLayoutNode> BuildSpec()
             }
         }
 
-        // RL-Art (tab 1 "Art"): Quick Actions + Cross-View Transform (plain),
-        // Import + Outline->Depth (Art accordion), Bulk Assign + Assign Ops.
+        // RL-Art (tab 1 "Art"): Import + Outline->Depth (Art accordion),
+        // Bulk Assign + Assign Ops. Phase 3: Quick Actions + Cross-View
+        // Transform sections removed (sync/copy in the ONE Sync + Align page).
         const int RLArt = b.N[(size_t)RailSw].Children[1];
         S(RLArt, 2);
         Clip(RLArt);
@@ -879,29 +883,16 @@ inline std::vector<FPLayoutNode> BuildSpec()
         b.N[(size_t)RLArt].FixedH = MainRowHeight;
         b.N[(size_t)RLArt].FixedW = RailWidth;
         {
-            const int QA = b.N[(size_t)RLArt].Children[0];
-            SecSetup(QA, 2);
-            const int QA0 = b.N[(size_t)Bod(QA)].Children[0];
-            S(QA0, 4);
-            const int CV = b.N[(size_t)RLArt].Children[1];
-            SecSetup(CV, 2);
-            {
-                const int CVR = b.N[(size_t)Bod(CV)].Children[0];
-                S(CVR, 2);
-                Sp(b.N[(size_t)CVR].Children[3]);
-                const int CVB = b.N[(size_t)Bod(CV)].Children[1];
-                S(CVB, 2);
-            }
-            Acc(b.N[(size_t)RLArt].Children[2]);
-            const int Im = b.N[(size_t)RLArt].Children[2];
+            Acc(b.N[(size_t)RLArt].Children[0]);
+            const int Im = b.N[(size_t)RLArt].Children[0];
             SecSetup(Im, 2);
             {
                 const int IM0 = b.N[(size_t)Bod(Im)].Children[0];
                 S(IM0, 4);
                 Sp(b.N[(size_t)IM0].Children[2]);
             }
-            Acc(b.N[(size_t)RLArt].Children[3]);
-            const int OD = b.N[(size_t)RLArt].Children[3];
+            Acc(b.N[(size_t)RLArt].Children[1]);
+            const int OD = b.N[(size_t)RLArt].Children[1];
             SecSetup(OD, 2);
             {
                 const int OD1 = b.N[(size_t)Bod(OD)].Children[0];
@@ -917,7 +908,7 @@ inline std::vector<FPLayoutNode> BuildSpec()
                 M(b.N[(size_t)ScR].Children[4], 2, 2, 2, 2);
                 M(b.N[(size_t)ScR].Children[6], 2, 2, 2, 2);
             }
-            const int AG = b.N[(size_t)RLArt].Children[4];
+            const int AG = b.N[(size_t)RLArt].Children[2];
             SecSetup(AG, 0);
             {
                 const int GB = Bod(AG);
@@ -929,12 +920,12 @@ inline std::vector<FPLayoutNode> BuildSpec()
                 S(RowL, 4);
                 Sp(b.N[(size_t)RowL].Children[3]);
             }
-            const int AO = b.N[(size_t)RLArt].Children[5];
+            const int AO = b.N[(size_t)RLArt].Children[3];
             SecSetup(AO, 2);
             {
                 const int AORow0 = b.N[(size_t)Bod(AO)].Children[0];
                 S(AORow0, 4);
-                Sp(b.N[(size_t)AORow0].Children[2]);
+                Sp(b.N[(size_t)AORow0].Children[1]);
                 const int AORow1 = b.N[(size_t)Bod(AO)].Children[1];
                 S(AORow1, 4);
             }
@@ -1199,22 +1190,32 @@ inline std::vector<FPLayoutNode> BuildSpec()
             {
                 const int row = b.N[(size_t)Bod(XF)].Children[(size_t)c];
                 S(row, 4);
-                M(b.N[(size_t)row].Children[1], 4, 2, 4, 2);
+                if (c == 0)
+                    Sp(b.N[(size_t)row].Children[2]);
+                else
+                    M(b.N[(size_t)row].Children[1], 4, 0, 4, 0);
             }
             const int SA = b.N[(size_t)Carousel].Children[1];
             {
-                const int VOR = b.N[(size_t)Bod(SA)].Children[0];
-                S(VOR, 4);
-                Sp(b.N[(size_t)VOR].Children[2]);
-                const int SR = b.N[(size_t)Bod(SA)].Children[1];
-                S(SR, 4);
-                M(b.N[(size_t)SR].Children[1], 8, 2, 0, 2);
-                M(b.N[(size_t)SR].Children[2], 2, 2, 2, 2);
-                Sp(b.N[(size_t)SR].Children[3]);
-                const int BR = b.N[(size_t)Bod(SA)].Children[2];
-                S(BR, 4);
-                const int Link = b.N[(size_t)Bod(SA)].Children[3];
-                S(Link, 4);
+                const int OpR = b.N[(size_t)Bod(SA)].Children[0];
+                S(OpR, 4);
+                Sp(b.N[(size_t)OpR].Children[4]);
+                const int Hdr = b.N[(size_t)Bod(SA)].Children[1];
+                S(Hdr, 4);
+                Sp(b.N[(size_t)Hdr].Children[2]);
+                const int Dst0 = b.N[(size_t)Bod(SA)].Children[2];
+                S(Dst0, 2);
+                const int Dst1 = b.N[(size_t)Bod(SA)].Children[3];
+                S(Dst1, 2);
+                const int ActR = b.N[(size_t)Bod(SA)].Children[4];
+                S(ActR, 4);
+                Sp(b.N[(size_t)ActR].Children[2]);
+                const int CpyR = b.N[(size_t)Bod(SA)].Children[5];
+                S(CpyR, 4);
+                Sp(b.N[(size_t)CpyR].Children[4]);
+                const int LnkR = b.N[(size_t)Bod(SA)].Children[6];
+                S(LnkR, 4);
+                Sp(b.N[(size_t)LnkR].Children[3]);
             }
         }
     }
@@ -1262,8 +1263,8 @@ inline std::vector<FPLayoutNode> BuildSpec()
     // Full-width row above the main row: the canonical quick actions live
     // HERE and only here. They are pinned (never inside a scroll viewport),
     // mirroring the widget strip built from FPLayout::QuickActionLabels().
-    // P7-B: 3 actions (Sync All -> All removed; sync lives in the
-    // apply-to-views picker / per-layer Sync Tex->All).
+    // P7-B: 3 actions (Sync All -> All removed; sync/copy consolidated in the
+    // ONE Copy/Sync panel on the props pane's Sync + Align page, Phase 3).
     const int PinnedStrip = HF(b, "PinnedStrip",
         LF(b, "Import Art...", 97, 20),
         LF(b, "Auto-Fit All", 98, 20),
@@ -2450,8 +2451,7 @@ inline const std::vector<std::vector<std::string>>& RailSectionTitles()
     // Reference / Edge Analysis), History lives in the toolbar.
     static const std::vector<std::vector<std::string>> Titles = {
         /* rail 0 View & Layer */   { "Layers", "Status Detail", "All Layers (current state)" },
-        /* rail 1 Art */            { "Quick Actions", "Cross-View Transform", "Import",
-                                      "Outline -> Depth", "Bulk Assign", "Assign Ops" },
+        /* rail 1 Art */            { "Import", "Outline -> Depth", "Bulk Assign", "Assign Ops" },
         /* rail 2 Nested & Animated */ { "Nested Art / Pins",
                                       "Viseme Frames (click filled cell = play)",
                                       "Hull Review (click thumb = jump)" },
@@ -2508,8 +2508,9 @@ inline double RailWidthAfterDrag(double StartWidth, double DeltaPx)
 inline const std::vector<std::string>& QuickActionLabels()
 {
     // P7-B: the pinned strip is 3 actions. "Sync All -> All" was removed -
-    // the apply-to-views picker + per-layer "Sync Tex->All" are the sync
-    // mechanisms now (one apply model, no hidden full-sync duplicate).
+    // sync/copy lives in the ONE Copy/Sync panel on the props pane's
+    // Sync + Align page (Phase 3: one apply model, no hidden full-sync
+    // duplicate).
     static const std::vector<std::string> Labels = {
         "Import Art...", "Auto-Fit All", "Clear All Overrides"
     };
@@ -2743,6 +2744,36 @@ inline bool SyncOpHasTextures(int Op)
 {
     const int N = SyncOpNormalized(Op);
     return N == SyncOpTextures || N == SyncOpBoth;
+}
+
+// ============================================================================
+// Sync destination diff mirror (Phase 3): the Sync + Align page's destination
+// grid colors each view by whether applying the current op would change it.
+//   0 SyncDestSame     - nothing would change (dest already matches)
+//   1 SyncDestDiffers  - transform and/or textures differ (apply overwrites)
+//   2 SyncDestMissing  - active has art the destination lacks (apply fills it)
+// Pure C++17 mirror of RefreshSyncDriftIndicator's per-view diff so the math
+// is pinned by the test suite. Missing outranks Differs for texture ops.
+// ============================================================================
+enum FSyncDestDiff : int
+{
+    SyncDestSame = 0,
+    SyncDestDiffers = 1,
+    SyncDestMissing = 2
+};
+
+inline int FPSyncDestDiff(int Op, bool bActiveHasArt, bool bDestHasArt, bool bTransformEqual)
+{
+    const int N = SyncOpNormalized(Op);
+    const bool bTr = SyncOpHasTransform(N);
+    const bool bTex = SyncOpHasTextures(N);
+    if (bTex)
+    {
+        if (bActiveHasArt && !bDestHasArt) return SyncDestMissing;
+        if (bActiveHasArt != bDestHasArt) return SyncDestDiffers;
+    }
+    if (bTr && !bTransformEqual) return SyncDestDiffers;
+    return SyncDestSame;
 }
 
 // ============================================================================

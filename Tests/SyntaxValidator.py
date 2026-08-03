@@ -163,8 +163,9 @@ class SyntaxValidator:
             'ApplyCanonicalTransformWithLink', 'GetGizmoTransform',
             'SetGizmoTransform', 'HandleHotspotClick', 'SelectPartOrImport',
             'SetBreadcrumb', 'RebuildPartsStrip', 'OpenHotspotRemapMenu', 'RemapHotspotLayer',
-            'BuildApplyToViewsContent', 'PlacePinAtUV',
-            'ResolveHotspotLayer', 'RefreshSyncDriftIndicator',
+            'PlacePinAtUV',
+            'ConsumePendingPinPlacement',
+            'ResolveHotspotLayer', 'RefreshSyncDriftIndicator', 'RefreshSyncDestDiff',
             'SetDisplayMode', 'SetInspectMode', 'RefreshDebugSliders', 'BuildEdgeOverlay',
             'RebuildHistogramBars', 'RefreshHullThumbnails',
             'RefreshPinControls', 'GetLayerPinMarkers', 'RebuildVisemeGrid',
@@ -179,6 +180,8 @@ class SyntaxValidator:
             'RebuildSchematicFilterRow',
             # Phase I edge map (Canvas Options toggles -> schematic layer)
             'SetSchematicEdgeMap', 'SetEdgeMapHairEdges',
+            # Phase 2 direct art import (drag-drop + native picker routing)
+            'HandleCanvasDrop', 'CanvasDropTargetLayer',
         }
 
         cls_re = (r'UCLASS\s*\((?:[^()]|\([^()]*\))*\)\s*\n\s*'

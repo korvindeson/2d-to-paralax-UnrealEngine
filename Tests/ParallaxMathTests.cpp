@@ -5864,6 +5864,253 @@ void TestPhaseBAlignmentMirrors() {
 }
 
 // ====================================================================
+// Phase 1 mirrors: interactive transform gizmo. Mirror the static pure
+// contract UFaceParallaxEditorWidget::GizmoHitTest / GizmoApplyDrag:
+// handle resolution (rotate/scale corners beat the move edge ring, the
+// box interior is a deliberate miss so P1 part clicks stay live) and
+// drag math (move = pixel delta / canvas, rotate = center-angle delta
+// normalized to +/-180 and clamped to +/-360, uniform scale by
+// center-distance ratio clamped to [0.02, 50] with the per-axis
+// [0.01, 100] transform clamps applied last).
+// ====================================================================
+
+static const int kGizmoNone = 0, kGizmoMove = 1, kGizmoRotate = 2, kGizmoScale = 3;
+
+struct MirrorGizmoTransform { double PX, PY, SX, SY, Rot; };
+
+static void MirrorGizmoBox(MirrorGizmoTransform T, double CanvasX, double CanvasY,
+    double& Cx, double& Cy, double& Hx, double& Hy, double Corners[4][2],
+    double& RHx, double& RHy)
+{
+    Cx = CanvasX * 0.5 + T.PX * CanvasX;
+    Cy = CanvasY * 0.5 + T.PY * CanvasY;
+    Hx = T.SX * CanvasX * 0.5;
+    Hy = T.SY * CanvasY * 0.5;
+    const double Rad = T.Rot * 3.14159265358979323846 / 180.0;
+    const double C = cos(Rad), S = sin(Rad);
+    auto Rot = [C, S](double vx, double vy)
+    {
+        return std::make_pair(vx * C - vy * S, vx * S + vy * C);
+    };
+    const double R0[4][2] = { { -Hx, -Hy }, { Hx, -Hy }, { Hx, Hy }, { -Hx, Hy } };
+    for (int i = 0; i < 4; ++i)
+    {
+        auto p = Rot(R0[i][0], R0[i][1]);
+        Corners[i][0] = Cx + p.first;
+        Corners[i][1] = Cy + p.second;
+    }
+    auto rh = Rot(0.0, -Hy - 14.0);
+    RHx = Cx + rh.first;
+    RHy = Cy + rh.second;
+}
+
+static int MirrorGizmoHitTest(double Px, double Py, double CanvasX, double CanvasY,
+    MirrorGizmoTransform T)
+{
+    if (CanvasX <= 0.0 || CanvasY <= 0.0) return kGizmoNone;
+    double Cx, Cy, Hx, Hy, Corners[4][2], RHx, RHy;
+    MirrorGizmoBox(T, CanvasX, CanvasY, Cx, Cy, Hx, Hy, Corners, RHx, RHy);
+    if (Hx < 1.0 || Hy < 1.0) return kGizmoNone;   // degenerate box: no handles
+    auto Dist2 = [](double ax, double ay, double bx, double by)
+    {
+        const double dx = ax - bx, dy = ay - by;
+        return dx * dx + dy * dy;
+    };
+    if (Dist2(Px, Py, RHx, RHy) <= 14.0 * 14.0) return kGizmoRotate;
+    if (Dist2(Px, Py, Corners[2][0], Corners[2][1]) <= 14.0 * 14.0) return kGizmoScale;
+    for (int e = 0; e < 4; ++e)
+    {
+        const double Ax = Corners[e][0], Ay = Corners[e][1];
+        const double Bx = Corners[(e + 1) % 4][0], By = Corners[(e + 1) % 4][1];
+        const double abx = Bx - Ax, aby = By - Ay;
+        const double len2 = abx * abx + aby * aby;
+        if (len2 < 1.0) continue;
+        const double t = std::max(0.0, std::min(1.0, ((Px - Ax) * abx + (Py - Ay) * aby) / len2));
+        const double qx = Ax + abx * t, qy = Ay + aby * t;
+        if (Dist2(Px, Py, qx, qy) <= 7.0 * 7.0) return kGizmoMove;
+    }
+    return kGizmoNone;
+}
+
+static MirrorGizmoTransform MirrorGizmoApplyDrag(MirrorGizmoTransform StartT, int Mode,
+    double Sx, double Sy, double Cx, double Cy, double CanvasX, double CanvasY)
+{
+    MirrorGizmoTransform T = StartT;
+    if (CanvasX <= 0.0 || CanvasY <= 0.0) return T;
+    const double CenterX = CanvasX * 0.5 + StartT.PX * CanvasX;
+    const double CenterY = CanvasY * 0.5 + StartT.PY * CanvasY;
+    if (Mode == kGizmoMove)
+    {
+        T.PX = StartT.PX + (Cx - Sx) / CanvasX;
+        T.PY = StartT.PY + (Cy - Sy) / CanvasY;
+    }
+    else if (Mode == kGizmoRotate)
+    {
+        const double D0 = sqrt((Sx - CenterX) * (Sx - CenterX) + (Sy - CenterY) * (Sy - CenterY));
+        if (D0 < 1.0) return T;   // degenerate grab point
+        const double A0 = atan2(Sy - CenterY, Sx - CenterX);
+        const double A1 = atan2(Cy - CenterY, Cx - CenterX);
+        const double Delta = (A1 - A0) * 180.0 / 3.14159265358979323846;
+        const double Norm = fmod(Delta + 540.0, 360.0) - 180.0;
+        T.Rot = std::max(-360.0, std::min(360.0, StartT.Rot + Norm));
+    }
+    else if (Mode == kGizmoScale)
+    {
+        const double D0 = sqrt((Sx - CenterX) * (Sx - CenterX) + (Sy - CenterY) * (Sy - CenterY));
+        if (D0 < 1.0) return T;   // degenerate anchor
+        double Factor = sqrt((Cx - CenterX) * (Cx - CenterX) + (Cy - CenterY) * (Cy - CenterY)) / D0;
+        Factor = std::max(0.02, std::min(50.0, Factor));
+        T.SX = std::max(0.01, std::min(100.0, StartT.SX * Factor));
+        T.SY = std::max(0.01, std::min(100.0, StartT.SY * Factor));
+    }
+    return T;
+}
+
+void TestPhase1GizmoInteractiveMirrors() {
+    printf("\n=== Phase1GizmoInteractiveMirrors ===\n");
+
+    const double Canvas = 450.0;
+    // Default layer box: Position (0,0), Scale (0.5,0.5), no rotation.
+    // Center = (225,225), Half = (112.5,112.5), corners at
+    // (112.5,112.5),(337.5,112.5),(337.5,337.5),(112.5,337.5),
+    // rotate handle at (225, 98.5).
+    const MirrorGizmoTransform Box = { 0.0, 0.0, 0.5, 0.5, 0.0 };
+
+    // ---- Hit test: handles and ring ----
+    TEST("Gizmo scale handle hit at bottom-right corner", MirrorGizmoHitTest(337.5, 337.5, Canvas, Canvas, Box) == kGizmoScale);
+    TEST("Gizmo scale handle near-miss inside radius", MirrorGizmoHitTest(330.0, 344.0, Canvas, Canvas, Box) == kGizmoScale);
+    TEST("Gizmo rotate handle hit at top handle", MirrorGizmoHitTest(225.0, 98.5, Canvas, Canvas, Box) == kGizmoRotate);
+    TEST("Gizmo rotate handle near-miss inside radius", MirrorGizmoHitTest(215.0, 105.0, Canvas, Canvas, Box) == kGizmoRotate);
+    TEST("Gizmo rotate beats move on overlapping top edge", MirrorGizmoHitTest(225.0, 112.5, Canvas, Canvas, Box) == kGizmoRotate);
+    TEST("Gizmo scale beats move on overlapping corner junction", MirrorGizmoHitTest(337.5, 337.5, Canvas, Canvas, Box) == kGizmoScale);
+    TEST("Gizmo move on bottom edge midpoint", MirrorGizmoHitTest(225.0, 337.5, Canvas, Canvas, Box) == kGizmoMove);
+    TEST("Gizmo move on left edge midpoint", MirrorGizmoHitTest(112.5, 225.0, Canvas, Canvas, Box) == kGizmoMove);
+    TEST("Gizmo move on right edge midpoint", MirrorGizmoHitTest(337.5, 225.0, Canvas, Canvas, Box) == kGizmoMove);
+
+    // ---- Hit test: interior is a deliberate miss (P1 part clicks survive) ----
+    TEST("Gizmo interior is NOT a drag surface", MirrorGizmoHitTest(225.0, 225.0, Canvas, Canvas, Box) == kGizmoNone);
+    TEST("Gizmo interior near edge but > 7px is a miss", MirrorGizmoHitTest(300.0, 250.0, Canvas, Canvas, Box) == kGizmoNone);
+    TEST("Gizmo interior near corner > 14px is a miss", MirrorGizmoHitTest(322.0, 322.0, Canvas, Canvas, Box) == kGizmoNone);
+    TEST("Gizmo outside box is a miss", MirrorGizmoHitTest(100.0, 400.0, Canvas, Canvas, Box) == kGizmoNone);
+    TEST("Gizmo just outside ring is a miss", MirrorGizmoHitTest(345.0, 225.0, Canvas, Canvas, Box) == kGizmoNone);
+
+    // ---- Hit test: guards ----
+    TEST("Gizmo degenerate box (tiny scale) has no handles", MirrorGizmoHitTest(225.0, 225.0, Canvas, Canvas, { 0.0, 0.0, 0.001, 0.5, 0.0 }) == kGizmoNone);
+    TEST("Gizmo zero canvas -> no hit", MirrorGizmoHitTest(225.0, 225.0, 0.0, 450.0, Box) == kGizmoNone);
+    TEST("Gizmo negative canvas -> no hit", MirrorGizmoHitTest(225.0, 225.0, -450.0, 450.0, Box) == kGizmoNone);
+
+    // ---- Hit test: rotated box ----
+    {
+        const MirrorGizmoTransform RotBox = { 0.0, 0.0, 0.5, 0.5, 90.0 };
+        // Rotated 90 deg: corner[2] (bottom-right) lands at (112.5, 337.5),
+        // rotate handle at (351.5, 225).
+        TEST("Gizmo rotated box scale corner tracks rotation", MirrorGizmoHitTest(112.5, 337.5, Canvas, Canvas, RotBox) == kGizmoScale);
+        TEST("Gizmo rotated box rotate handle tracks rotation", MirrorGizmoHitTest(351.5, 225.0, Canvas, Canvas, RotBox) == kGizmoRotate);
+        TEST("Gizmo rotated box interior is a miss", MirrorGizmoHitTest(225.0, 225.0, Canvas, Canvas, RotBox) == kGizmoNone);
+    }
+
+    // ---- Move drag: pixel delta -> UV delta, others unchanged ----
+    {
+        MirrorGizmoTransform T = MirrorGizmoApplyDrag(Box, kGizmoMove, 100.0, 100.0, 145.0, 100.0, Canvas, Canvas);
+        TEST("Gizmo move +45px on 450px canvas = +0.1 UV X", std::abs(T.PX - 0.1) < 1e-9);
+        TEST("Gizmo move keeps Y", std::abs(T.PY) < 1e-9);
+        TEST("Gizmo move keeps scale", T.SX == 0.5 && T.SY == 0.5);
+        TEST("Gizmo move keeps rotation", T.Rot == 0.0);
+        T = MirrorGizmoApplyDrag(Box, kGizmoMove, 100.0, 100.0, 55.0, 130.0, Canvas, Canvas);
+        TEST("Gizmo move negative delta X = -0.1 UV", std::abs(T.PX - (-0.1)) < 1e-9);
+        TEST("Gizmo move positive delta Y = +0.066667 UV", std::abs(T.PY - (30.0 / 450.0)) < 1e-9);
+        T = MirrorGizmoApplyDrag(Box, kGizmoMove, 0.0, 0.0, 900.0, 900.0, Canvas, Canvas);
+        TEST("Gizmo move off-canvas is NOT clamped (position is free)", std::abs(T.PX - 2.0) < 1e-9 && std::abs(T.PY - 2.0) < 1e-9);
+    }
+
+    // ---- Rotate drag: center-angle delta, normalized + clamped ----
+    {
+        MirrorGizmoTransform T = MirrorGizmoApplyDrag(Box, kGizmoRotate, 225.0, 125.0, 325.0, 225.0, Canvas, Canvas);
+        TEST("Gizmo rotate -90 to 0 deg = +90", std::abs(T.Rot - 90.0) < 1e-6);
+        T = MirrorGizmoApplyDrag(Box, kGizmoRotate, 325.0, 225.0, 225.0, 125.0, Canvas, Canvas);
+        TEST("Gizmo rotate 0 to -90 deg = -90", std::abs(T.Rot - (-90.0)) < 1e-6);
+        // 180deg -> -90deg crosses the branch: raw -270, normalized to +90.
+        T = MirrorGizmoApplyDrag(Box, kGizmoRotate, 125.0, 225.0, 225.0, 125.0, Canvas, Canvas);
+        TEST("Gizmo rotate delta normalizes across the atan2 branch", std::abs(T.Rot - 90.0) < 1e-6);
+        T = MirrorGizmoApplyDrag(Box, kGizmoRotate, 225.0, 125.0, 225.0, 125.0, Canvas, Canvas);
+        TEST("Gizmo rotate zero sweep keeps rotation", std::abs(T.Rot) < 1e-9);
+        T = MirrorGizmoApplyDrag({ 0.0, 0.0, 0.5, 0.5, 350.0 }, kGizmoRotate, 225.0, 125.0, 325.0, 225.0, Canvas, Canvas);
+        TEST("Gizmo rotate accumulated rotation clamps to +360", std::abs(T.Rot - 360.0) < 1e-6);
+        T = MirrorGizmoApplyDrag(Box, kGizmoRotate, 225.0, 225.0, 325.0, 225.0, Canvas, Canvas);
+        TEST("Gizmo rotate degenerate grab point keeps transform", std::abs(T.Rot) < 1e-9 && T.PX == 0.0 && T.SX == 0.5);
+    }
+
+    // ---- Scale drag: uniform center-distance ratio, clamped ----
+    {
+        MirrorGizmoTransform T = MirrorGizmoApplyDrag(Box, kGizmoScale, 337.5, 337.5, 450.0, 450.0, Canvas, Canvas);
+        TEST("Gizmo scale doubling the radius = x2", std::abs(T.SX - 1.0) < 1e-6 && std::abs(T.SY - 1.0) < 1e-6);
+        T = MirrorGizmoApplyDrag({ 0.0, 0.0, 0.5, 2.0, 0.0 }, kGizmoScale, 337.5, 337.5, 450.0, 450.0, Canvas, Canvas);
+        TEST("Gizmo scale is uniform across non-uniform start", std::abs(T.SX - 1.0) < 1e-6 && std::abs(T.SY - 4.0) < 1e-6);
+        T = MirrorGizmoApplyDrag({ 0.0, 0.0, 2.0, 2.0, 0.0 }, kGizmoScale, 337.5, 337.5, 225.0, 225.0, Canvas, Canvas);
+        TEST("Gizmo scale to center clamps factor at 0.02 floor", std::abs(T.SX - 0.04) < 1e-9 && std::abs(T.SY - 0.04) < 1e-9);
+        T = MirrorGizmoApplyDrag({ 0.0, 0.0, 50.0, 50.0, 0.0 }, kGizmoScale, 337.5, 337.5, 450.0, 450.0, Canvas, Canvas);
+        TEST("Gizmo scale clamps per-axis to 100 max", std::abs(T.SX - 100.0) < 1e-9 && std::abs(T.SY - 100.0) < 1e-9);
+        T = MirrorGizmoApplyDrag({ 0.0, 0.0, 0.01, 0.01, 0.0 }, kGizmoScale, 337.5, 337.5, 300.0, 300.0, Canvas, Canvas);
+        TEST("Gizmo scale never drops below 0.01 min", std::abs(T.SX - 0.01) < 1e-9 && std::abs(T.SY - 0.01) < 1e-9);
+        T = MirrorGizmoApplyDrag(Box, kGizmoScale, 225.0, 225.0, 337.5, 337.5, Canvas, Canvas);
+        TEST("Gizmo scale degenerate anchor keeps transform", T.SX == 0.5 && T.SY == 0.5 && T.PX == 0.0);
+        // Scale keeps position + rotation untouched.
+        T = MirrorGizmoApplyDrag({ 0.2, -0.1, 0.5, 0.5, 30.0 }, kGizmoScale, 337.5, 337.5, 450.0, 450.0, Canvas, Canvas);
+        TEST("Gizmo scale keeps position", std::abs(T.PX - 0.2) < 1e-9 && std::abs(T.PY - (-0.1)) < 1e-9);
+        TEST("Gizmo scale keeps rotation", std::abs(T.Rot - 30.0) < 1e-9);
+    }
+
+    // ---- Drag guards ----
+    {
+        MirrorGizmoTransform T = MirrorGizmoApplyDrag(Box, kGizmoMove, 100.0, 100.0, 145.0, 100.0, 0.0, 450.0);
+        TEST("Gizmo apply-drag zero canvas is a no-op", T.PX == 0.0 && T.PY == 0.0 && T.SX == 0.5);
+        T = MirrorGizmoApplyDrag(Box, kGizmoScale, 337.5, 337.5, 450.0, 450.0, -450.0, 450.0);
+        TEST("Gizmo apply-drag negative canvas is a no-op", T.SX == 0.5 && T.SY == 0.5);
+        T = MirrorGizmoApplyDrag(Box, 99, 100.0, 100.0, 145.0, 100.0, Canvas, Canvas);
+        TEST("Gizmo apply-drag unknown mode is a no-op", T.PX == 0.0 && T.PY == 0.0 && T.SX == 0.5 && T.Rot == 0.0);
+    }
+}
+
+// ====================================================================
+// Phase 2 mirrors: direct art import. CanvasDropTargetLayer decides the
+// assignment target for a canvas art drop: a part hit under the drop
+// point wins (its resolved layer), otherwise the currently selected layer
+// falls back, otherwise there is no target and the drop is rejected.
+// Mirrors UFaceParallaxEditorWidget::CanvasDropTargetLayer.
+// ====================================================================
+
+static std::string MirrorCanvasDropTargetLayer(const std::string& PartLayer,
+    const std::string& SelectedLayer)
+{
+    return !PartLayer.empty() ? PartLayer : SelectedLayer;
+}
+
+void TestPhase2DirectImportMirrors() {
+    printf("\n=== Phase2DirectImportMirrors ===\n");
+
+    // Drop on a mapped part: the part's layer wins over any selection.
+    TEST("Drop on mapped part uses the part's layer", MirrorCanvasDropTargetLayer("Eyes", "Hair") == "Eyes");
+    TEST("Drop on part with same selection is idempotent", MirrorCanvasDropTargetLayer("Eyes", "Eyes") == "Eyes");
+    TEST("Drop on part with no selection uses the part", MirrorCanvasDropTargetLayer("Eyes", "") == "Eyes");
+
+    // Fallback: no part under the cursor -> the current selection.
+    TEST("Drop on unmapped part falls back to selection", MirrorCanvasDropTargetLayer("", "Hair") == "Hair");
+    TEST("Drop on empty canvas uses the selection", MirrorCanvasDropTargetLayer("", "Mouth") == "Mouth");
+
+    // Rejection: neither a part layer nor a selection -> no target.
+    TEST("Drop with neither part nor selection has no target", MirrorCanvasDropTargetLayer("", "").empty());
+
+    // Edge: an unmapped alias (part resolves to nothing) behaves like a miss.
+    TEST("Unmapped alias part falls back to selection", MirrorCanvasDropTargetLayer("", "BackHair") == "BackHair");
+
+    // The drop path routes through the shared channel-suffix pipeline; a file
+    // with no channel suffix must default to Albedo, exactly as the wizard and
+    // the per-slot drops do (mirrors ChannelFromTextureName's fallback).
+    TEST("Suffixless drop file defaults to Albedo", strcmp(ChannelFromName("Eyes_Front"), "Albedo") == 0);
+    TEST("Suffixless part-only drop file defaults to Albedo", strcmp(ChannelFromName("Hair"), "Albedo") == 0);
+}
+
+// ====================================================================
 // Phase C mirrors: view-suffix parsing, channel stripping, and the
 // sync-drift counter. These mirror the widget's anonymous-namespace
 // helpers and RefreshSyncDriftIndicator.
@@ -6268,7 +6515,7 @@ void TestPhaseHUIDesign() {
 
     // Positive contract: the real manifest must be clean.
     const std::vector<FPLayout::FPLayoutNode> Spec = FPLayout::BuildSpec();
-    TEST("Phase H: manifest builds (511 nodes)", Spec.size() == 511u);
+    TEST("Phase H: manifest builds (529 nodes)", Spec.size() == 529u);
     TEST("Phase H: every node reachable from root", FPLayout::CountReachable(Spec) == (int)Spec.size());
     const int RootIdx = FPLayout::FindRootIndex(Spec);
     TEST("Phase H: single root is the last node", RootIdx == (int)Spec.size() - 1);
@@ -6574,14 +6821,22 @@ void TestPhaseHUIDesign() {
         TEST("Phase H: grouped accordion sections are accordions (P16)", bAccordionOk);
     }
     {
-        // State-strip pick button replaces the old props-pane sync picker row.
+        // Phase 3: state strip is 10 plain tab buttons (always switch views);
+        // the ONE Copy/Sync panel lives on the props "Sync + Align" page.
         bool bPickBtn = false, bOldPickRow = false;
+        bool bDstRows = true, bVoRow = false, bApplyViews = false;
         for (const FPLayout::FPLayoutNode& n : Spec)
         {
             if (std::string(n.Name) == "ST-PickBtn") bPickBtn = true;
             if (std::string(n.Name) == "SY-Pick0") bOldPickRow = true;
+            if (std::string(n.Name) == "SY-DstRow0" || std::string(n.Name) == "SY-DstRow1") bDstRows = true;
+            if (std::string(n.Name) == "XF-VORow") bVoRow = true;
+            if (std::string(n.Name) == "AO-ApplyViews") bApplyViews = true;
         }
-        TEST("Phase H: ST-PickBtn present, SY-PickRow removed", bPickBtn && !bOldPickRow);
+        TEST("Phase H: ST-PickBtn removed, sync picker gone", !bPickBtn && !bOldPickRow);
+        TEST("Phase H: Sync + Align page has always-visible destination grid", bDstRows);
+        TEST("Phase H: Transform page owns the per-view override row", bVoRow);
+        TEST("Phase H: Apply views anchor removed from Assign Ops", !bApplyViews);
     }
     {
         // P14: the props pane must leave a right-edge gap against the screen
@@ -6885,7 +7140,7 @@ void TestPhaseIUITesting() {
 
     // --- Step 1 fit-first: the real rails pack without vertical scroll ---
     const std::vector<FPLayout::FPLayoutNode> Spec = FPLayout::BuildSpec();
-    TEST("UI: manifest builds (511 nodes)", Spec.size() == 511u);
+    TEST("UI: manifest builds (529 nodes)", Spec.size() == 529u);
     {
         const char* RailNames[5] = { "RL-ViewLayer", "RL-Art", "RL-NestedAnimated", "RL-CameraPrev", "RL-Diagnostics" };
         bool bNoV = true;
@@ -8095,10 +8350,9 @@ void TestAccessibilityMirrors() {
     TEST("Registry: rail 0 View & Layer 3 sections", Titles[0].size() == 3
         && Titles[0][0] == "Layers" && Titles[0][1] == "Status Detail"
         && Titles[0][2] == "All Layers (current state)");
-    TEST("Registry: rail 1 Art 6 sections", Titles[1].size() == 6
-        && Titles[1][0] == "Quick Actions" && Titles[1][1] == "Cross-View Transform"
-        && Titles[1][2] == "Import" && Titles[1][3] == "Outline -> Depth"
-        && Titles[1][4] == "Bulk Assign" && Titles[1][5] == "Assign Ops");
+    TEST("Registry: rail 1 Art 4 sections (Phase 3 consolidation)", Titles[1].size() == 4
+        && Titles[1][0] == "Import" && Titles[1][1] == "Outline -> Depth"
+        && Titles[1][2] == "Bulk Assign" && Titles[1][3] == "Assign Ops");
     TEST("Registry: rail 2 Nested & Animated 3 sections", Titles[2].size() == 3
         && Titles[2][0] == "Nested Art / Pins"
         && Titles[2][1] == "Viseme Frames (click filled cell = play)"
@@ -8124,8 +8378,10 @@ void TestAccessibilityMirrors() {
     TEST("Search: 'viseme' -> Nested & Animated/Viseme",
         FPLayout::FindRailSectionByTitle("viseme", OutRail, OutIdx) == 0
         && OutRail == 2 && OutIdx == 1);
-    TEST("Search: 'quick' -> Art/Quick Actions",
-        FPLayout::FindRailSectionByTitle("quick", OutRail, OutIdx) == 0
+    TEST("Search: 'quick' no longer matches (Quick Actions removed)",
+        FPLayout::FindRailSectionByTitle("quick", OutRail, OutIdx) != 0);
+    TEST("Search: 'import' -> Art/Import (Phase 3 lead)",
+        FPLayout::FindRailSectionByTitle("import", OutRail, OutIdx) == 0
         && OutRail == 1 && OutIdx == 0);
     TEST("Search: 'camera' first match is rail 3",
         FPLayout::FindRailSectionByTitle("camera", OutRail, OutIdx) == 0
@@ -8706,6 +8962,26 @@ void TestPhaseDSyncIntegration() {
     TEST("op Both has both channels", FPLayout::SyncOpHasTransform(FPLayout::SyncOpBoth)
         && FPLayout::SyncOpHasTextures(FPLayout::SyncOpBoth));
     TEST("op invalid -> Both channels", FPLayout::SyncOpHasTransform(5) && FPLayout::SyncOpHasTextures(5));
+
+    // ---- FPSyncDestDiff (live per-view diff preview) ----
+    TEST("dest diff: transform same + textures match -> Same",
+        FPLayout::FPSyncDestDiff(FPLayout::SyncOpBoth, true, true, true) == FPLayout::SyncDestSame);
+    TEST("dest diff: transform differs op Both -> Differs",
+        FPLayout::FPSyncDestDiff(FPLayout::SyncOpBoth, true, true, false) == FPLayout::SyncDestDiffers);
+    TEST("dest diff: transform differs op Transform -> Differs",
+        FPLayout::FPSyncDestDiff(FPLayout::SyncOpTransform, true, true, false) == FPLayout::SyncDestDiffers);
+    TEST("dest diff: transform differs op Textures -> Same",
+        FPLayout::FPSyncDestDiff(FPLayout::SyncOpTextures, true, true, false) == FPLayout::SyncDestSame);
+    TEST("dest diff: active art, dest empty op Textures -> Missing",
+        FPLayout::FPSyncDestDiff(FPLayout::SyncOpTextures, true, false, true) == FPLayout::SyncDestMissing);
+    TEST("dest diff: both empty op Textures -> Same",
+        FPLayout::FPSyncDestDiff(FPLayout::SyncOpTextures, false, false, true) == FPLayout::SyncDestSame);
+    TEST("dest diff: active empty, dest art op Textures -> Differs",
+        FPLayout::FPSyncDestDiff(FPLayout::SyncOpTextures, false, true, true) == FPLayout::SyncDestDiffers);
+    TEST("dest diff: missing outranks transform diff op Both -> Missing",
+        FPLayout::FPSyncDestDiff(FPLayout::SyncOpBoth, true, false, false) == FPLayout::SyncDestMissing);
+    TEST("dest diff: invalid op -> Both channels (transform diff) -> Differs",
+        FPLayout::FPSyncDestDiff(9, true, true, false) == FPLayout::SyncDestDiffers);
 
     // ---- FPLinkDestCount ----
     const int NV = 10;
@@ -9412,6 +9688,8 @@ int main() {
     TestCameraSnapMapping();
     TestImportChannelDetection();
     TestPhaseBAlignmentMirrors();
+    TestPhase1GizmoInteractiveMirrors();
+    TestPhase2DirectImportMirrors();
     TestPhaseCMirrors();
     TestPhaseDMirrors();
     TestPhaseEFMirrors();

@@ -1016,20 +1016,50 @@ public:
     FFaceArtTransform GetGizmoTransform() const;
     void SetGizmoTransform(const FFaceArtTransform& T);
 
+    // ===== PHASE 1: INTERACTIVE TRANSFORM GIZMO =====
+    // Gizmo hit/drag modes. 0 = no handle, 1 = move (box edge ring),
+    // 2 = rotate (top handle), 3 = scale (bottom-right corner).
+    enum { kGizmoHitNone = 0, kGizmoHitMove = 1, kGizmoHitRotate = 2, kGizmoHitScale = 3 };
+    // Pure 2D contract for the canvas transform box. GizmoHitTest resolves a
+    // local pixel position to a handle (handles beat the move ring, and the
+    // move ring is ONLY the box edges — the interior is deliberately a miss so
+    // P1 one-map part clicks stay live behind the box). GizmoApplyDrag turns a
+    // drag delta into the next transform: move = pixel delta / canvas size,
+    // rotate = angle delta about the box center (normalized to +/-180 and
+    // clamped to +/-360), scale = uniform center-distance ratio clamped to
+    // [0.02, 50] with the per-axis [0.01, 100] transform clamps applied last.
+    // Both are static so the math mirrors (Tests/ParallaxMathTests.cpp) can
+    // assert the exact contract the canvas uses.
+    static int32 GizmoHitTest(const FFaceArtTransform& T, const FVector2D& Local,
+        const FVector2D& CanvasSize);
+    static FFaceArtTransform GizmoApplyDrag(const FFaceArtTransform& StartT, int32 Mode,
+        const FVector2D& StartPx, const FVector2D& CurPx, const FVector2D& CanvasSize);
+
+    // ===== PHASE 2: DIRECT ART IMPORT =====
+    // Pure canvas drop-target resolution: a part hit under the drop point wins
+    // (its resolved layer); otherwise the currently selected layer is the
+    // fallback; NAME_None = no target (drop rejected).
+    static FName CanvasDropTargetLayer(const FName& ResolvedPartLayer, const FName& SelectedLayer);
+    // Canvas drop entry point (OS image files + Content Browser texture assets):
+    // selects the drop part's layer (when a part is hit), then routes through
+    // the shared AssignImageDropToSlot channel-suffix pipeline.
+    bool HandleCanvasDrop(const FString& PartUnderCursor, const FName& ResolvedPartLayer,
+        const FDragDropEvent& Ev);
+
     // ===== PHASE C: IMPORT =====
     void OpenImportFolderWizard(const FString& PreselectPart = FString());
     void HandleHotspotClick(const FString& RegionName);   // legend-chip pick: select mapped layer + open import wizard
     void RebuildPartsStrip();                             // 17-part legend chips under the canvas (one map)
-    TSharedRef<SWidget> BuildApplyToViewsContent();       // P2: THE apply-to-views picker (10 views + All + copy-from-Front)
     void OpenHotspotRemapMenu(const FString& RegionName, const FPointerEvent& Ev); // right-click: map region -> layer
     void RemapHotspotLayer(const FString& RegionName, FName LayerTag);             // writes preset HotspotLayerMap
     FName ResolveHotspotLayer(const FString& RegionName) const; // explicit map first, then derived match
     void RefreshSyncDriftIndicator();
+    void RefreshSyncDestDiff();     // Phase 3: live per-view diff preview (colors the destination grid)
     double LastSyncTimestamp = 0.0;
     int32 LastSyncedViewCount = 0;
 
     // ===== CENTRAL CANVAS REDESIGN: SCHEMATIC DEFAULT VIEW =====
-    void HandleSchematicPartClick(const FString& PartName); // canvas glyph pick: select layer; empty layer -> Import Wizard
+    void HandleSchematicPartClick(const FString& PartName); // canvas glyph pick: select layer; artless layer -> native file picker
     void SelectPartOrImport(const FString& PartName);       // P1 one-map core: select layer + import/review + breadcrumb + glyph flash
     void RefreshSchematic();                                // repaint part glyphs for every part (RefreshUI)
     bool LayerHasFrontArt(FName LayerTag) const;            // does the Front slot carry an albedo texture?
@@ -1109,6 +1139,7 @@ private:
     FVector2D GetSelectedPinUV();
     void SetGizmoPinUV(const FVector2D& UV);
     void PlacePinAtUV(const FVector2D& UV);   // P3: pin-mode primary interaction — canvas click places a pin
+    bool ConsumePendingPinPlacement();        // P3: returns + clears the Add Pin one-shot placement arm (next canvas click places)
     void FlashTab(int32 RailIndex);           // P7-A: amber pulse on the destination rail tab (rail-jump transition)
 void RebuildPinList();                    // P7-C: View & Layer rail "Pins" section (named pins + layer pin)
     void AddLayerPinAtDefault();              // P7-C: [+ Add Pin] — pins the selected layer at screen center
@@ -1282,8 +1313,8 @@ void RebuildPinList();                    // P7-C: View & Layer rail "Pins" sect
 
     // ===== VIEW OVERRIDE / SYNC UI =====
     TSharedPtr<SCheckBox> CheckViewOverrideMode;
-    TArray<TSharedPtr<SCheckBox>> SyncViewCheckBoxes;   // shared strip checkboxes (pick-mode toggles, one per state)
-    TSharedPtr<SHorizontalBox> SyncPickerRow;
+    TArray<TSharedPtr<SCheckBox>> SyncViewCheckBoxes;   // Phase 3: always-visible destination picks (one per state)
+    TArray<TSharedPtr<STextBlock>> SyncDestLabels;      // Phase 3: destination-grid labels (recolored by the live diff preview)
     int32 SyncOp = 2;   // grouped sync-op selector (Phase D): 0 Transform / 1 Textures / 2 Both (FPLayout::SyncOpBoth)
 
     // Phase D: snapshot of the state-strip pick checklist (true = picked).
@@ -1338,7 +1369,6 @@ TSharedPtr<SFaceAccordion> LayersPinsAccordion;  // P7-C: View & Layer rail Pins
     TSharedPtr<SZoneBoundaryOverlay> ZoneDragOverlay; // zone diagram drag layer (Phase P3)
     class SFaceCarouselNav;                         // P18: prev/page/next strip under a carousel viewport
     TSharedPtr<SWrapBox> PartsStrip;                // canvas strip: 13 anatomical part chips (Phase 1)
-    bool bStatePickMode = false;                    // state-strip pick mode: tab clicks toggle sync destinations
     int32 DisplayMode = 0;                          // 0 Textured 1 Depth 2 Wireframe 3 Split
     int32 InspectMode = 0;                          // Phase C: derived inspect mode (0-4, -1 custom)
     TArray<TSharedPtr<SImage>> ViewTabDots;         // per-state status dots in view strip
@@ -1367,6 +1397,7 @@ TSharedPtr<SFaceAccordion> LayersPinsAccordion;  // P7-C: View & Layer rail Pins
     TSharedPtr<SHorizontalBox> TopTabBar;           // P7-A tab flash: invalidated while the pulse is live
     // Redesign: canvas interactivity (Phase 0) + schematic filters/focus
     bool bCanvasPinMode = false;                    // canvas click router: pin-drag handled by the hotspot layer
+    bool bPendingPinPlacement = false;              // Add Pin arms a one-shot placement: the next canvas left-click places the pin at the cursor
     TSharedPtr<SVerticalBox> PinListBox;            // P7-C: pinned-elements list in the View & Layer rail
     TArray<TSharedPtr<FSlateBrush>> PinThumbBrushes; // P7-C: per-row pin thumbnails (owned, cleared on rebuild)
     bool bSchematicFilterVisible = true;            // filter row under the canvas mode row (Filter checkbox)

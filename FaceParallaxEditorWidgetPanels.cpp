@@ -1270,23 +1270,26 @@ void UFaceParallaxEditorWidget::RebuildStatusMatrix()
         [SNew(SBox).WidthOverride(68).HeightOverride(28)
             [SNew(STextBlock)
                 .Text(FText::FromString(TEXT("STATE \\ LAYER")))
-                .Font(FCoreStyle::GetDefaultFontStyle("Regular", 7))
+                .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
                 .ColorAndOpacity(FLinearColor(0.5f,0.5f,0.5f))]];
 
     // Header row — state labels
     for (int32 si = 0; si < States.Num(); ++si)
     {
+        TSharedRef<STextBlock> AbbrLbl = SNew(STextBlock)
+            .Text(FText::FromString(Abbrs[si]))
+            .Font(FCoreStyle::GetDefaultFontStyle("Regular", 7))
+            .ColorAndOpacity(FLinearColor(0.7f,0.7f,0.7f))
+            .Justification(ETextJustify::Center);
+        AbbrLbl->SetToolTipText(FText::FromString(
+            UFaceParallaxComponent::GetStateLabel(States[si]).ToString()));
         StatusMatrixGrid->AddSlot(si + 1, 0)
             [SNew(SBox).WidthOverride(CellW).HeightOverride(28)
                 [SNew(SBorder)
                     .BorderImage(FCoreStyle::Get().GetBrush("WhiteBrush"))
                     .BorderBackgroundColor(FLinearColor(0.12f,0.12f,0.12f))
                     .Padding(FMargin(1))
-                    [SNew(STextBlock)
-                        .Text(FText::FromString(Abbrs[si]))
-                        .Font(FCoreStyle::GetDefaultFontStyle("Regular", 7))
-                        .ColorAndOpacity(FLinearColor(0.7f,0.7f,0.7f))
-                        .Justification(ETextJustify::Center)]]];
+                    [AbbrLbl]]];
     }
 
     // Data rows — one per layer, carousel-paged (P17/P18): the matrix's natural
@@ -1312,7 +1315,7 @@ void UFaceParallaxEditorWidget::RebuildStatusMatrix()
                 [SNew(SBox).WidthOverride(68).HeightOverride(CellH)
                     [SNew(STextBlock)
                         .Text(FText::FromString(Tag.ToString()))
-                        .Font(FCoreStyle::GetDefaultFontStyle("Regular", 7))
+                        .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
                         .ColorAndOpacity(FLinearColor(0.7f,0.7f,0.7f))]];
             for (int32 si = 0; si < States.Num(); ++si)
             {
@@ -2592,108 +2595,6 @@ void UFaceParallaxEditorWidget::RebuildPartsStrip()
     }
 }
 
-// P2: THE apply-to-views picker. One component, three mounts (state-tab
-// "v" menu, Art rail Quick Actions, Bulk Assign ops row). It shows the 10
-// view picks (SyncViewCheckBoxes - the same state the state-strip pick mode
-// toggles) and applies the ACTIVE slot's transform + textures to them. All
-// apply actions pass through the canonical Sync*/Duplicate*/Fill* API, so
-// every copy path is one map.
-TSharedRef<SWidget> UFaceParallaxEditorWidget::BuildApplyToViewsContent()
-{
-    TSharedRef<SVerticalBox> Box = SNew(SVerticalBox);
-    const FString ActiveName = StaticEnum<EFaceAngleState>()->GetNameStringByValue((int64)ActiveViewState);
-    Box->AddSlot().AutoHeight().Padding(FMargin(6, 4, 6, 2))
-        [MakeLbl(FString::Printf(TEXT("Apply %s -> views:"), *ActiveName), 9, FLinearColor(0.9f, 0.8f, 0.5f))];
-    struct { EFaceAngleState S; const TCHAR* T; } Picked[] = {
-        {EFaceAngleState::Front, TEXT("Front")},
-        {EFaceAngleState::ThreeQuarterRight, TEXT("3/4R")},
-        {EFaceAngleState::RightProfile, TEXT("ProfR")},
-        {EFaceAngleState::BackRight, TEXT("BackR")},
-        {EFaceAngleState::Back, TEXT("Back")},
-        {EFaceAngleState::BackLeft, TEXT("BackL")},
-        {EFaceAngleState::ThreeQuarterLeft, TEXT("3/4L")},
-        {EFaceAngleState::LeftProfile, TEXT("ProfL")},
-        {EFaceAngleState::Top, TEXT("Top")},
-        {EFaceAngleState::Bottom, TEXT("Bot")},
-    };
-    // 2x5 checkbox grid - toggles the SAME SyncViewCheckBoxes state as the
-    // state-strip pick mode; the active view reads "This" and is excluded
-    // from destinations.
-    for (int32 Row = 0; Row < 5; ++Row)
-    {
-        TSharedRef<SHorizontalBox> GridRow = SNew(SHorizontalBox);
-        for (int32 Col = 0; Col < 2; ++Col)
-        {
-            const int32 Idx = Row * 2 + Col;
-            const EFaceAngleState S = Picked[Idx].S;
-            const bool bSelf = (S == ActiveViewState);
-            GridRow->AddSlot().AutoWidth().Padding(FMargin(2, 1))
-                [SNew(SCheckBox)
-                    .IsChecked_Lambda([this, S]()
-                    {
-                        return SyncViewCheckBoxes.IsValidIndex((int32)S)
-                            && SyncViewCheckBoxes[(int32)S].IsValid()
-                            && SyncViewCheckBoxes[(int32)S]->IsChecked()
-                            ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
-                    })
-                    .OnCheckStateChanged_Lambda([this, S](ECheckBoxState NewState)
-                    {
-                        if (SyncViewCheckBoxes.IsValidIndex((int32)S) && SyncViewCheckBoxes[(int32)S].IsValid())
-                            SyncViewCheckBoxes[(int32)S]->SetIsChecked(NewState == ECheckBoxState::Checked);
-                    })];
-            GridRow->AddSlot().AutoWidth().Padding(FMargin(0, 1, 6, 1)).VAlign(VAlign_Center)
-                [MakeLbl(bSelf ? TEXT("This") : Picked[Idx].T, 8,
-                    bSelf ? FLinearColor(0.9f, 0.8f, 0.5f) : FLinearColor(0.8f, 0.8f, 0.8f))];
-        }
-        Box->AddSlot().AutoHeight()[GridRow];
-    }
-    Box->AddSlot().AutoHeight().Padding(FMargin(2, 1))
-        [MakeBtn(TEXT("Apply to picked views (transform + textures)"), [this]()
-        {
-            if (!SelectedLayerName.IsValid() || !ActivePreset) return;
-            TArray<EFaceAngleState> Dests;
-            for (int32 i = 0; i < SyncViewCheckBoxes.Num() && i < 10; ++i)
-            {
-                if (i == (int32)ActiveViewState) continue;
-                if (SyncViewCheckBoxes[i].IsValid() && SyncViewCheckBoxes[i]->IsChecked())
-                    Dests.Add((EFaceAngleState)i);
-            }
-            if (Dests.Num() == 0)
-            {
-                SetStatus(TEXT("No views picked - pick destinations or use All views"), FLinearColor::Yellow);
-                return;
-            }
-            SyncLayerToSelectedViews(ActiveViewState, SelectedLayerName, Dests, true);
-            RefreshUI();
-        }, FLinearColor(0.6f, 0.9f, 1.0f))];
-    Box->AddSlot().AutoHeight().Padding(FMargin(2, 1))
-        [MakeBtn(TEXT("All views (transform + textures)"), [this]()
-        {
-            if (!SelectedLayerName.IsValid()) return;
-            SyncLayerToAllViews(ActiveViewState, SelectedLayerName);
-            SyncTexturesLayerToAllViews(ActiveViewState, SelectedLayerName);
-            RefreshUI();
-        }, FLinearColor(0.6f, 0.9f, 1.0f))];
-    if (ActiveViewState != EFaceAngleState::Front)
-    {
-        Box->AddSlot().AutoHeight().Padding(FMargin(2, 1))
-            [MakeBtn(TEXT("Copy from Front -> This"), [this]()
-            {
-                if (!SelectedLayerName.IsValid()) return;
-                DuplicateState(EFaceAngleState::Front, ActiveViewState);
-                RefreshUI();
-            }, FLinearColor(0.9f, 0.85f, 0.7f))];
-    }
-    Box->AddSlot().AutoHeight().Padding(FMargin(2, 1))
-        [MakeBtn(TEXT("Fill missing views from This"), [this]()
-        {
-            if (!SelectedLayerName.IsValid()) return;
-            FillMissingViewsFromActiveSlot();
-            RefreshUI();
-        }, FLinearColor(0.7f, 0.9f, 0.7f))];
-    return Box;
-}
-
 void UFaceParallaxEditorWidget::BuildPanelSlotProps(const TSharedRef<SVerticalBox>& Root, TSharedRef<SVerticalBox>& PropPanelOut)
 {
     // --- 3c. SLOT PROPERTIES (right pane) ---
@@ -2855,7 +2756,7 @@ void UFaceParallaxEditorWidget::BuildPanelSlotProps(const TSharedRef<SVerticalBo
                     .IsChecked(bAutoFitOnAssign ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
                     .OnCheckStateChanged_Lambda([this](ECheckBoxState S)
                     { bool b = (S == ECheckBoxState::Checked); bAutoFitOnAssign = b; SetAutoFitOnAssign(b); })
-                    [MakeLbl(TEXT("AF"), 9, FLinearColor(0.5f,0.7f,0.5f))]];
+                    [MakeLbl(TEXT("AutoFit"), 9, FLinearColor(0.5f,0.7f,0.5f))]];
             PropPanel->AddSlot().AutoHeight().Padding(FMargin(2))
                 [ActRow];
         }
@@ -2870,6 +2771,26 @@ void UFaceParallaxEditorWidget::BuildPanelSlotProps(const TSharedRef<SVerticalBo
             // Transform section (canonical or view-override mode)
             {
                 TSharedRef<SVerticalBox> XForm = SNew(SVerticalBox);
+                // Per-View Mode toggle lives with the transform fields it
+                // affects (Phase 3: the Sync + Align page holds the ONE
+                // Copy/Sync panel instead).
+                {
+                    TSharedRef<SHorizontalBox> OvRow = SNew(SHorizontalBox);
+                    TSharedRef<SCheckBox> OvCheck = SNew(SCheckBox)
+                        .IsChecked(bViewOverrideMode ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
+                        .OnCheckStateChanged_Lambda([this](ECheckBoxState S)
+                        { SetViewOverrideMode(S == ECheckBoxState::Checked); });
+                    CheckViewOverrideMode = OvCheck;
+                    OvRow->AddSlot().Padding(FMargin(0,2)).AutoWidth()[OvCheck];
+                    TSharedRef<STextBlock> OvLbl = MakeLbl(TEXT("Per-View Mode"), 9, FLinearColor(1.0f,0.8f,0.4f));
+                    OvLbl->SetToolTipText(FText::FromString(TEXT("When on, the transform fields edit the override for the current view "
+                        "instead of the shared canonical transform. Overrides are per-rendered-view deltas applied on top of the canonical base.")));
+                    OvRow->AddSlot().Padding(FMargin(4,2)).AutoWidth()[OvLbl];
+                    OvRow->AddSlot().Padding(FMargin(4,2)).FillWidth(1.0f);
+                    OvRow->AddSlot().Padding(FMargin(2,2)).AutoWidth()
+                        [MakeBtn(TEXT("Clear Overrides"), [this](){ ClearAllOverridesForSlot(ActiveViewState, SelectedLayerName); RefreshUI(); }, FLinearColor(1.0f,0.6f,0.6f))];
+                    XForm->AddSlot().AutoHeight()[OvRow];
+                }
                 auto AddNumRow = [&](const FString& Label,
                     TSharedPtr<SEditableTextBox>& EditOut,
                     TFunction<void(float)>&& OnCommit)
@@ -2965,56 +2886,109 @@ void UFaceParallaxEditorWidget::BuildPanelSlotProps(const TSharedRef<SVerticalBo
                 PropsPages.Add(MakeSectionBox(TEXT("Transform"), XForm));
             }
 
-            // View override + sync-to-views + alignment, packed into one
-            // carousel page (P20 whitespace review: the three sections fit a
-            // single page viewport, so they must not stay separate tabs).
+            // Phase 3: the ONE Copy/Sync panel. Every sync + copy path now
+            // lives on this single page - the op selector, the always-visible
+            // destination grid, apply to picked / all, copy-from-view, fill
+            // missing, link, and the drift indicator. The old scattered UI
+            // (state-strip pick mode, the apply-to-views popups, the Art rail
+            // Quick Actions + Cross-View sections) is gone; view tabs always
+            // switch the active view.
             {
                 TSharedRef<SVerticalBox> SaBox = SNew(SVerticalBox);
-                TSharedRef<SHorizontalBox> OvRow = SNew(SHorizontalBox);
-                TSharedRef<SCheckBox> OvCheck = SNew(SCheckBox)
-                    .IsChecked(bViewOverrideMode ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
-                    .OnCheckStateChanged_Lambda([this](ECheckBoxState S)
-                    { SetViewOverrideMode(S == ECheckBoxState::Checked); });
-                CheckViewOverrideMode = OvCheck;
-                OvRow->AddSlot().Padding(FMargin(0,2)).AutoWidth()[OvCheck];
-                TSharedRef<STextBlock> OvLbl = MakeLbl(TEXT("Per-View Mode"), 9, FLinearColor(1.0f,0.8f,0.4f));
-                OvLbl->SetToolTipText(FText::FromString(TEXT("When on, the transform fields edit the override for the current view "
-                    "instead of the shared canonical transform. Overrides are per-rendered-view deltas applied on top of the canonical base.")));
-                OvRow->AddSlot().Padding(FMargin(4,2)).AutoWidth()[OvLbl];
-                OvRow->AddSlot().Padding(FMargin(4,2)).FillWidth(1.0f);
-                OvRow->AddSlot().Padding(FMargin(2,2)).AutoWidth()
-                    [MakeBtn(TEXT("Clear Overrides"), [this](){ ClearAllOverridesForSlot(ActiveViewState, SelectedLayerName); RefreshUI(); }, FLinearColor(1.0f,0.6f,0.6f))];
-                SaBox->AddSlot().AutoHeight()[OvRow];
 
-                // Phase D: the sync row is one grouped control - an explicit
-                // Transform / Textures / Both op selector plus the apply
-                // buttons. "Sync -> Selected" applies the chosen op to the
-                // views picked on the state strip; "Sync Both -> All" stays
-                // the canonical everything-everywhere quick action.
-                TSharedRef<SHorizontalBox> SyncRow = SNew(SHorizontalBox);
+                // Op selector: Transform / Textures / Both.
+                TSharedRef<SHorizontalBox> OpRow = SNew(SHorizontalBox);
                 TSharedRef<STextBlock> SyncLbl = MakeLbl(TEXT("Sync layer to:"), 9, FLinearColor(0.6f,0.8f,1.0f));
                 SyncLbl->SetToolTipText(FText::FromString(TEXT("Choose what to copy (Transform / Textures / Both), then apply to the "
-                    "views picked on the state strip or to all views.")));
-                SyncRow->AddSlot().Padding(FMargin(0,2)).AutoWidth()[SyncLbl];
+                    "destinations checked below or to all views.")));
+                OpRow->AddSlot().Padding(FMargin(0,2)).AutoWidth()[SyncLbl];
                 for (int32 O = 0; O < 3; ++O)
                 {
                     const int32 OO = O;
-                    SyncRow->AddSlot().Padding(FMargin(6,2)).AutoWidth()
+                    OpRow->AddSlot().Padding(FMargin(6,2)).AutoWidth()
                         [SNew(SButton)
                             .ButtonColorAndOpacity_Lambda([this, OO]()
                             {
                                 return SyncOp == OO ? AccentBlue() : FLinearColor(0.13f, 0.13f, 0.15f);
                             })
-                            .OnClicked_Lambda([this, OO](){ SyncOp = OO; return FReply::Handled(); })
+                            .OnClicked_Lambda([this, OO](){ SyncOp = OO; RefreshSyncDestDiff(); return FReply::Handled(); })
                             .Content()
                             [SNew(STextBlock)
                                 .Text(FText::FromString(UTF8_TO_TCHAR(FPLayout::SyncOpLabel(OO))))
                                 .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
                                 .ColorAndOpacity(FLinearColor(0.85f, 0.85f, 0.85f))]];
                 }
-                SyncRow->AddSlot().Padding(FMargin(4,2)).FillWidth(1.0f);
-                SyncRow->AddSlot().Padding(FMargin(2,2)).AutoWidth()
-                    [MakeBtn(TEXT("Sync -> Selected"), [this]()
+                SaBox->AddSlot().AutoHeight()[OpRow];
+
+                // Destinations header + clear.
+                TSharedRef<SHorizontalBox> DstHdr = SNew(SHorizontalBox);
+                DstHdr->AddSlot().Padding(FMargin(0,2)).AutoWidth()
+                    [MakeLbl(TEXT("Destinations:"), 9, FLinearColor(0.9f,0.8f,0.5f))];
+                DstHdr->AddSlot().Padding(FMargin(4,2)).FillWidth(1.0f);
+                DstHdr->AddSlot().Padding(FMargin(2,2)).AutoWidth()
+                    [MakeBtn(TEXT("Clear picks"), [this]()
+                    {
+                        for (TSharedPtr<SCheckBox>& C : SyncViewCheckBoxes)
+                            if (C.IsValid()) C->SetIsChecked(false);
+                        RefreshUI();
+                    })];
+                SaBox->AddSlot().AutoHeight()[DstHdr];
+
+                // Always-visible destination grid (2 rows x 5). The active
+                // view reads "This" and is never a destination.
+                struct { EFaceAngleState S; const TCHAR* T; } Dst[10] = {
+                    {EFaceAngleState::Front, TEXT("Front")},
+                    {EFaceAngleState::ThreeQuarterRight, TEXT("3/4R")},
+                    {EFaceAngleState::RightProfile, TEXT("ProfR")},
+                    {EFaceAngleState::BackRight, TEXT("BackR")},
+                    {EFaceAngleState::Back, TEXT("Back")},
+                    {EFaceAngleState::BackLeft, TEXT("BackL")},
+                    {EFaceAngleState::ThreeQuarterLeft, TEXT("3/4L")},
+                    {EFaceAngleState::LeftProfile, TEXT("ProfL")},
+                    {EFaceAngleState::Top, TEXT("Top")},
+                    {EFaceAngleState::Bottom, TEXT("Bot")},
+                };
+                for (int32 Row = 0; Row < 2; ++Row)
+                {
+                    TSharedRef<SHorizontalBox> GridRow = SNew(SHorizontalBox);
+                    for (int32 Col = 0; Col < 5; ++Col)
+                    {
+                        const int32 Idx = Row * 5 + Col;
+                        const EFaceAngleState S = Dst[Idx].S;
+                        const bool bSelf = (S == ActiveViewState);
+                        GridRow->AddSlot().AutoWidth().Padding(FMargin(0,1))
+                            [SNew(SCheckBox)
+                                .IsEnabled(!bSelf)
+                                .IsChecked_Lambda([this, S]()
+                                {
+                                    if (S == ActiveViewState) return ECheckBoxState::Unchecked;
+                                    return SyncViewCheckBoxes.IsValidIndex((int32)S)
+                                        && SyncViewCheckBoxes[(int32)S].IsValid()
+                                        && SyncViewCheckBoxes[(int32)S]->IsChecked()
+                                        ? ECheckBoxState::Checked : ECheckBoxState::Unchecked;
+                                })
+                                .OnCheckStateChanged_Lambda([this, S](ECheckBoxState NewState)
+                                {
+                                    if (SyncViewCheckBoxes.IsValidIndex((int32)S) && SyncViewCheckBoxes[(int32)S].IsValid())
+                                        SyncViewCheckBoxes[(int32)S]->SetIsChecked(NewState == ECheckBoxState::Checked);
+                                })];
+                        SyncDestLabels.SetNum(10);
+                        TSharedRef<STextBlock> DestLblRef = MakeLbl(bSelf ? TEXT("This") : Dst[Idx].T, 8,
+                            bSelf ? FLinearColor(0.9f, 0.8f, 0.5f) : FLinearColor(0.8f, 0.8f, 0.8f));
+                        SyncDestLabels[Idx] = DestLblRef;
+                        GridRow->AddSlot().AutoWidth().Padding(FMargin(0,1,6,1)).VAlign(VAlign_Center)
+                            [DestLblRef];
+                        if (!bSelf && SyncDestLabels[Idx].IsValid())
+                            SyncDestLabels[Idx]->SetToolTipText(FText::FromString(
+                                UFaceParallaxComponent::GetStateLabel(S).ToString()));
+                    }
+                    SaBox->AddSlot().AutoHeight()[GridRow];
+                }
+
+                // Apply actions.
+                TSharedRef<SHorizontalBox> ActRow = SNew(SHorizontalBox);
+                ActRow->AddSlot().Padding(FMargin(0,2)).AutoWidth()
+                    [MakeBtn(TEXT("Apply to picked"), [this]()
                     {
                         if (!SelectedLayerName.IsValid()) return;
                         TArray<EFaceAngleState> Dests;
@@ -3022,6 +2996,11 @@ void UFaceParallaxEditorWidget::BuildPanelSlotProps(const TSharedRef<SVerticalBo
                         {
                             if (SyncViewCheckBoxes[i].IsValid() && SyncViewCheckBoxes[i]->IsChecked())
                                 Dests.Add((EFaceAngleState)i);
+                        }
+                        if (Dests.Num() == 0)
+                        {
+                            SetStatus(TEXT("No views picked - check destinations or use All views"), FLinearColor::Yellow);
+                            return;
                         }
                         const bool bTr = FPLayout::SyncOpHasTransform(SyncOp);
                         const bool bTex = FPLayout::SyncOpHasTextures(SyncOp);
@@ -3031,32 +3010,110 @@ void UFaceParallaxEditorWidget::BuildPanelSlotProps(const TSharedRef<SVerticalBo
                             SyncTexturesToSelectedViews(ActiveViewState, SelectedLayerName, Dests);
                         RefreshUI();
                     }, FLinearColor(0.6f,0.8f,1.0f))];
-                SyncRow->AddSlot().Padding(FMargin(2,2)).AutoWidth()
-                    [MakeBtn(TEXT("Sync Both -> All"), [this]()
+                ActRow->AddSlot().Padding(FMargin(4,2)).AutoWidth()
+                    [MakeBtn(TEXT("All views"), [this]()
                     {
                         if (!SelectedLayerName.IsValid()) return;
                         SyncLayerToAllViews(ActiveViewState, SelectedLayerName);
                         SyncTexturesLayerToAllViews(ActiveViewState, SelectedLayerName);
                         RefreshUI();
                     })];
-                SyncPickerRow = SyncRow;
-                SaBox->AddSlot().AutoHeight()[SyncRow];
+                ActRow->AddSlot().FillWidth(1.0f);
+                SaBox->AddSlot().AutoHeight()[ActRow];
 
-                TSharedRef<SHorizontalBox> BothRow = SNew(SHorizontalBox);
-                BothRow->AddSlot().Padding(FMargin(0,2)).AutoWidth()
-                    [MakeLbl(TEXT("Destinations picked on the state strip"), 8, FLinearColor(0.6f,0.6f,0.6f))];
-                SaBox->AddSlot().AutoHeight()[BothRow];
+                // Copy from view + fill missing.
+                TSharedRef<SHorizontalBox> CopyRow = SNew(SHorizontalBox);
+                CopyFromOptions.Reset();
+                for (int32 i = 0; i <= (int32)EFaceAngleState::Bottom; ++i)
+                {
+                    if (i == (int32)ActiveViewState) continue;
+                    CopyFromOptions.Add(MakeShared<FString>(
+                        StaticEnum<EFaceAngleState>()->GetNameStringByValue(i)));
+                }
+                if (CopyFromSelection.IsValid())
+                {
+                    bool bStillValid = false;
+                    for (const TSharedPtr<FString>& Opt : CopyFromOptions)
+                    {
+                        if (Opt->Equals(*CopyFromSelection)) { bStillValid = true; break; }
+                    }
+                    if (!bStillValid) CopyFromSelection.Reset();
+                }
+                if (!CopyFromSelection.IsValid() && CopyFromOptions.Num() > 0)
+                    CopyFromSelection = CopyFromOptions[0];
+                TSharedRef<SComboBox<TSharedPtr<FString>>> CopyCombo =
+                    SNew(SComboBox<TSharedPtr<FString>>)
+                    .OptionsSource(&CopyFromOptions)
+                    .OnGenerateWidget_Lambda([](TSharedPtr<FString> Item)
+                    {
+                        return SNew(STextBlock)
+                            .Text(FText::FromString(*Item))
+                            .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9));
+                    })
+                    .OnSelectionChanged_Lambda([this](TSharedPtr<FString> Item, ESelectInfo::Type)
+                    {
+                        if (Item.IsValid()) CopyFromSelection = Item;
+                    })
+                    [SNew(STextBlock)
+                        .Text_Lambda([this]()
+                        {
+                            return CopyFromSelection.IsValid()
+                                ? FText::FromString(*CopyFromSelection)
+                                : FText::FromString(TEXT("View..."));
+                        })
+                        .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))];
+                CopyRow->AddSlot().Padding(FMargin(0,2)).AutoWidth()
+                    [MakeLbl(TEXT("Copy:"), 9, FLinearColor(0.6f,0.9f,0.7f))];
+                CopyRow->AddSlot().Padding(FMargin(4,2)).AutoWidth()
+                    [SNew(SBox).WidthOverride(64)[CopyCombo]];
+                CopyRow->AddSlot().Padding(FMargin(4,2)).AutoWidth()
+                    [SNew(SButton)
+                        .ButtonColorAndOpacity(FLinearColor(0.15f,0.15f,0.15f))
+                        .ToolTipText(FText::FromString(TEXT("Copy the selected view's transform into the active view")))
+                        .OnClicked_Lambda([this]()
+                        {
+                            if (!CopyFromSelection.IsValid()) return FReply::Handled();
+                            for (int32 i = 0; i <= (int32)EFaceAngleState::Bottom; ++i)
+                            {
+                                if (i == (int32)ActiveViewState) continue;
+                                if (StaticEnum<EFaceAngleState>()->GetNameStringByValue(i).Equals(*CopyFromSelection))
+                                {
+                                    CopyTransformFromView((EFaceAngleState)i, ActiveViewState);
+                                    RefreshUI();
+                                    return FReply::Handled();
+                                }
+                            }
+                            return FReply::Handled();
+                        })
+                        .Content()
+                        [MakeLbl(TEXT("Copy"), 9, FLinearColor(0.6f,1.0f,0.6f))]];
+                CopyRow->AddSlot().Padding(FMargin(4,2)).AutoWidth()
+                    [MakeBtn(TEXT("Fill missing"), [this]()
+                    {
+                        if (!SelectedLayerName.IsValid()) return;
+                        FillMissingViewsFromActiveSlot();
+                        RefreshUI();
+                    }, FLinearColor(0.7f, 0.9f, 0.7f))];
+                CopyRow->AddSlot().FillWidth(1.0f);
+                SaBox->AddSlot().AutoHeight()[CopyRow];
 
+                // Link broadcast + drift indicator.
                 TSharedRef<SHorizontalBox> LinkRow = SNew(SHorizontalBox);
                 TSharedRef<SCheckBox> LinkCheck = SNew(SCheckBox)
                     .IsChecked(bLinkAcrossViews ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
                     .OnCheckStateChanged_Lambda([this](ECheckBoxState S)
                     { bLinkAcrossViews = (S == ECheckBoxState::Checked); });
-                LinkCheck->SetToolTipText(FText::FromString(TEXT("Edits in this state are broadcast live to the views picked on the "
-                    "state strip; when none are picked, to all other states (Phase D)")));
+                LinkCheck->SetToolTipText(FText::FromString(TEXT("Edits in this state are broadcast live to the views checked above; "
+                    "when none are checked, to all other states (Phase D)")));
                 LinkRow->AddSlot().Padding(FMargin(0,2)).AutoWidth()[LinkCheck];
                 LinkRow->AddSlot().Padding(FMargin(4,2)).AutoWidth()
-                    [MakeLbl(TEXT("Link transform across views"), 9, FLinearColor(0.6f,0.8f,1.0f))];
+                    [MakeLbl(TEXT("Link across views"), 9, FLinearColor(0.6f,0.8f,1.0f))];
+                LinkRow->AddSlot().Padding(FMargin(4,2)).FillWidth(1.0f);
+                TextSyncDrift = SNew(STextBlock)
+                    .Text(FText::FromString(TEXT("")))
+                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9));
+                LinkRow->AddSlot().AutoWidth().Padding(FMargin(2,2))
+                    [TextSyncDrift.ToSharedRef()];
                 SaBox->AddSlot().AutoHeight()[LinkRow];
                 PropsPages.Add(MakeSectionBox(TEXT("Sync + Align"), SaBox));
             }
@@ -3219,8 +3276,15 @@ void UFaceParallaxEditorWidget::BuildPanelToolbar(const TSharedRef<SVerticalBox>
         TB->AddSlot().Padding(FMargin(8,2)).AutoWidth()
             [MakeBtn(TEXT("Import Art..."), [this]()
             {
-                // P4: the Import Folder Wizard is THE one and only import
-                // entry point — folder scan, per-part preview, drag-drop zone.
+                // Phase 2: the native OS file picker is the PRIMARY import path
+                // (click a part -> pick file(s) -> assigned by channel suffix).
+                OpenImportArtDialog();
+            })];
+        TB->AddSlot().Padding(FMargin(4,2)).AutoWidth()
+            [MakeBtn(TEXT("Import Folder..."), [this]()
+            {
+                // Secondary bulk path: the folder wizard (scan / per-part
+                // preview / drop zone) for multi-view imports.
                 OpenImportFolderWizard(TEXT(""));
             })];
         SearchBox = SNew(SSearchBox)
@@ -3375,26 +3439,11 @@ void UFaceParallaxEditorWidget::BuildPanelStateStrip(const TSharedRef<SVerticalB
             TSharedRef<SButton> TabBtn = SNew(SButton)
                 .ButtonColorAndOpacity_Lambda([this, S]()
                 {
-                    if (bStatePickMode && SyncViewCheckBoxes.IsValidIndex((int32)S)
-                        && SyncViewCheckBoxes[(int32)S].IsValid()
-                        && SyncViewCheckBoxes[(int32)S]->IsChecked())
-                        return FLinearColor(1.0f, 0.7f, 0.3f); // picked sync destination
                     return (S == ActiveViewState) ? AccentBlue() : FLinearColor(0.12f,0.12f,0.12f);
                 })
+                .ToolTipText(FText::FromString(UFaceParallaxComponent::GetStateLabel(S).ToString()))
                 .OnClicked_Lambda([this, S]()
                 {
-                    if (bStatePickMode)
-                    {
-                        if (SyncViewCheckBoxes.IsValidIndex((int32)S) && SyncViewCheckBoxes[(int32)S].IsValid())
-                        {
-                            SyncViewCheckBoxes[(int32)S]->ToggleCheckedState();
-                            if (TextStatus.IsValid())
-                                TextStatus->SetText(FText::FromString(FString::Printf(
-                                    TEXT("Pick: %s is now a sync destination"),
-                                    *StaticEnum<EFaceAngleState>()->GetNameStringByValue((int64)S))));
-                        }
-                        return FReply::Handled();
-                    }
                     SetActiveViewState(S);
                     RefreshUI();
                     return FReply::Handled();
@@ -3419,11 +3468,6 @@ void UFaceParallaxEditorWidget::BuildPanelStateStrip(const TSharedRef<SVerticalB
                     if (SelectedLayerName.IsValid()) ClearAllOverridesForSlot(S, SelectedLayerName);
                     RefreshUI();
                 }, FLinearColor(1.0f,0.6f,0.6f), FLinearColor(0.1f,0.1f,0.1f))];
-            // P2: the apply-to-views picker replaces the old sync-all /
-            // fill-missing / 9-button duplicate section - every copy path
-            // now lives in ONE picker (10 views + All + copy-from-Front).
-            Menu->AddSlot().AutoHeight().Padding(FMargin(0, 4, 0, 0))
-                [BuildApplyToViewsContent()];
             TSharedRef<SMenuAnchor> AnchorRef = SNew(SMenuAnchor)
                 .Placement(MenuPlacement_BelowAnchor)
                 .OnGetMenuContent_Lambda([Menu]() { return Menu; });
@@ -3443,27 +3487,6 @@ void UFaceParallaxEditorWidget::BuildPanelStateStrip(const TSharedRef<SVerticalB
                 [SNew(SHorizontalBox)
                     + SHorizontalBox::Slot().FillWidth(1.0f)[TabBtn]
                     + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[AnchorRef]];
-        }
-        // Pick mode toggle: when on, state tabs pick sync destinations instead
-        // of switching the active view (replaces the old props-pane checkbox row).
-        {
-            TSharedRef<SButton> PickBtn = SNew(SButton)
-                .ButtonColorAndOpacity_Lambda([this]()
-                { return bStatePickMode ? FLinearColor(1.0f, 0.7f, 0.3f) : FLinearColor(0.08f,0.08f,0.08f); })
-                .OnClicked_Lambda([this]()
-                {
-                    bStatePickMode = !bStatePickMode;
-                    if (TextStatus.IsValid())
-                        TextStatus->SetText(FText::FromString(bStatePickMode
-                            ? TEXT("Pick mode: click state tabs to choose sync destinations")
-                            : TEXT("Pick mode off")));
-                    RefreshUI();
-                    return FReply::Handled();
-                })
-                .Content()
-                [MakeLbl(TEXT("Pick"), 9, FLinearColor(0.9f,0.9f,0.9f))];
-            PickBtn->SetToolTipText(FText::FromString(TEXT("Pick mode: click state tabs to toggle them as sync destinations (Sync -> Selected uses them)")));
-            StateBar->AddSlot().Padding(FMargin(4,2)).AutoWidth().VAlign(VAlign_Center)[PickBtn];
         }
         Root->AddSlot().AutoHeight()
             [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("NoBorder"))
@@ -3766,138 +3789,14 @@ void UFaceParallaxEditorWidget::AddLayerPinAtDefault()
 
 void UFaceParallaxEditorWidget::BuildPanelArtRail()
 {
-            // Quick actions (batch operations) - the canonical pinned actions
-            // (Import Art... / Auto-Fit All / Clear All Overrides, P7-B)
-            // live ONLY in the pinned strip above the main row
-            // (P21 PinnedActionsNeverInScroll); this rail section keeps the
-            // rail-local operations that are not part of that canonical set.
-            {
-                TSharedRef<SVerticalBox> QaBox = SNew(SVerticalBox);
-                TSharedRef<SHorizontalBox> QaRow = SNew(SHorizontalBox);
-                // P2: ONE apply-to-views picker replaces "Duplicate Front ->
-                // This" + "Fill Missing Views" - 10 views + All + copy-from-
-                // Front in a single popup (same component as the v-menu).
-                TSharedRef<SMenuAnchor> ApplyAnchor = SNew(SMenuAnchor)
-                    .Placement(MenuPlacement_BelowAnchor)
-                    .OnGetMenuContent_Lambda([this]() { return BuildApplyToViewsContent(); });
-                ApplyAnchor->SetContent(MakeBtn(TEXT("Apply to views..."),
-                    [ApplyAnchor]()
-                    {
-                        ApplyAnchor->SetIsOpen(true, true);
-                    }, FLinearColor(0.6f, 0.9f, 1.0f)));
-                QaRow->AddSlot().Padding(FMargin(0, 2)).AutoWidth()
-                    [ApplyAnchor];
-                QaRow->AddSlot().Padding(FMargin(4, 2)).FillWidth(1.0f);
-                QaBox->AddSlot().AutoHeight()[QaRow];
-                // Sync drift indicator (Phase C): counts views whose transforms
-                // have drifted from the active view state (mirror math in
-                // FaceParallaxLayoutSpec.h, TestPinDriftMirror).
-                {
-                    TSharedRef<SHorizontalBox> DriftRow = SNew(SHorizontalBox);
-                    DriftRow->AddSlot().AutoWidth().Padding(FMargin(0,3,4,2))
-                        [MakeLbl(TEXT("Sync:"), 8, FLinearColor(0.6f,0.6f,0.6f))];
-                    TextSyncDrift = SNew(STextBlock)
-                        .Text(FText::FromString(TEXT("")))
-                        .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9));
-                    DriftRow->AddSlot().AutoWidth().Padding(FMargin(0,3,0,2))
-                        [TextSyncDrift.ToSharedRef()];
-                    QaBox->AddSlot().AutoHeight()[DriftRow];
-                }
-                TSharedRef<SWidget> QaSection = MakeSectionBox(TEXT("Quick Actions"), QaBox);
-                RailContent[1]->AddSlot().AutoHeight()
-                    [QaSection];
-                RegisterRailSection(1, TEXT("Quick Actions"), QaSection);
-            }
-
-            // Cross-view transform tools (copy-from + link)
-            {
-                TSharedRef<SVerticalBox> XvBox = SNew(SVerticalBox);
-                TSharedRef<SHorizontalBox> XvRow = SNew(SHorizontalBox);
-                CopyFromOptions.Reset();
-                for (int32 i = 0; i <= (int32)EFaceAngleState::Bottom; ++i)
-                {
-                    if (i == (int32)ActiveViewState) continue;
-                    CopyFromOptions.Add(MakeShared<FString>(
-                        StaticEnum<EFaceAngleState>()->GetNameStringByValue(i)));
-                }
-                if (CopyFromSelection.IsValid())
-                {
-                    bool bStillValid = false;
-                    for (const TSharedPtr<FString>& Opt : CopyFromOptions)
-                    {
-                        if (Opt->Equals(*CopyFromSelection)) { bStillValid = true; break; }
-                    }
-                    if (!bStillValid) CopyFromSelection.Reset();
-                }
-                if (!CopyFromSelection.IsValid() && CopyFromOptions.Num() > 0)
-                    CopyFromSelection = CopyFromOptions[0];
-                TSharedRef<SComboBox<TSharedPtr<FString>>> CopyCombo =
-                    SNew(SComboBox<TSharedPtr<FString>>)
-                    .OptionsSource(&CopyFromOptions)
-                    .OnGenerateWidget_Lambda([](TSharedPtr<FString> Item)
-                    {
-                        return SNew(STextBlock)
-                            .Text(FText::FromString(*Item))
-                            .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9));
-                    })
-                    .OnSelectionChanged_Lambda([this](TSharedPtr<FString> Item, ESelectInfo::Type)
-                    {
-                        if (Item.IsValid()) CopyFromSelection = Item;
-                    })
-                    [SNew(STextBlock)
-                        .Text_Lambda([this]()
-                        {
-                            return CopyFromSelection.IsValid()
-                                ? FText::FromString(*CopyFromSelection)
-                                : FText::FromString(TEXT("View..."));
-                        })
-                        .Font(FCoreStyle::GetDefaultFontStyle("Regular", 9))];
-                XvRow->AddSlot().Padding(FMargin(0,2)).AutoWidth()
-                    [MakeLbl(TEXT("Copy:"), 9, FLinearColor(0.6f,0.9f,0.7f))];
-                XvRow->AddSlot().Padding(FMargin(4,2)).AutoWidth()
-                    [SNew(SBox).WidthOverride(64)[CopyCombo]];
-                XvRow->AddSlot().Padding(FMargin(4,2)).AutoWidth()
-                    [SNew(SButton)
-                        .ButtonColorAndOpacity(FLinearColor(0.15f,0.15f,0.15f))
-                        .ToolTipText(FText::FromString(TEXT("Copy the selected view's transform into the active view")))
-                        .OnClicked_Lambda([this]()
-                        {
-                            if (!CopyFromSelection.IsValid()) return FReply::Handled();
-                            for (int32 i = 0; i <= (int32)EFaceAngleState::Bottom; ++i)
-                            {
-                                if (i == (int32)ActiveViewState) continue;
-                                if (StaticEnum<EFaceAngleState>()->GetNameStringByValue(i).Equals(*CopyFromSelection))
-                                {
-                                    CopyTransformFromView((EFaceAngleState)i, ActiveViewState);
-                                    RefreshUI();
-                                    return FReply::Handled();
-                                }
-                            }
-                            return FReply::Handled();
-                        })
-                        .Content()
-                        [MakeLbl(TEXT("Copy"), 9, FLinearColor(0.6f,1.0f,0.6f))]];
-                XvRow->AddSlot().Padding(FMargin(4,2)).FillWidth(1.0f);
-                TSharedRef<SCheckBox> LinkCheck = SNew(SCheckBox)
-                    .IsChecked(bLinkAcrossViews ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
-                    .OnCheckStateChanged_Lambda([this](ECheckBoxState S)
-                    { bLinkAcrossViews = (S == ECheckBoxState::Checked); });
-                LinkCheck->SetToolTipText(FText::FromString(TEXT("Edits in this state are broadcast to all other states")));
-                XvBox->AddSlot().AutoHeight()[XvRow];
-                // P22: the Link toggle sits on its own second row so the whole
-                // Cross-View section fits the 180px rail width.
-                TSharedRef<SHorizontalBox> XvRowB = SNew(SHorizontalBox);
-                XvRowB->AddSlot().Padding(FMargin(0,2)).AutoWidth()[LinkCheck];
-                XvRowB->AddSlot().Padding(FMargin(2,2)).AutoWidth()
-                    [MakeLbl(TEXT("Link"), 9, FLinearColor(0.6f,0.8f,1.0f))];
-                XvBox->AddSlot().AutoHeight()[XvRowB];
-                TSharedRef<SWidget> XvSection = MakeSectionBox(TEXT("Cross-View Transform"), XvBox);
-                RailContent[1]->AddSlot().AutoHeight()
-                    [XvSection];
-                RegisterRailSection(1, TEXT("Cross-View Transform"), XvSection);
-            }
-
-
+        // Phase 3: the Art rail's sync/copy tools (the apply-to-views popup
+        // and the Cross-View Transform section) moved into the ONE Copy/Sync
+        // panel on the props Sync + Align page; the rail keeps its per-part
+        // operations (Import / Outline -> Depth / Bulk Assign / Assign Ops).
+        // The canonical pinned actions (Import Art... / Auto-Fit All / Clear
+        // All Overrides, P7-B) live ONLY in the pinned strip above the main
+        // row (P21 PinnedActionsNeverInScroll).
+        {
         // Import + Outline -> Depth: accordion-collapsed sections (P16)
         // on the Art rail; Import open by default. P4: the folder wizard is
         // the ONE entry point (folder scan + drop zone + per-part preview).
@@ -4091,6 +3990,7 @@ void UFaceParallaxEditorWidget::BuildPanelArtRail()
             RailContent[1]->AddSlot().AutoHeight()[ArtAccordion.ToSharedRef()];
             RegisterAccordionSections(1, ArtAccordion);
         }
+        }
 
         // Bulk Assign + Assign Ops (moved from the old Assign rail)
     // Bulk Assign grid: 10 state columns x 3 layer rows, plus row labels and
@@ -4115,13 +4015,15 @@ void UFaceParallaxEditorWidget::BuildPanelArtRail()
         TSharedRef<SHorizontalBox> Header = SNew(SHorizontalBox);
         for (auto& St : States)
         {
+            TSharedRef<STextBlock> HdrLbl = SNew(STextBlock)
+                .Text(FText::FromString(St.T))
+                .Font(FCoreStyle::GetDefaultFontStyle("Regular", 7))
+                .Justification(ETextJustify::Center)
+                .ColorAndOpacity(FLinearColor(0.55f, 0.55f, 0.6f));
+            HdrLbl->SetToolTipText(FText::FromString(
+                UFaceParallaxComponent::GetStateLabel(St.S).ToString()));
             Header->AddSlot().AutoWidth().Padding(FMargin(0, 2))
-                [SNew(SBox).WidthOverride(16)
-                    [SNew(STextBlock)
-                        .Text(FText::FromString(St.T))
-                        .Font(FCoreStyle::GetDefaultFontStyle("Regular", 7))
-                        .Justification(ETextJustify::Center)
-                        .ColorAndOpacity(FLinearColor(0.55f, 0.55f, 0.6f))]];
+                [SNew(SBox).WidthOverride(16)[HdrLbl]];
         }
         GB->AddSlot().AutoHeight()[Header];
 
@@ -4218,19 +4120,8 @@ void UFaceParallaxEditorWidget::BuildPanelArtRail()
                     ClearAllOverridesForSlot((EFaceAngleState)i, SelectedLayerName);
                 RefreshUI();
             }, FLinearColor(1.0f, 0.6f, 0.6f))];
-        // P2: ONE apply-to-views picker replaces "Fill Missing" + "Slot ->
-        // All" - same component as the v-menu and the Quick Actions row.
-        // P22: shortened to "Apply views" so the row fits the rail.
-        TSharedRef<SMenuAnchor> OpsAnchor = SNew(SMenuAnchor)
-            .Placement(MenuPlacement_BelowAnchor)
-            .OnGetMenuContent_Lambda([this]() { return BuildApplyToViewsContent(); });
-        OpsAnchor->SetContent(MakeBtn(TEXT("Apply views"),
-            [OpsAnchor]()
-            {
-                OpsAnchor->SetIsOpen(true, true);
-            }, FLinearColor(0.8f, 0.9f, 1.0f)));
-        Row0->AddSlot().Padding(FMargin(4, 2)).AutoWidth()
-            [OpsAnchor];
+        // Phase 3: the apply-to-views picker moved into the ONE Copy/Sync
+        // panel on the props Sync + Align page.
         Row0->AddSlot().FillWidth(1.0f);
         OB->AddSlot().AutoHeight()[Row0];
 

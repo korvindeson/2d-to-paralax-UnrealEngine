@@ -54,11 +54,13 @@ void UFaceParallaxEditorWidget::SetSelectedLayer(const FString& LayerName)
 // share ONE interaction model — left-click picks the part. Resolve the part
 // to its layer (explicit HotspotLayerMap first, then the derived match),
 // select it, jump to the Art rail, set the 'Front -> Eyes' breadcrumb, pulse
-// the glyph, and — when the layer still has NO art — open the Import Folder
-// Wizard preselected on exactly the part that was clicked. Layers that
-// already have art just get selected (the live preview is the review
-// surface). The old hotspot-region and layer-art-quad click layers were
-// deleted: this core is the only pick path left.
+// the glyph, and — when the layer still has NO art — open the native OS file
+// picker (Phase 2, the primary import path: click part -> pick file -> done).
+// Layers that already have art just get selected (the live preview is the
+// review surface). The bulk Folder Wizard remains the secondary path from the
+// Art rail ("Import Folder...") for multi-view folder scans. The old
+// hotspot-region and layer-art-quad click layers were deleted: this core is
+// the only pick path left.
 void UFaceParallaxEditorWidget::SelectPartOrImport(const FString& PartName)
 {
     if (PartName.IsEmpty()) return;
@@ -94,7 +96,7 @@ void UFaceParallaxEditorWidget::SelectPartOrImport(const FString& PartName)
     }
     SetStatus(FString::Printf(TEXT("Part '%s' -> layer '%s' — import art for this part"),
         *PartName, *LayerTag.ToString()), AccentBlue());
-    OpenImportFolderWizard(PartName);
+    OpenImportArtDialog();
 }
 
 // Legend chip left-click: identical semantics to the canvas glyph (one map).
@@ -137,6 +139,41 @@ bool UFaceParallaxEditorWidget::LayerHasFrontArt(FName LayerTag) const
 {
     if (!ActivePreset || LayerTag.IsNone()) return false;
     return ActivePreset->GetSlot(EFaceAngleState::Front, LayerTag).Textures.Albedo != nullptr;
+}
+
+// ===== PHASE 2: DIRECT ART IMPORT =====
+
+// Pure drop-target resolution (mirrored by TestPhase2DirectImportMirrors): a
+// part hit under the drop point wins — its resolved layer becomes the target;
+// otherwise the currently selected layer is the fallback; NAME_None means no
+// target and the drop is rejected with a status hint.
+FName UFaceParallaxEditorWidget::CanvasDropTargetLayer(const FName& ResolvedPartLayer,
+    const FName& SelectedLayer)
+{
+    return ResolvedPartLayer.IsValid() ? ResolvedPartLayer : SelectedLayer;
+}
+
+// Canvas drop entry point: resolve the target layer (part hit wins, else the
+// selection), select it when the drop landed on a part (the part's layer is
+// then highlighted on canvas), and route the payload through the shared
+// AssignImageDropToSlot pipeline (OS files imported, channels read from name
+// suffixes, Content Browser textures assigned directly).
+bool UFaceParallaxEditorWidget::HandleCanvasDrop(const FString& PartUnderCursor,
+    const FName& ResolvedPartLayer, const FDragDropEvent& Ev)
+{
+    FName Target = CanvasDropTargetLayer(ResolvedPartLayer, SelectedLayerName);
+    if (!Target.IsValid())
+    {
+        SetStatus(TEXT("Drop ignored: drop on a part (or select a layer first)"),
+            FLinearColor::Yellow);
+        return false;
+    }
+    if (ResolvedPartLayer.IsValid())
+    {
+        SetSelectedLayer(Target.ToString());
+        RefreshSchematic();
+    }
+    return AssignImageDropToSlot(ActiveViewState, Target, Ev);
 }
 
 // ===== CENTRAL CANVAS REDESIGN: FILTERS + FOCUS (Phase 3) =====
@@ -484,7 +521,7 @@ void UFaceParallaxEditorWidget::BuildRailSectionChips()
                 .Content()
                 [SNew(STextBlock)
                     .Text(FText::FromString(Title))
-                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 7))
+                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
                     .ColorAndOpacity(FLinearColor(0.75f, 0.75f, 0.8f))];
             Chip->SetToolTipText(FText::FromString(TEXT("Jump to section: ") + Title));
             RailChipsRows[Ri]->AddSlot().AutoWidth().Padding(FMargin(2, 2, 0, 2))[Chip];
@@ -766,6 +803,88 @@ FVector2D UFaceParallaxEditorWidget::GizmoPixelsToUV(const FVector2D& Pixels, co
     return FVector2D(Pixels.X / CanvasSize.X, Pixels.Y / CanvasSize.Y);
 }
 
+int32 UFaceParallaxEditorWidget::GizmoHitTest(const FFaceArtTransform& T,
+    const FVector2D& Local, const FVector2D& CanvasSize)
+{
+    if (CanvasSize.X <= 0.0f || CanvasSize.Y <= 0.0f) return kGizmoHitNone;
+    const FVector2D Center = CanvasSize * 0.5f + GizmoUVToPixels(T.Position, CanvasSize);
+    const FVector2D Half = GizmoUVToPixels(T.Scale, CanvasSize) * 0.5f;
+    if (Half.X < 1.0f || Half.Y < 1.0f) return kGizmoHitNone;   // degenerate box: no handles
+
+    const float Rad = FMath::DegreesToRadians(T.Rotation);
+    const float CosR = FMath::Cos(Rad), SinR = FMath::Sin(Rad);
+    auto Rot = [CosR, SinR](const FVector2D& V)
+    {
+        return FVector2D(V.X * CosR - V.Y * SinR, V.X * SinR + V.Y * CosR);
+    };
+    const FVector2D Corners[4] = {
+        Center + Rot(FVector2D(-Half.X, -Half.Y)),
+        Center + Rot(FVector2D(Half.X, -Half.Y)),
+        Center + Rot(FVector2D(Half.X, Half.Y)),
+        Center + Rot(FVector2D(-Half.X, Half.Y)),
+    };
+
+    // Handles take priority over the move ring (same 14px radius as the pin
+    // drag handle, and drawn larger than the box edges so they are easy to hit).
+    const FVector2D RotHandle = Center + Rot(FVector2D(0.0f, -Half.Y - 14.0f));
+    if (FVector2D::Distance(Local, RotHandle) <= 14.0f) return kGizmoHitRotate;
+    if (FVector2D::Distance(Local, Corners[2]) <= 14.0f) return kGizmoHitScale;
+
+    // Move ring: the four box edges, +/-7px. The interior is a deliberate miss
+    // so part glyphs behind the box stay clickable (P1 one-map).
+    for (int32 e = 0; e < 4; ++e)
+    {
+        const FVector2D A = Corners[e];
+        const FVector2D B = Corners[(e + 1) % 4];
+        const FVector2D AB = B - A;
+        const float Len2 = AB.SizeSquared();
+        if (Len2 < 1.0f) continue;
+        const float Tt = FMath::Clamp(FVector2D::DotProduct(Local - A, AB) / Len2, 0.0f, 1.0f);
+        if (FVector2D::Distance(Local, A + AB * Tt) <= 7.0f) return kGizmoHitMove;
+    }
+    return kGizmoHitNone;
+}
+
+FFaceArtTransform UFaceParallaxEditorWidget::GizmoApplyDrag(const FFaceArtTransform& StartT,
+    int32 Mode, const FVector2D& StartPx, const FVector2D& CurPx, const FVector2D& CanvasSize)
+{
+    FFaceArtTransform T = StartT;
+    if (CanvasSize.X <= 0.0f || CanvasSize.Y <= 0.0f) return T;
+    const FVector2D Center = CanvasSize * 0.5f + GizmoUVToPixels(StartT.Position, CanvasSize);
+
+    if (Mode == kGizmoHitMove)
+    {
+        // Pixel delta -> UV delta, applied on top of the drag-start position
+        // (never incremental, so a mid-drag re-entry cannot drift).
+        const FVector2D DeltaUV = GizmoPixelsToUV(CurPx - StartPx, CanvasSize);
+        T.Position = StartT.Position + DeltaUV;
+    }
+    else if (Mode == kGizmoHitRotate)
+    {
+        const float D0 = FVector2D::Distance(StartPx, Center);
+        if (D0 < 1.0f) return T;   // degenerate grab point: keep the starting transform
+        const float A0 = FMath::Atan2(StartPx.Y - Center.Y, StartPx.X - Center.X);
+        const float A1 = FMath::Atan2(CurPx.Y - Center.Y, CurPx.X - Center.X);
+        float Delta = FMath::RadiansToDegrees(A1 - A0);
+        // Normalize the per-drag delta to [-180, 180] so a full circle sweeps
+        // without a jump, then clamp the accumulated rotation to +/-360.
+        Delta = FMath::Fmod(Delta + 540.0f, 360.0f) - 180.0f;
+        T.Rotation = FMath::Clamp(StartT.Rotation + Delta, -360.0f, 360.0f);
+    }
+    else if (Mode == kGizmoHitScale)
+    {
+        const float D0 = FVector2D::Distance(StartPx, Center);
+        if (D0 < 1.0f) return T;   // degenerate anchor: keep the starting transform
+        float Factor = FVector2D::Distance(CurPx, Center) / D0;
+        Factor = FMath::Clamp(Factor, 0.02f, 50.0f);
+        // Uniform scale (single corner), then the per-axis UPROPERTY clamps.
+        T.Scale = FVector2D(
+            FMath::Clamp(StartT.Scale.X * Factor, 0.01f, 100.0f),
+            FMath::Clamp(StartT.Scale.Y * Factor, 0.01f, 100.0f));
+    }
+    return T;
+}
+
 void UFaceParallaxEditorWidget::CopyTransformFromView(EFaceAngleState Src, EFaceAngleState Dst)
 {
     if (!ValidatePreset() || !SelectedLayerName.IsValid() || Src == Dst) return;
@@ -894,6 +1013,42 @@ void UFaceParallaxEditorWidget::RefreshSyncDriftIndicator()
     {
         TextSyncDrift->SetColorAndOpacity(FLinearColor(0.3f, 0.9f, 0.3f));
         TextSyncDrift->SetText(FText::FromString(TEXT("Synced")));
+    }
+    RefreshSyncDestDiff();
+}
+
+void UFaceParallaxEditorWidget::RefreshSyncDestDiff()
+{
+    for (TSharedPtr<STextBlock>& Lbl : SyncDestLabels)
+    {
+        if (Lbl.IsValid())
+            Lbl->SetColorAndOpacity(FLinearColor(0.8f, 0.8f, 0.8f));
+    }
+    if (!SelectedLayerName.IsValid() || !ActivePreset) return;
+    const FFaceArtSlot& ActiveSlot = ActivePreset->GetSlot(ActiveViewState, SelectedLayerName);
+    const FFaceArtTransform Active = ActiveSlot.CanonicalTransform;
+    const bool bActiveHasArt = ActiveSlot.Textures.Albedo != nullptr;
+    for (int32 i = 0; i < SyncDestLabels.Num() && i <= (int32)EFaceAngleState::Bottom; ++i)
+    {
+        if (i == (int32)ActiveViewState) continue;
+        TSharedPtr<STextBlock>& Lbl = SyncDestLabels[i];
+        if (!Lbl.IsValid()) continue;
+        const FFaceArtSlot& Dest = ActivePreset->GetSlot((EFaceAngleState)i, SelectedLayerName);
+        const FFaceArtTransform DT = Dest.CanonicalTransform;
+        const bool bTransformEqual = DT.Position == Active.Position && DT.Scale == Active.Scale && DT.Rotation == Active.Rotation;
+        const int Diff = FPLayout::FPSyncDestDiff(SyncOp, bActiveHasArt, Dest.Textures.Albedo != nullptr, bTransformEqual);
+        switch (Diff)
+        {
+        case FPLayout::SyncDestMissing:
+            Lbl->SetColorAndOpacity(FLinearColor(1.0f, 0.4f, 0.4f));    // red = apply would fill empty art
+            break;
+        case FPLayout::SyncDestDiffers:
+            Lbl->SetColorAndOpacity(FLinearColor(1.0f, 0.7f, 0.3f));    // amber = apply overwrites
+            break;
+        default:
+            Lbl->SetColorAndOpacity(FLinearColor(0.6f, 0.85f, 0.6f));   // green = already matches
+            break;
+        }
     }
 }
 
@@ -1593,7 +1748,7 @@ void UFaceParallaxEditorWidget::RefreshHullThumbnails()
                 + SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center)
                     [SNew(STextBlock)
                         .Text(FText::FromString(HullShort[i]))
-                        .Font(FCoreStyle::GetDefaultFontStyle("Regular", 7))
+                        .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
                         .ColorAndOpacity(FLinearColor(0.7f, 0.7f, 0.7f))]];
         Btn->SetToolTipText(FText::FromString(Name));
         Grid->AddSlot(i % 5, i / 5).Padding(FMargin(2))[Btn];
@@ -1674,6 +1829,13 @@ void UFaceParallaxEditorWidget::SetGizmoPinUV(const FVector2D& UV)
 // that UV (the selected nested element, or the whole-layer pin when no
 // element is selected). Same zone-frame math as SetGizmoPinUV, wrapped in an
 // undo scope; the gizmo/hotspot layers pick it up on the next RefreshUI.
+bool UFaceParallaxEditorWidget::ConsumePendingPinPlacement()
+{
+    const bool bArmed = bPendingPinPlacement;
+    bPendingPinPlacement = false;
+    return bArmed;
+}
+
 void UFaceParallaxEditorWidget::PlacePinAtUV(const FVector2D& UV)
 {
     UFaceParallaxComponent* Comp = GetParallaxComponent();
@@ -1985,7 +2147,7 @@ void UFaceParallaxEditorWidget::RebuildVisemeGrid()
             {
                 TSharedRef<STextBlock> Lbl = SNew(STextBlock)
                     .Text(FText::FromString(Row.Label))
-                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 7))
+                    .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
                     .ColorAndOpacity(!Row.bNamed && bPlaying && Row.Enum == CurV
                         ? FLinearColor(1.0f,0.8f,0.4f) : FLinearColor(0.8f,0.8f,0.8f));
                 Lbl->SetToolTipText(FText::FromString(FString::Printf(TEXT("%s: %d/%d frames (%.0f%%)"),
@@ -2187,12 +2349,13 @@ void UFaceParallaxEditorWidget::RebuildPinManager()
         8, FLinearColor(0.8f, 0.8f, 0.8f));
     Info->SetToolTipText(FText::FromString(TEXT("One row per pinned item. Click a row to jump to its pin "
         "controls; the visibility checkbox and Unpin act on the row's element. "
-        "Add Pin creates a new element pinned at the canvas center.")));
+        "Add Pin creates a new element; the next canvas click places its pin at the cursor.")));
     PinManagerBox->AddSlot().AutoHeight().Padding(FMargin(0,2))
         [Info];
 
-    // P3: Add Pin — a new nested element pinned at front center (the canvas
-    // Pin Mode then moves it into place; the outliner renames it).
+    // P3: Add Pin — a new nested element (pinned, at origin) plus a one-shot
+    // arm: the NEXT canvas click places the pin at the cursor (PlacePinAtUV),
+    // then the arm clears and one-map selection resumes.
     PinManagerBox->AddSlot().AutoHeight().Padding(FMargin(0,1))
         [SNew(SFaceFlashButton).Text(TEXT("Add Pin"))
             .OnClicked_Lambda([this]()
@@ -2208,7 +2371,8 @@ void UFaceParallaxEditorWidget::RebuildPinManager()
                 Comp->AddNestedElement(ActiveViewState, SelectedLayerName, El);
                 SelectedNestedElementIndex = FMath::Max(0,
                     Comp->GetNestedElementCount(ActiveViewState, SelectedLayerName) - 1);
-                SetStatus(FString::Printf(TEXT("Pin '%s' added - Pin Mode on the canvas places it"),
+                bPendingPinPlacement = true;   // arm the one-shot: the next canvas click places the pin at the cursor
+                SetStatus(FString::Printf(TEXT("Pin '%s' added - click the canvas to place it"),
                     *El.ElementName.ToString()), FLinearColor(0.5f, 1.0f, 0.5f));
                 RefreshUI();
                 return FReply::Handled();
@@ -2604,15 +2768,15 @@ void UFaceParallaxEditorWidget::RebuildProblemsPanel()
         switch (S)
         {
             case EFaceAngleState::Front:            return TEXT("Front");
-            case EFaceAngleState::ThreeQuarterRight:return TEXT("3/4R");
-            case EFaceAngleState::RightProfile:     return TEXT("Right");
-            case EFaceAngleState::BackRight:        return TEXT("BkR");
+            case EFaceAngleState::ThreeQuarterRight:return TEXT("3/4 R");
+            case EFaceAngleState::RightProfile:     return TEXT("Profile R");
+            case EFaceAngleState::BackRight:        return TEXT("Back R");
             case EFaceAngleState::Back:             return TEXT("Back");
-            case EFaceAngleState::BackLeft:         return TEXT("BkL");
-            case EFaceAngleState::LeftProfile:      return TEXT("Left");
-            case EFaceAngleState::ThreeQuarterLeft: return TEXT("3/4L");
+            case EFaceAngleState::BackLeft:         return TEXT("Back L");
+            case EFaceAngleState::LeftProfile:      return TEXT("Profile L");
+            case EFaceAngleState::ThreeQuarterLeft: return TEXT("3/4 L");
             case EFaceAngleState::Top:              return TEXT("Top");
-            case EFaceAngleState::Bottom:           return TEXT("Bot");
+            case EFaceAngleState::Bottom:           return TEXT("Bottom");
         }
         return TEXT("?");
     };
