@@ -107,50 +107,86 @@ inline FPSchematicPoint SPT(double X, double Y) { return { X, Y }; }
 inline std::vector<FPSchematicPart> DefaultPartSchematics()
 {
     return {
-        { "BrowL",  { SPT(0.14, 0.14), SPT(0.20, 0.10), SPT(0.30, 0.10), SPT(0.34, 0.15),
-                      SPT(0.28, 0.18), SPT(0.19, 0.18) }, FPDepthClass::Front },
-        { "BrowR",  { SPT(0.66, 0.10), SPT(0.80, 0.10), SPT(0.86, 0.14), SPT(0.81, 0.18),
-                      SPT(0.72, 0.18) }, FPDepthClass::Front },
-        { "EyeL",   { SPT(0.15, 0.22), SPT(0.20, 0.19), SPT(0.31, 0.19), SPT(0.35, 0.23),
-                      SPT(0.30, 0.29), SPT(0.21, 0.29) }, FPDepthClass::Front },
-        { "EyeR",   { SPT(0.65, 0.19), SPT(0.80, 0.19), SPT(0.85, 0.22), SPT(0.79, 0.29),
-                      SPT(0.70, 0.29) }, FPDepthClass::Front },
-        { "Nose",   { SPT(0.42, 0.24), SPT(0.58, 0.24), SPT(0.60, 0.33), SPT(0.55, 0.35),
-                      SPT(0.57, 0.44), SPT(0.55, 0.52), SPT(0.45, 0.52), SPT(0.43, 0.44),
-                      SPT(0.45, 0.35), SPT(0.40, 0.33) }, FPDepthClass::Front },
-        { "CheekL", { SPT(0.06, 0.30), SPT(0.13, 0.22), SPT(0.20, 0.34), SPT(0.21, 0.52),
-                      SPT(0.15, 0.64), SPT(0.07, 0.58) }, FPDepthClass::Front },
-        { "CheekR", { SPT(0.80, 0.22), SPT(0.94, 0.30), SPT(0.93, 0.58), SPT(0.85, 0.64),
-                      SPT(0.79, 0.52) }, FPDepthClass::Front },
-        { "Teeth",  { SPT(0.43, 0.64), SPT(0.57, 0.64), SPT(0.59, 0.68), SPT(0.41, 0.68) },
+        // Anime-girl line-art rework (aesthetic guide, front view): the head
+        // stays a WIDE sphere with a soft continuous cheek curve (no
+        // cheekbones) tapering to a BLUNTED, rounded V chin with a smooth jaw
+        // transition; the eyes sit on the head's absolute vertical center with
+        // a one-eye-width gap and carry a THICK upper-lash contour flaring
+        // into two heavy curved spikes per eye (tapered tips; the interior
+        // iris/catchlight/pupil detail is approximated by the shaped closed
+        // loop since the schematic is outline data); the nose is a SHADOW-ONLY
+        // caret/dash (a shallow V hint, not a physical bump) halfway between
+        // the eye line and the chin; the mouth is slightly open with a center
+        // gap splitting the line, lip-corner flicks reading as small
+        // dots/upward ticks, much closer to the chin than the nose; each ear
+        // spans the eye top to the nose bottom; thin sweeping brows wider than
+        // the eyes arch over the bangs with tapered outer tails; the hair is
+        // S-curved (never straight) with 3-4 flyaway spikes and crown ahoge
+        // curls, and the top edge reads as a jagged hair-halo zig-zag over the
+        // bangs/side hair (the bang wedges erase where they cross the eyes).
+        // The hair stays an ANNULUS (outer mass + face cutout) so the face
+        // interior never stacks hair, and the Mouth keeps its open-hole +
+        // Teeth ring, so every probe, region-parity, stack-depth,
+        // boundary-inclusive and cycle invariant still holds exactly.
+        { "BrowL",  { SPT(0.20, 0.342), SPT(0.26, 0.300), SPT(0.33, 0.290), SPT(0.42, 0.320),
+                      SPT(0.44, 0.340), SPT(0.40, 0.345), SPT(0.33, 0.318), SPT(0.27, 0.322),
+                      SPT(0.205, 0.348) }, FPDepthClass::Front },
+        { "BrowR",  { SPT(0.80, 0.342), SPT(0.74, 0.300), SPT(0.67, 0.290), SPT(0.58, 0.320),
+                      SPT(0.56, 0.340), SPT(0.60, 0.345), SPT(0.67, 0.318), SPT(0.73, 0.322),
+                      SPT(0.795, 0.348) }, FPDepthClass::Front },
+        { "EyeL",   { SPT(0.245, 0.43), SPT(0.29, 0.372), SPT(0.315, 0.350), SPT(0.35, 0.368),
+                      SPT(0.38, 0.352), SPT(0.395, 0.402), SPT(0.40, 0.43), SPT(0.375, 0.52),
+                      SPT(0.30, 0.525), SPT(0.245, 0.43) }, FPDepthClass::Front },
+        { "EyeR",   { SPT(0.755, 0.43), SPT(0.71, 0.372), SPT(0.685, 0.350), SPT(0.65, 0.368),
+                      SPT(0.62, 0.352), SPT(0.605, 0.402), SPT(0.60, 0.43), SPT(0.625, 0.52),
+                      SPT(0.70, 0.525), SPT(0.755, 0.43) }, FPDepthClass::Front },
+        { "Nose",   { SPT(0.44, 0.63), SPT(0.50, 0.61), SPT(0.56, 0.63), SPT(0.545, 0.665),
+                      SPT(0.50, 0.685), SPT(0.455, 0.665) }, FPDepthClass::Front },
+        { "CheekL", { SPT(0.075, 0.46), SPT(0.13, 0.425), SPT(0.24, 0.50), SPT(0.28, 0.60),
+                      SPT(0.25, 0.72), SPT(0.17, 0.76), SPT(0.10, 0.71), SPT(0.075, 0.62) },
                       FPDepthClass::Front },
-        { "Mouth",  { SPT(0.36, 0.62), SPT(0.42, 0.585), SPT(0.47, 0.605), SPT(0.50, 0.585),
-                      SPT(0.53, 0.605), SPT(0.58, 0.585), SPT(0.64, 0.62), SPT(0.62, 0.68),
-                      SPT(0.56, 0.73), SPT(0.44, 0.73), SPT(0.38, 0.68) }, FPDepthClass::Front },
-        { "Chin",   { SPT(0.40, 0.74), SPT(0.60, 0.74), SPT(0.58, 0.84), SPT(0.50, 0.88),
-                      SPT(0.42, 0.84) }, FPDepthClass::Base },
-        { "EarL",   { SPT(0.03, 0.22), SPT(0.07, 0.13), SPT(0.11, 0.26), SPT(0.10, 0.44),
-                      SPT(0.06, 0.48) }, FPDepthClass::Back },
-        { "EarR",   { SPT(0.89, 0.13), SPT(0.97, 0.22), SPT(0.94, 0.48), SPT(0.90, 0.44),
-                      SPT(0.89, 0.26) }, FPDepthClass::Back },
-        { "Neck",   { SPT(0.42, 0.88), SPT(0.58, 0.88), SPT(0.70, 0.98), SPT(0.30, 0.98) },
+        { "CheekR", { SPT(0.925, 0.46), SPT(0.87, 0.425), SPT(0.76, 0.50), SPT(0.72, 0.60),
+                      SPT(0.75, 0.72), SPT(0.83, 0.76), SPT(0.90, 0.71), SPT(0.925, 0.62) },
+                      FPDepthClass::Front },
+        { "Teeth",  { SPT(0.46, 0.775), SPT(0.54, 0.775), SPT(0.56, 0.79), SPT(0.50, 0.80),
+                      SPT(0.44, 0.79) }, FPDepthClass::Front },
+        { "Mouth",  { SPT(0.40, 0.745), SPT(0.42, 0.738), SPT(0.50, 0.735), SPT(0.58, 0.738),
+                      SPT(0.60, 0.745), SPT(0.605, 0.770), SPT(0.56, 0.815), SPT(0.50, 0.825),
+                      SPT(0.44, 0.815), SPT(0.395, 0.770) }, FPDepthClass::Front },
+        { "Chin",   { SPT(0.42, 0.815), SPT(0.58, 0.815), SPT(0.545, 0.845), SPT(0.52, 0.852),
+                      SPT(0.50, 0.855), SPT(0.48, 0.852), SPT(0.455, 0.845) }, FPDepthClass::Base },
+        { "EarL",   { SPT(0.02, 0.42), SPT(0.06, 0.36), SPT(0.11, 0.42), SPT(0.105, 0.60),
+                      SPT(0.06, 0.68), SPT(0.03, 0.60) }, FPDepthClass::Back },
+        { "EarR",   { SPT(0.98, 0.42), SPT(0.94, 0.36), SPT(0.89, 0.42), SPT(0.895, 0.60),
+                      SPT(0.94, 0.68), SPT(0.97, 0.60) }, FPDepthClass::Back },
+        { "Neck",   { SPT(0.43, 0.86), SPT(0.57, 0.86), SPT(0.68, 0.98), SPT(0.32, 0.98) },
                       FPDepthClass::Base },
-        { "Bangs",  { SPT(0.28, 0.13), SPT(0.33, 0.05), SPT(0.38, 0.06), SPT(0.44, 0.05),
-                      SPT(0.50, 0.05), SPT(0.56, 0.05), SPT(0.62, 0.06), SPT(0.67, 0.05),
-                      SPT(0.72, 0.13), SPT(0.66, 0.16), SPT(0.59, 0.12), SPT(0.50, 0.15),
-                      SPT(0.41, 0.12), SPT(0.34, 0.16) }, FPDepthClass::Front },
-        { "Hair",   { SPT(0.05, 0.52), SPT(0.07, 0.30), SPT(0.12, 0.15), SPT(0.22, 0.05),
-                      SPT(0.30, 0.03), SPT(0.70, 0.03), SPT(0.78, 0.05), SPT(0.88, 0.15),
-                      SPT(0.93, 0.30), SPT(0.95, 0.52), SPT(0.87, 0.40), SPT(0.88, 0.26),
-                      SPT(0.78, 0.12), SPT(0.66, 0.06), SPT(0.34, 0.06), SPT(0.22, 0.12),
-                      SPT(0.12, 0.26), SPT(0.13, 0.40) }, FPDepthClass::Back },
-        { "BackHair", { SPT(0.20, 0.92), SPT(0.26, 0.80), SPT(0.38, 0.74), SPT(0.50, 0.72),
-                      SPT(0.62, 0.74), SPT(0.74, 0.80), SPT(0.80, 0.92), SPT(0.72, 0.97),
-                      SPT(0.28, 0.97) }, FPDepthClass::Back },
-        { "Head",   { SPT(0.50, 0.02), SPT(0.70, 0.06), SPT(0.86, 0.18), SPT(0.94, 0.40),
-                      SPT(0.92, 0.62), SPT(0.81, 0.81), SPT(0.62, 0.93), SPT(0.38, 0.93),
-                      SPT(0.19, 0.81), SPT(0.08, 0.62), SPT(0.06, 0.40), SPT(0.14, 0.18),
-                      SPT(0.30, 0.06) }, FPDepthClass::Base },
+        { "Bangs",  { SPT(0.22, 0.34), SPT(0.19, 0.12), SPT(0.24, 0.04), SPT(0.28, 0.03),
+                      SPT(0.33, 0.02), SPT(0.37, 0.11), SPT(0.40, 0.03), SPT(0.45, 0.02),
+                      SPT(0.50, 0.02), SPT(0.55, 0.02), SPT(0.60, 0.03), SPT(0.63, 0.11),
+                      SPT(0.67, 0.02), SPT(0.72, 0.03), SPT(0.76, 0.04), SPT(0.81, 0.12),
+                      SPT(0.78, 0.34), SPT(0.72, 0.28), SPT(0.65, 0.32), SPT(0.58, 0.30),
+                      SPT(0.50, 0.35), SPT(0.42, 0.30), SPT(0.35, 0.32), SPT(0.28, 0.28) },
+                      FPDepthClass::Front },
+        { "Hair",   { SPT(0.03, 0.52), SPT(0.045, 0.28), SPT(0.05, 0.18), SPT(0.06, 0.13),
+                      SPT(0.09, 0.09), SPT(0.13, 0.05), SPT(0.18, 0.03), SPT(0.24, 0.012),
+                      SPT(0.28, 0.008), SPT(0.31, 0.005), SPT(0.36, 0.012), SPT(0.42, 0.010),
+                      SPT(0.44, 0.004), SPT(0.47, 0.012), SPT(0.50, 0.010), SPT(0.53, 0.012),
+                      SPT(0.56, 0.004), SPT(0.58, 0.010), SPT(0.64, 0.012), SPT(0.69, 0.005),
+                      SPT(0.72, 0.008), SPT(0.76, 0.012), SPT(0.82, 0.03), SPT(0.87, 0.05),
+                      SPT(0.91, 0.09), SPT(0.94, 0.13), SPT(0.95, 0.18), SPT(0.955, 0.28),
+                      SPT(0.97, 0.52), SPT(0.90, 0.36), SPT(0.87, 0.30), SPT(0.84, 0.20),
+                      SPT(0.80, 0.12), SPT(0.72, 0.07), SPT(0.64, 0.05), SPT(0.58, 0.09),
+                      SPT(0.54, 0.06), SPT(0.50, 0.05), SPT(0.46, 0.06), SPT(0.42, 0.09),
+                      SPT(0.36, 0.05), SPT(0.28, 0.07), SPT(0.20, 0.12), SPT(0.16, 0.20),
+                      SPT(0.13, 0.30), SPT(0.10, 0.36), SPT(0.05, 0.55) }, FPDepthClass::Back },
+        { "BackHair", { SPT(0.18, 0.90), SPT(0.30, 0.82), SPT(0.44, 0.80), SPT(0.56, 0.80),
+                      SPT(0.70, 0.82), SPT(0.82, 0.90), SPT(0.74, 0.96), SPT(0.26, 0.96) },
+                      FPDepthClass::Back },
+        { "Head",   { SPT(0.50, 0.02), SPT(0.29, 0.076), SPT(0.136, 0.23), SPT(0.08, 0.44),
+                      SPT(0.19, 0.61), SPT(0.32, 0.74), SPT(0.50, 0.86), SPT(0.68, 0.74),
+                      SPT(0.81, 0.61), SPT(0.92, 0.44), SPT(0.864, 0.23), SPT(0.71, 0.076) },
+                      FPDepthClass::Base },
     };
 }
 
@@ -204,6 +240,45 @@ inline const FPSchematicPart* FPSchematicPartAt(
         if (P.Name && !P.Outline.empty() && FPPartInOutline(X, Y, P.Outline))
         {
             return &P;
+        }
+    }
+    return nullptr;
+}
+
+// Number of schematic parts whose glyphs contain the point (stack depth).
+// Part order is hit priority, so the stack enumerates topmost-first.
+inline int FPSchematicPartStackCount(
+    const std::vector<FPSchematicPart>& Parts, double X, double Y)
+{
+    int N = 0;
+    for (const FPSchematicPart& P : Parts)
+    {
+        if (P.Name && !P.Outline.empty() && FPPartInOutline(X, Y, P.Outline))
+            ++N;
+    }
+    return N;
+}
+
+// Nth-overlap part lookup (W2 cycle-through-stack): returns the part at
+// stack index CycleIdx (0 = topmost, same as FPSchematicPartAt). The index is
+// wrapped mod the stack depth so a repeated click cycles through every stacked
+// glyph and returns to the top; nullptr only when nothing overlaps at all.
+// This is the pure disambiguation primitive for stacked regions (e.g. Teeth
+// under Mouth, Eyes under Bangs) — repeated clicks on one pixel walk the stack.
+inline const FPSchematicPart* FPSchematicPartCycleAt(
+    const std::vector<FPSchematicPart>& Parts, double X, double Y, int CycleIdx)
+{
+    const int Stack = FPSchematicPartStackCount(Parts, X, Y);
+    if (Stack <= 0) return nullptr;
+    int Wrapped = CycleIdx % Stack;
+    if (Wrapped < 0) Wrapped += Stack;
+    int Seen = 0;
+    for (const FPSchematicPart& P : Parts)
+    {
+        if (P.Name && !P.Outline.empty() && FPPartInOutline(X, Y, P.Outline))
+        {
+            if (Seen == Wrapped) return &P;
+            ++Seen;
         }
     }
     return nullptr;
@@ -552,5 +627,355 @@ struct FPYawRule
         return ComputeYawOffset(DepthScaleForClass(C), InvertsParallaxForClass(C), NormalizedYaw);
     }
 };
+
+// ============================================================================
+// Phase B/C: the billboard "turn to face the camera" contract. The canvas
+// placeholder used to be a static FRONT glyph set that a continuous
+// 3D-projection formula (arc-based foreshortening, per-glyph centroid warping)
+// rotated into every view. That projection is gone: real 2D art is a set of
+// flat, billboarded layers, so the placeholder does the same — every one of
+// the 8 yaw states + Top/Bottom resolves to its OWN authored 2D layout and
+// the left half of the turn is the horizontal mirror of the right. Scrubbing
+// blends between neighboring state layouts (a pure 2D morph, never a
+// projection), so the outline reads as 2D art FLIPPING as the head turns:
+//
+//   Billboard rule:          every part is a flat card facing the camera —
+//                            the surface normal never turns edge-on, never
+//                            foreshortens paper-thin; the TURN is faked by
+//                            sliding the flat layers against each other.
+//   Z-depth hierarchy:       5 flat planes, closest -> farthest —
+//                            1 Nose (tip) / Front Bangs
+//                            2 Near Eyelash / Iris / Eyebrow / Mouth
+//                            3 Face Base (cranium + jaw) + the far-side eye
+//                            4 Near Ear / Side Hair
+//                            5 Neck / Back Hair
+//   Camera translation:      layers slide OPPOSITE the camera orbit; the
+//                            closest Z slides furthest, the farthest trails.
+//   Yaw:                     layers slide toward the far edge as the camera
+//                            orbits; the far-side pair of a paired part
+//                            compresses to zero by the 90° profile (one
+//                            eye/ear/cheek) and STAYS folded through the back;
+//                            features fade past the 135° back-corner;
+//                            silhouettes survive the back (back hair, full
+//                            width).
+//   Pitch:                   Top view sinks the features + hair DOWN onto the
+//                            face (+Y), lifts the ears + the V-chin UP
+//                            (tucking them under), squashes vertically;
+//                            Bottom view drops the chin / reveals the
+//                            under-jaw and neck, raises the features + bangs.
+//   Flip thresholds:         45° = Front->3/4, 90° = 3/4->Profile,
+//                            135° = Profile->Back-corner, 180° = Back,
+//                            ±45° = Top/Bottom — each exact state center
+//                            resolves to ITS OWN authored 2D layout.
+//
+// All results are clamped into [0,1]^2 and keep the front glyph's point count
+// (per-view layer transforms rely on that).
+// ============================================================================
+
+struct FPOrientationParams
+{
+    // Profile silhouette width (about the head centerline): the 2D side view
+    // of the head is this fraction of the front/back width.
+    static constexpr double SilAtProfile = 0.55;
+    // Vertical squash scale at top/bottom (rigid about the head centerline).
+    static constexpr double PitchAtExtreme = 0.70;
+
+    // Yaw far-edge slide peaks (UV units at the profile). The face content
+    // slides toward the far edge as the camera orbits (opposite the camera),
+    // and the closest Z slides furthest:
+    //   Z-1 Nose / Front Bangs     0.18   (the nose darts toward the far edge)
+    //   Z-2 Near Features          0.12
+    //   Z-3 Face Base              0.02   (near-static, stays on-camera)
+    //   Z-4 Ear / Side Hair        0.06
+    //   Z-5 Neck / Back Hair       0.00   (the backdrop never slides)
+    static constexpr double NoseSlide     = 0.18;
+    static constexpr double FeatureSlide  = 0.12;
+    static constexpr double FaceBaseSlide = 0.02;
+    static constexpr double EarSlide      = 0.06;
+    static constexpr double FarSlide      = 0.0;
+
+    // Pitch vertical-shift magnitudes (UV units at ±90° pitch, +Y = down).
+    // Features + hair ENCROACH (down at the top view, up at the bottom); the
+    // ears + V-chin COUNTER-translate (up at the top — ear tops rise above the
+    // eye line, the chin tucks under the cheeks — down at the bottom); the
+    // face base stays near-static (its contour SWAPS at the ±45 thresholds).
+    static constexpr double NosePitch     = 0.18;
+    static constexpr double FeaturePitch  = 0.12;
+    static constexpr double FarPitch      = 0.06;
+    static constexpr double EarPitch      = 0.08;
+    static constexpr double ChinPitch     = 0.08;
+    static constexpr double FaceBasePitch = 0.02;
+};
+
+// Normalized rotation factor: yaw/90 clamped to [-1,1] (1 = profile right).
+inline double FPOrientationRotFactor(double YawDeg)
+{
+    double N = YawDeg / 90.0;
+    return N < -1.0 ? -1.0 : (N > 1.0 ? 1.0 : N);
+}
+
+// Piecewise 2D-layout ramp. Control points sit on the exact state centers of
+// the right half of the turn (0/45/90/135/180); the segment interpolation is
+// smoothstepped so rotation reads 3D-smooth (ease in/out) while each exact
+// state center still resolves to its OWN authored 2D layout (the flip).
+struct FPRampPoint { double X; double V; };
+inline double FPRampEval(const FPRampPoint* Pts, int N, double X)
+{
+    if (N <= 0) return 0.0;
+    if (X <= Pts[0].X) return Pts[0].V;
+    if (X >= Pts[N - 1].X) return Pts[N - 1].V;
+    for (int i = 1; i < N; ++i)
+    {
+        if (X <= Pts[i].X)
+        {
+            const double D = Pts[i].X - Pts[i - 1].X;
+            double T = D > 0.0 ? (X - Pts[i - 1].X) / D : 0.0;
+            T = T * T * (3.0 - 2.0 * T);          // smoothstep: ease like a turn
+            return Pts[i - 1].V + (Pts[i].V - Pts[i - 1].V) * T;
+        }
+    }
+    return Pts[N - 1].V;
+}
+
+// Five-level Z-depth hierarchy (the billboard contract's stacking), closest ->
+// farthest. Flat layers slide against each other (closest furthest, farthest
+// anchored) to fake the turn.
+enum class FPZDepth : unsigned char
+{
+    Closest      = 1,   // Nose (tip) / Front Bangs
+    NearFeatures = 2,   // Near Eyelash / Iris / Eyebrow / Mouth
+    FaceBase     = 3,   // Cranium + Jaw contour (far eye/brow sit here when far)
+    EarSideHair  = 4,   // Near Ear / Side Hair
+    Farthest     = 5    // Neck / Back Hair
+};
+
+// Map a part name to its Z-depth plane.
+inline FPZDepth FPZDepthForPart(const char* Name)
+{
+    if (!Name || !Name[0]) return FPZDepth::FaceBase;
+    const std::string N(Name);
+    if (N == "Nose" || N == "Bangs") return FPZDepth::Closest;
+    if (N == "EyeL" || N == "EyeR" || N == "BrowL" || N == "BrowR"
+        || N == "Teeth" || N == "Mouth") return FPZDepth::NearFeatures;
+    if (N == "Head" || N == "Chin" || N == "CheekL" || N == "CheekR")
+        return FPZDepth::FaceBase;
+    if (N == "EarL" || N == "EarR" || N == "Hair") return FPZDepth::EarSideHair;
+    return FPZDepth::Farthest;   // Neck, BackHair
+}
+
+// Peak far-edge slide (UV units at the profile) for a Z-depth plane.
+inline double FPYawSlidePeak(FPZDepth L)
+{
+    switch (L)
+    {
+    case FPZDepth::Closest:      return FPOrientationParams::NoseSlide;
+    case FPZDepth::NearFeatures: return FPOrientationParams::FeatureSlide;
+    case FPZDepth::EarSideHair:  return FPOrientationParams::EarSlide;
+    case FPZDepth::Farthest:     return FPOrientationParams::FarSlide;
+    default:                     return FPOrientationParams::FaceBaseSlide;
+    }
+}
+
+// Far-edge slide magnitude (UV units) at |yaw|: grows through the 3/4, peaks
+// at the profile, holds into the back-corner, and releases at the true back
+// (the backdrop re-centers) — the camera-translation parallax of the flat
+// layers, closest Z sliding furthest.
+inline double FPYawSlideAt(FPZDepth L, double YawAbs)
+{
+    static const FPRampPoint K[] = { {0, 0.0}, {45, 0.62}, {90, 1.0},
+                                     {135, 1.0}, {180, 0.0} };
+    return FPYawSlidePeak(L) * FPRampEval(K, 5, YawAbs);
+}
+
+// Vertical parallax ROLE: features + hair ENCROACH on the face (down at the
+// top view, up at the bottom), the ears + V-chin COUNTER-translate, and the
+// face base stays near-static (its contour swaps at the ±45 thresholds).
+enum class FPPitchRole : unsigned char
+{
+    Encroach,   // Nose, Bangs, Eyes, Brows, Teeth, Mouth, Hair, BackHair, Neck
+    Counter,    // EarL/R (rise at top), Chin (tucks at top)
+    FaceBase    // Head, CheekL/R (near-static)
+};
+
+inline FPPitchRole FPPitchRoleForPart(const char* Name)
+{
+    if (!Name || !Name[0]) return FPPitchRole::FaceBase;
+    const std::string N(Name);
+    if (N == "EarL" || N == "EarR" || N == "Chin") return FPPitchRole::Counter;
+    if (N == "Head" || N == "CheekL" || N == "CheekR") return FPPitchRole::FaceBase;
+    return FPPitchRole::Encroach;
+}
+
+inline double FPPitchMagnitude(const char* Name)
+{
+    if (!Name || !Name[0]) return FPOrientationParams::FaceBasePitch;
+    const std::string N(Name);
+    if (N == "Chin") return FPOrientationParams::ChinPitch;
+    if (N == "EarL" || N == "EarR") return FPOrientationParams::EarPitch;
+    if (N == "Hair" || N == "BackHair" || N == "Neck")
+        return FPOrientationParams::FarPitch;
+    if (N == "Head" || N == "CheekL" || N == "CheekR")
+        return FPOrientationParams::FaceBasePitch;
+    return (FPZDepthForPart(Name) == FPZDepth::Closest)
+        ? FPOrientationParams::NosePitch : FPOrientationParams::FeaturePitch;
+}
+
+// Vertical (pitch) shift in UV units (Phase C up/down parallax, +Y = down).
+// Positive pitch (Top view) sinks the features + hair DOWN onto the face
+// (+Y), lifts the ears + V-chin UP (-Y, tucking them under); negative pitch
+// (Bottom view) mirrors — the chin drops and the neck/under-jaw shows. The
+// face base is near-static (its authored contour swaps at ±45).
+inline double FPOrientationVerticalShift(const char* Name, double PitchDeg)
+{
+    double N = PitchDeg / 90.0;
+    N = N < -1.0 ? -1.0 : (N > 1.0 ? 1.0 : N);
+    return (FPPitchRoleForPart(Name) == FPPitchRole::Counter)
+        ? -FPPitchMagnitude(Name) * N
+        : FPPitchMagnitude(Name) * N;
+}
+
+// Vertical height scale for pitch (top/bottom squash toward the head
+// centerline, rigid 2D; 0 pitch keeps full height).
+inline double FPOrientationPitchScale(double PitchDeg)
+{
+    double P = PitchDeg < -90.0 ? -90.0 : (PitchDeg > 90.0 ? 90.0 : PitchDeg);
+    const double F = P < 0.0 ? -P : P;
+    return 1.0 - (1.0 - FPOrientationParams::PitchAtExtreme) * (F / 90.0);
+}
+
+// Is a paired part on the rotation's far side? Paired parts end in 'L' or
+// 'R'; positive yaw turns the face to the RIGHT, so LEFT parts become the far
+// side and fold at the right profile (negative yaw mirrors).
+inline bool FPSchematicIsFarSide(const char* Name, double YawDeg)
+{
+    if (!Name || !Name[0]) return false;
+    const std::string N(Name);
+    const char Last = N[N.size() - 1];
+    if (Last == 'L') return YawDeg > 0.0;
+    if (Last == 'R') return YawDeg < 0.0;
+    return false;
+}
+
+// Is the part a left/right paired part at all (uppercase L/R suffix)?
+inline bool FPSchematicIsPairedPart(const char* Name)
+{
+    if (!Name || !Name[0]) return false;
+    const std::string N(Name);
+    const char Last = N[N.size() - 1];
+    return Last == 'L' || Last == 'R';
+}
+
+// Is the part a silhouette (head + the three hair layers)? Silhouettes never
+// fade at back orientations and scale rigidly about the head centerline.
+inline bool FPSchematicIsSilhouette(const char* Name)
+{
+    return Name && Name[0] && (std::string(Name) == "Head"
+        || FPSchematicIsHairLayer(Name));
+}
+
+// ----------------------------------------------------------------------------
+// The authored 2D layout ramps (right half of the turn; the left half mirrors
+// by sign). Control points sit on the exact state centers 0 (Front), 45
+// (3/4), 90 (Profile), 135 (Back-corner) and 180 (Back), so each view state
+// flips to ITS OWN 2D layout while scrubbing 2D-blends (smoothstep) between
+// neighbors — the "smooth parallax with a flip on view" contract.
+// ----------------------------------------------------------------------------
+
+// Silhouette width (about the head centerline X=0.5): full at front AND back,
+// narrowest at the profiles — a back-of-head is a normal-width oval.
+inline double FPSilhouetteWidthAt(double YawAbs)
+{
+    static const FPRampPoint K[] = { {0, 1.0}, {45, 0.80}, {90, FPOrientationParams::SilAtProfile},
+                                     {135, 0.82}, {180, 1.0} };
+    return FPRampEval(K, 5, YawAbs);
+}
+
+// Near-side / center-feature width scale (about the turned-head center):
+// readable through the profile, then held (alpha hides it in walk-behind).
+inline double FPNearFeatureWidthAt(double YawAbs)
+{
+    static const FPRampPoint K[] = { {0, 1.0}, {45, 0.90}, {90, 0.80}, {135, 0.80}, {180, 0.80} };
+    return FPRampEval(K, 5, YawAbs);
+}
+
+// Far-side paired-part fold (about the turned-head center): full at front,
+// already narrowing at 3/4, fully folded (zero width) by the profile so a
+// profile shows exactly ONE eye/ear/cheek — and it STAYS folded through the
+// back (the far pair sits behind the nose bridge / back hair for the whole
+// second half of the turn, per the billboard layer rules).
+inline double FPFarFeatureWidthAt(double YawAbs)
+{
+    static const FPRampPoint K[] = { {0, 1.0}, {45, 0.55}, {90, 0.0}, {180, 0.0} };
+    return FPRampEval(K, 4, YawAbs);
+}
+
+// Anatomical-feature visibility: 1 through both profiles, fading past the
+// back-corner so walk-behind states show silhouette + hair only.
+inline double FPFeatureAlphaAt(double YawAbs)
+{
+    static const FPRampPoint K[] = { {0, 1.0}, {112.5, 1.0}, {135, 0.0}, {180, 0.0} };
+    return FPRampEval(K, 4, YawAbs);
+}
+
+// Flip the FRONT-facing glyph to the given orientation: a smooth parallax
+// blend between the per-view 2D state layouts, with a flip at each exact
+// state center. Every part is BILLBOARDED (a flat card always facing the
+// camera) — the turn is faked by sliding the five Z-depth planes against each
+// other along the far-edge direction (camera-translation parallax, closest
+// furthest) plus the pitch encroach/counter vertical shift. Returns the same
+// number of points as the input (point order preserved) with every point
+// clamped into [0,1]^2 — the per-view layer transform is applied afterwards
+// by the widget, so the placeholder's shape follows the head while the
+// authored slot transform keeps placing it.
+inline std::vector<FPSchematicPoint> FPOrientationOutline(
+    const char* Name, const std::vector<FPSchematicPoint>& Front,
+    FPDepthClass, double YawDeg, double PitchDeg)
+{
+    std::vector<FPSchematicPoint> Out;
+    if (Front.size() < 3) return Out;
+    const double A = YawDeg < 0.0 ? -YawDeg : YawDeg;   // |yaw| for the ramps
+    const double Sign = YawDeg >= 0.0 ? 1.0 : -1.0;     // left half = mirror
+    const bool bSil = FPSchematicIsSilhouette(Name);
+    // Billboard camera-translation parallax: the flat layers slide toward the
+    // far edge (OPPOSITE the orbit), the closest Z sliding furthest.
+    const double SlideX = -Sign * FPYawSlideAt(FPZDepthForPart(Name), A);
+    const double ShiftY = FPOrientationVerticalShift(Name, PitchDeg);
+    const double PScale = FPOrientationPitchScale(PitchDeg);
+
+    const double SilW = FPSilhouetteWidthAt(A);
+    const double FeatW = FPNearFeatureWidthAt(A);
+    const double FarW = FPFarFeatureWidthAt(A);
+    const double Alpha = FPFeatureAlphaAt(A);
+
+    Out.reserve(Front.size());
+    for (const FPSchematicPoint& P : Front)
+    {
+        double X;
+        if (bSil)
+        {
+            // Head + hair: rigid 2D scale about the head centerline plus the
+            // plane slide. Silhouettes never fade at the back (full width).
+            X = 0.5 + (P.X - 0.5) * SilW + SlideX;
+        }
+        else
+        {
+            // Feature: scale about the turned-head center (near side stays
+            // readable, the far side of a paired part folds to the nose
+            // bridge by the profile and STAYS folded through the back), then
+            // the plane slide; alpha folds the whole feature in walk-behind
+            // states.
+            const bool bFar = FPSchematicIsPairedPart(Name) && FPSchematicIsFarSide(Name, YawDeg);
+            const double W = bFar ? FarW : FeatW;
+            X = 0.5 + SlideX + (P.X - 0.5) * W * Alpha;
+        }
+        // Vertical: rigid 2D top/bottom squash about the head centerline,
+        // then the plane's encroach/counter up/down parallax shift.
+        double Y = 0.5 + (P.Y - 0.5) * PScale + ShiftY;
+        X = X < 0.0 ? 0.0 : (X > 1.0 ? 1.0 : X);
+        Y = Y < 0.0 ? 0.0 : (Y > 1.0 ? 1.0 : Y);
+        Out.push_back({ X, Y });
+    }
+    return Out;
+}
 
 } // namespace FPSchematic

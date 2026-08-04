@@ -1043,6 +1043,167 @@ void UFaceParallaxEditorWidget::SnapCameraToActiveView()
 }
 
 // ====================================================================
+// ZONE STRIP ROTATION (Phase 1)
+// ====================================================================
+// The zone diagram's empty-space drag rotates the preview: a relative pixel
+// drag maps to a yaw delta (full strip = 360 deg, wrapped to [-180,180)),
+// drives the 3D orbit, and repoints the ACTIVE VIEW STATE at the zone the yaw
+// lands in so the 2D schematic + per-view art follow the rotation live.
+// Release snaps the orbit to the nearest zone-center yaw and refreshes.
+
+void UFaceParallaxEditorWidget::BeginZoneScrub()
+{
+    bZoneScrubbing = true;
+    ZoneScrubStartYaw = GetOrbitYaw();
+    ZoneScrubYaw = ZoneScrubStartYaw;
+    RefreshZoneStrip();
+}
+
+void UFaceParallaxEditorWidget::ScrubZoneYawDelta(float DeltaPx, float WidthPx)
+{
+    if (!bZoneScrubbing) return;
+    const float NewYaw = (float)FPLayout::FPZoneScrubYawAfterDrag(ZoneScrubStartYaw, DeltaPx, WidthPx);
+    if (NewYaw == ZoneScrubYaw) return;
+    ZoneScrubYaw = NewYaw;
+    SetOrbitYaw(NewYaw);
+    // The active view state follows the zone the yaw lands in (view strip,
+    // status, per-view art) and the placeholder morphs continuously through
+    // the orientation model — refreshed on every yaw change, not just on
+    // state boundaries.
+    if (PreviewActor.IsValid() && PreviewActor->FaceParallax)
+    {
+        const EFaceAngleState ZoneState = PreviewActor->FaceParallax->DetermineStateFromAngles(NewYaw, 0.0f);
+        if (ZoneState != ActiveViewState)
+        {
+            ActiveViewState = ZoneState;
+        }
+    }
+    RefreshSchematic();
+    RefreshZoneStrip();
+}
+
+void UFaceParallaxEditorWidget::CommitZoneScrub()
+{
+    if (!bZoneScrubbing) return;
+    bZoneScrubbing = false;
+    if (PreviewActor.IsValid() && PreviewActor->FaceParallax)
+    {
+        const EFaceAngleState ZoneState =
+            PreviewActor->FaceParallax->DetermineStateFromAngles(ZoneScrubYaw, 0.0f);
+        ActiveViewState = ZoneState;
+        // Snap yaw to the zone center so the view state is canonical; pitch
+        // is a yaw-scrub-only control, so the user's pitch is left alone.
+        PreviewActor->SetOrbitYaw(PreviewActor->FaceParallax->GetZoneCenterYaw(ZoneState));
+    }
+    ZoneScrubYaw = ZoneScrubStartYaw;
+    RefreshUI();
+}
+
+bool UFaceParallaxEditorWidget::IsZoneScrubbing() const
+{
+    return bZoneScrubbing;
+}
+
+float UFaceParallaxEditorWidget::GetZoneScrubYaw() const
+{
+    return ZoneScrubYaw;
+}
+
+void UFaceParallaxEditorWidget::RefreshZoneStrip()
+{
+    if (ZoneYawLabel.IsValid())
+    {
+        const float Yaw = bZoneScrubbing ? ZoneScrubYaw : GetOrbitYaw();
+        ZoneYawLabel->SetText(FText::FromString(FString::Printf(TEXT("Yaw: %.1f\u00b0  Pitch: %.1f\u00b0"),
+            Yaw, GetOrbitPitch())));
+    }
+    if (ZoneDragOverlay.IsValid())
+    {
+        ZoneDragOverlay->Invalidate(EInvalidateWidgetReason::Paint);
+    }
+}
+
+// ====================================================================
+// PITCH STRIP (Phase C)
+// ====================================================================
+// The vertical up/down view strip is the pitch mirror of the yaw scrub: a
+// relative pixel drag maps to a pitch delta (full strip height = 180 deg,
+// clamped to [-90,90] — no wrap — via FPLayout::FPZoneScrubPitchAfterDrag),
+// drives the 3D orbit, and repoints the ACTIVE VIEW STATE at the Top/Bottom
+// art states once the pitch passes their thresholds so the 2D schematic +
+// per-view art follow the up/down rotation live. Release snaps the pitch to
+// the canonical state-center value (Top parks at +90, Bottom at -90).
+
+void UFaceParallaxEditorWidget::BeginPitchScrub()
+{
+    bPitchScrubbing = true;
+    PitchScrubStartPitch = GetOrbitPitch();
+    PitchScrubPitch = PitchScrubStartPitch;
+    RefreshPitchStrip();
+}
+
+void UFaceParallaxEditorWidget::ScrubPitchDelta(float DeltaPx, float HeightPx)
+{
+    if (!bPitchScrubbing) return;
+    const float NewPitch = (float)FPLayout::FPZoneScrubPitchAfterDrag(PitchScrubStartPitch, DeltaPx, HeightPx);
+    if (NewPitch == PitchScrubPitch) return;
+    PitchScrubPitch = NewPitch;
+    SetOrbitPitch(NewPitch);
+    // The active view state follows the pitch the cursor lands in (view strip,
+    // status, per-view art) and the placeholder morphs continuously through the
+    // orientation model — refreshed on every pitch change, not just on
+    // state boundaries.
+    if (PreviewActor.IsValid() && PreviewActor->FaceParallax)
+    {
+        const EFaceAngleState PitchState =
+            PreviewActor->FaceParallax->DetermineStateFromAngles(GetOrbitYaw(), NewPitch);
+        if (PitchState != ActiveViewState)
+        {
+            ActiveViewState = PitchState;
+        }
+    }
+    RefreshSchematic();
+    RefreshZoneStrip();
+    RefreshPitchStrip();
+}
+
+void UFaceParallaxEditorWidget::CommitPitchScrub()
+{
+    if (!bPitchScrubbing) return;
+    bPitchScrubbing = false;
+    if (PreviewActor.IsValid() && PreviewActor->FaceParallax)
+    {
+        const EFaceAngleState PitchState =
+            PreviewActor->FaceParallax->DetermineStateFromAngles(GetOrbitYaw(), PitchScrubPitch);
+        ActiveViewState = PitchState;
+        // Snap pitch to the state center so the view is canonical (Top parks
+        // at +90, Bottom at -90, horizontal views at 0); yaw is a
+        // pitch-scrub-independent control, so the user's yaw is left alone.
+        PreviewActor->SetOrbitPitch(PreviewActor->FaceParallax->GetZoneCenterPitch(PitchState));
+    }
+    PitchScrubPitch = PitchScrubStartPitch;
+    RefreshUI();
+}
+
+bool UFaceParallaxEditorWidget::IsPitchScrubbing() const
+{
+    return bPitchScrubbing;
+}
+
+float UFaceParallaxEditorWidget::GetPitchScrubPitch() const
+{
+    return PitchScrubPitch;
+}
+
+void UFaceParallaxEditorWidget::RefreshPitchStrip()
+{
+    if (PitchDragOverlay.IsValid())
+    {
+        PitchDragOverlay->Invalidate(EInvalidateWidgetReason::Paint);
+    }
+}
+
+// ====================================================================
 // DEBUG OVERLAYS
 // ====================================================================
 

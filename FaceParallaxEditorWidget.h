@@ -996,10 +996,11 @@ public:
     // Copy-back loop shared by RestoreSnapshot and Undo/Redo.
     bool RestoreFromBackup(UFaceParallaxPreset* Backup, const FString& Desc);
 
-    // ===== WORKSPACE RAIL (Phase A) =====
-    void SetActiveRailIndex(int32 Index);
+    // ===== WORKSPACE PAGES (W1: context panel replaces the rail switcher) =====
+    void SetActivePageIndex(int32 Index);
     FLinearColor GetStateDotColor(EFaceAngleState State) const;
     void RefreshViewStripDots();
+    void RefreshViewStripDrift();               // W4: per-state drift dots for the selected layer
     int32 FillMissingViewsFromActiveSlot();
     void RefreshSlotPropStatus();
 
@@ -1068,6 +1069,7 @@ public:
     float GetCanvasHeight() const { return CanvasHeight; }  // drag-resize state (SFaceCanvasResizer)
     void SetCanvasHeight(float Height);
     const FString& GetAssignFlashLayer() const { return AssignFlashLayer; }       // post-assign pulse ring
+    bool IsPendingPinPlacement() const { return bPendingPinPlacement; }           // W5: pin-placement armed (canvas marker + label)
     double GetAssignFlashTimestamp() const { return AssignFlashTimestamp; }        // post-assign pulse ring
     const FString& GetSchematicFlashPart() const { return SchematicFlashPart; }    // P1 glyph click pulse
     double GetSchematicFlashTimestamp() const { return SchematicFlashTimestamp; }  // P1 glyph click pulse
@@ -1140,7 +1142,7 @@ private:
     void SetGizmoPinUV(const FVector2D& UV);
     void PlacePinAtUV(const FVector2D& UV);   // P3: pin-mode primary interaction — canvas click places a pin
     bool ConsumePendingPinPlacement();        // P3: returns + clears the Add Pin one-shot placement arm (next canvas click places)
-    void FlashTab(int32 RailIndex);           // P7-A: amber pulse on the destination rail tab (rail-jump transition)
+    void FlashTab(int32 PageIndex);           // P7-A: amber pulse on the destination page tab (page-jump transition)
 void RebuildPinList();                    // P7-C: View & Layer rail "Pins" section (named pins + layer pin)
     void AddLayerPinAtDefault();              // P7-C: [+ Add Pin] — pins the selected layer at screen center
     // P7-F: layer/state-aware image-drop pipeline (layer rows, assign grid,
@@ -1183,6 +1185,8 @@ void RebuildPinList();                    // P7-C: View & Layer rail "Pins" sect
     TSharedPtr<SImage> ThumbDepth;
     TSharedPtr<STextBlock> TextStatus;
     TSharedPtr<STextBlock> TextStatusDetail;
+    TSharedPtr<STextBlock> TextStatusBadge;             // W8: persistent '8/10 states, 3/4 layers' coverage badge
+    void RefreshStatusBadge();                          // W8: recomputes the badge via FPLayout::FPStatusSummary
     // Art rail (rail 1): bulk-assign grid cell dots + coverage label.
     TArray<TSharedPtr<SImage>> AssignCells;
     TSharedPtr<STextBlock> TextAssignCoverage;
@@ -1200,18 +1204,13 @@ void RebuildPinList();                    // P7-C: View & Layer rail "Pins" sect
     // Carousel state (P17/P18): dynamic row lists flip through fixed-height
     // pages; the page index is clamped by each refresh on the real page count.
     int32 LayerPageIndex = 0;
-    int32 PropsPageIndex = 0;
     int32 IssuesPageIndex = 0;
     int32 CrossLayerPageIndex = 0;
     int32 StatusMatrixPageIndex = 0;            // status matrix layer-row page (P18)
     TSharedPtr<STextBlock> LayerPageLabel;
-    TSharedPtr<STextBlock> PropsPageLabel;
     TSharedPtr<STextBlock> IssuesPageLabel;
     TSharedPtr<STextBlock> CrossLayerPageLabel;
     TSharedPtr<STextBlock> StatusMatrixPageLabel;
-    TSharedPtr<SVerticalBox> PropsPageBox;
-    TArray<TSharedRef<SWidget>> PropsPages;         // right-pane carousel pages (P18)
-    void ShowPropsPage(int32 Page);                 // P18: flips the right-pane page
     TSharedPtr<SVerticalBox> TimelineBox;
     TSharedPtr<SVerticalBox> VisemeGridBox;
     TSharedPtr<SVerticalBox> NestedOutlinerBox;
@@ -1281,10 +1280,6 @@ void RebuildPinList();                    // P7-C: View & Layer rail "Pins" sect
     TSharedPtr<SCheckBox> CheckSwoosh;
     TSharedPtr<SCheckBox> CheckNestedArt;
     TSharedPtr<SCheckBox> CheckParams;
-    TSharedPtr<SCheckBox> CheckShowTextures;
-    TSharedPtr<SCheckBox> CheckDepthMesh;
-    TSharedPtr<SCheckBox> CheckWireframe;
-    TSharedPtr<SCheckBox> CheckColorByDepth;
     TSharedPtr<SVerticalBox> CfgBox;
 
     bool bLocalShowTextures = false;
@@ -1297,7 +1292,15 @@ void RebuildPinList();                    // P7-C: View & Layer rail "Pins" sect
     // its content in place (SetContent) so rebuilds are never orphaned.
     TSharedPtr<SBox> ZoneDiagramWidget;
     TSharedPtr<STextBlock> ZoneYawLabel;
-    TSharedPtr<STextBlock> ZonePitchLabel;
+    // Phase 1 zone-strip rotation scrub state (empty-space drag on the zone
+    // diagram drives the orbit + active view state).
+    bool bZoneScrubbing = false;
+    float ZoneScrubYaw = 0.0f;         // live scrub yaw while dragging
+    float ZoneScrubStartYaw = 0.0f;    // orbit yaw captured at scrub start
+    // Phase C up/down scrub state (vertical pitch strip drag).
+    bool bPitchScrubbing = false;
+    float PitchScrubPitch = 0.0f;        // live scrub pitch while dragging
+    float PitchScrubStartPitch = 0.0f;   // orbit pitch captured at scrub start
     // Camera rail's 4 zone-boundary editors (F/3Q/P/B), kept in sync by
     // ApplyZoneBoundaryDrag so diagram drags and text edits agree.
     TArray<TSharedPtr<SEditableTextBox>> ZoneEditBoxes;
@@ -1316,6 +1319,9 @@ void RebuildPinList();                    // P7-C: View & Layer rail "Pins" sect
     TArray<TSharedPtr<SCheckBox>> SyncViewCheckBoxes;   // Phase 3: always-visible destination picks (one per state)
     TArray<TSharedPtr<STextBlock>> SyncDestLabels;      // Phase 3: destination-grid labels (recolored by the live diff preview)
     int32 SyncOp = 2;   // grouped sync-op selector (Phase D): 0 Transform / 1 Textures / 2 Both (FPLayout::SyncOpBoth)
+    TSharedPtr<SHorizontalBox> SyncOpMoreRow;           // W4: 'more...' disclosure row holding the combined op (Both)
+    bool bSyncMoreOps = false;                          // W4: whether the 'more...' disclosure is open
+    void RebuildSyncOpMore();                           // W4: re-applies the disclosure visibility
 
     // Phase D: snapshot of the state-strip pick checklist (true = picked).
     TArray<bool> GetPickedSyncViews() const;
@@ -1334,13 +1340,13 @@ void RebuildPinList();                    // P7-C: View & Layer rail "Pins" sect
 
     // ===== PROPERTY TABS =====
     TSharedPtr<SWidgetSwitcher> PropSwitcher;
-    TArray<TSharedPtr<SVerticalBox>> PropTabContent;
 
-    // ===== WORKSPACE RAIL (Phase A) =====
-    int32 ActiveRailIndex = 0;
-    TSharedPtr<SWidgetSwitcher> RailSwitcher;
-    TArray<TSharedPtr<SVerticalBox>> RailContent;   // 0 Layers 1 Art 2 Animated 3 NestedPins 4 Camera 5 Diagnostics
-    TSharedPtr<SVerticalBox> SlotPropsBox;          // right pane: selected slot properties
+    // ===== WORKSPACE PAGES (W1) =====
+    int32 ActivePageIndex = 0;
+    TSharedPtr<SWidgetSwitcher> PageSwitcher;
+    TSharedPtr<SVerticalBox> ContextPanelBox;   // 621px context panel (W1: rail + props merged)
+    TArray<TSharedPtr<SVerticalBox>> PageContent;   // 0 Assign 1 Transform&Sync 2 Expression 3 Preview&Debug 4 Developer
+    TSharedPtr<SVerticalBox> SlotPropsBox;          // selected slot properties (Assign page)
     TSharedPtr<SBox> PreviewHost;                   // center canvas container
     TSharedPtr<SImage> OnionSkinImage;              // onion-skin ghost (Phase B)
     TSharedPtr<SCheckBox> OnionCheckBox;            // onion-skin toggle on the canvas mode row
@@ -1349,10 +1355,12 @@ void RebuildPinList();                    // P7-C: View & Layer rail "Pins" sect
     class SFaceLayerGizmo;
     TSharedPtr<SFaceLayerGizmo> GizmoWidget;        // canvas transform gizmo (Phase B)
 class SFaceAccordion;
-TSharedPtr<SFaceAccordion> ArtAccordion;         // Art rail: 2 collapsible sections (P16)
-TSharedPtr<SFaceAccordion> NestedAccordion;      // Nested & Animated rail: 3 collapsible sections (P16/P6)
-TSharedPtr<SFaceAccordion> DiagnosticsAccordion; // Diagnostics rail: 8 collapsible sections (P16/P6)
-TSharedPtr<SFaceAccordion> LayersPinsAccordion;  // P7-C: View & Layer rail Pins section (collapsed while no pins)
+TSharedPtr<SFaceAccordion> AssignAccordion;       // Assign page: 4 collapsible sections (P16)
+TSharedPtr<SFaceAccordion> ExpressionAccordion;   // Expression/Blink/Viseme page: 3 collapsible sections (P16/P6)
+TSharedPtr<SFaceAccordion> DeveloperAccordion;    // Developer drawer: 6 collapsible sections (P16/P6)
+TSharedPtr<SFaceAccordion> PreviewAccordion;      // Preview & Debug page: 5 collapsible sections (P16)
+TSharedPtr<SFaceAccordion> TransformAccordion;    // Transform & Sync page: 2 collapsible sections (P16)
+TSharedPtr<SFaceAccordion> LayersPinsAccordion;  // P7-C: Assign page Layers Pins section (collapsed while no pins)
     class SFaceDisclosure;
     TSharedPtr<SFaceDisclosure> ConfigDisclosure;   // Config checks progressive disclosure (Phase 4b)
     TSharedPtr<SFaceDisclosure> VisemeDisclosure;   // Viseme grid progressive disclosure (Phase 4b)
@@ -1367,6 +1375,8 @@ TSharedPtr<SFaceAccordion> LayersPinsAccordion;  // P7-C: View & Layer rail Pins
     TSharedPtr<SFaceCanvasResizer> CanvasResizer;   // canvas drag-resize handle (redesign)
     class SZoneBoundaryOverlay;
     TSharedPtr<SZoneBoundaryOverlay> ZoneDragOverlay; // zone diagram drag layer (Phase P3)
+    class SFacePitchStrip;                          // Phase C: vertical up/down view scrub strip
+    TSharedPtr<SFacePitchStrip> PitchDragOverlay;   // Phase C: the pitch strip instance
     class SFaceCarouselNav;                         // P18: prev/page/next strip under a carousel viewport
     TSharedPtr<SWrapBox> PartsStrip;                // canvas strip: 13 anatomical part chips (Phase 1)
     int32 DisplayMode = 0;                          // 0 Textured 1 Depth 2 Wireframe 3 Split
@@ -1497,31 +1507,31 @@ private:
     FString SearchFilter;
     TMap<TWeakPtr<SWidget>, FString> SectionSectionTitles;
 
-    // ===== PHASE 4b: RAIL ACCESSIBILITY (chips / jump / search / resizer) =====
-    struct FFaceRailSection
+    // ===== PHASE 4b: PAGE ACCESSIBILITY (chips / jump / search / resizer) =====
+    struct FFacePageSection
     {
         FString Title;
         TSharedRef<SWidget> Target;                 // header widget to scroll into view
         TSharedPtr<SFaceAccordion> Accordion;       // set for accordion sections (expand first)
         int32 AccordionIdx = -1;
-        FFaceRailSection(const FString& InTitle, TSharedRef<SWidget> InTarget)
+        FFacePageSection(const FString& InTitle, TSharedRef<SWidget> InTarget)
             : Title(InTitle), Target(InTarget) {}
     };
-    TArray<TArray<FFaceRailSection>> RailSections;  // per-rail registry (6 rails)
-    TArray<TSharedPtr<SHorizontalBox>> RailChipsRows; // per-rail chip rows (jump chips)
-    int32 ActiveChipRail = -1;                      // last jumped chip highlight
+    TArray<TArray<FFacePageSection>> PageSections;  // per-page registry (5 pages)
+    TArray<TSharedPtr<SHorizontalBox>> PageChipsRows; // per-page chip rows (jump chips)
+    int32 ActiveChipPage = -1;                      // last jumped chip highlight
     int32 ActiveChipIdx = -1;
-    int32 PendingJumpRail = -1;                     // jump queued across a rail switch
+    int32 PendingJumpPage = -1;                     // jump queued across a page switch
     FString PendingJumpTitle;
-    TSharedPtr<SBox> RailWidthBox;                  // rail SBox (live resize target)
+    TSharedPtr<SBox> ContextWidthBox;               // context panel SBox (fixed 621px)
 
-    void RegisterRailSection(int32 RailIdx, const FString& Title, TSharedRef<SWidget> Target,
+    void RegisterPageSection(int32 PageIdx, const FString& Title, TSharedRef<SWidget> Target,
         const TSharedPtr<SFaceAccordion>& Accordion = TSharedPtr<SFaceAccordion>(), int32 AccordionIdx = -1);
-    void RegisterAccordionSections(int32 RailIdx, const TSharedPtr<SFaceAccordion>& Accordion);
-    void BuildRailSectionChips();
-    void JumpToRailSection(int32 RailIdx, int32 SectionIdx);
+    void RegisterAccordionPageSections(int32 PageIdx, const TSharedPtr<SFaceAccordion>& Accordion);
+    void BuildPageSectionChips();
+    void JumpToPageSection(int32 PageIdx, int32 SectionIdx);
     void ConsumePendingJump();
-    void OnRailSearchCommitted(const FString& Query);
+    void OnPageSearchCommitted(const FString& Query);
     void UpdateDisclosureSummaries();
     float GetRailWidthPx() const;
     void SetRailWidthLive(float W);
@@ -1563,6 +1573,25 @@ private:
     void RebuildZoneDiagram();
     void ApplyZoneBoundaryDrag(int32 Idx, float Multiplier);
     void CommitZoneBoundaryDrag();
+    // Phase 1 zone-strip rotation scrub (empty-space drag on the zone
+    // diagram drives the orbit + active view state through the pure
+    // FPLayout::FPZoneScrubYawAfterDrag contract; commit snaps to the center).
+    void BeginZoneScrub();
+    void ScrubZoneYawDelta(float DeltaPx, float WidthPx);
+    void CommitZoneScrub();
+    bool IsZoneScrubbing() const;
+    float GetZoneScrubYaw() const;
+    void RefreshZoneStrip();
+    // Phase C up/down view scrub (vertical pitch strip on the Preview & Debug
+    // page drives the orbit + active view state through the pure
+    // FPLayout::FPZoneScrubPitchAfterDrag contract; commit snaps to the
+    // canonical state-center pitch so Top parks at +90 / Bottom at -90).
+    void BeginPitchScrub();
+    void ScrubPitchDelta(float DeltaPx, float HeightPx);
+    void CommitPitchScrub();
+    bool IsPitchScrubbing() const;
+    float GetPitchScrubPitch() const;
+    void RefreshPitchStrip();
     void RebuildStatusMatrix();
     void RebuildCrossLayerPanel();
     void RebuildTagValidator();
@@ -1581,15 +1610,15 @@ private:
     void BuildPanelToolbar(const TSharedRef<SVerticalBox>& Root);
     void BuildPanelStateStrip(const TSharedRef<SVerticalBox>& Root);
     void BuildPanelZoneDiagram(const TSharedRef<SVerticalBox>& Root);
-    void BuildPanelRailContainers(const TSharedRef<SVerticalBox>& Root);
+    void BuildPanelContextPages(const TSharedRef<SVerticalBox>& Root);
     void BuildPanelLayers(const TSharedRef<SVerticalBox>& Root);
     TSharedRef<SVerticalBox> BuildPanelCanvas(const TSharedRef<SVerticalBox>& Root);
     void BuildPanelSlotProps(const TSharedRef<SVerticalBox>& Root, TSharedRef<SVerticalBox>& PropPanelOut);
-    void BuildPanelArtRail();
-    void BuildPanelNestedRail();
+    void BuildPanelAssignSections();
+    void BuildPanelExpressionPage();
     void BuildPanelAnimatedSections();
-    void BuildPanelCameraRail();
-    void BuildPanelDiagnosticsRail();
+    void BuildPanelPreviewPage();
+    void BuildPanelDeveloperPage();
     void RefreshAssignGrid();
     void BuildPanelTimeline(const TSharedRef<SVerticalBox>& Root);
     void BuildPanelBottomBar(const TSharedRef<SVerticalBox>& Root);

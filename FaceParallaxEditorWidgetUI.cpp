@@ -143,21 +143,20 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
     BuildPanelToolbar(Root);
     BuildPanelStateStrip(Root);
     BuildPanelZoneDiagram(Root);
-    BuildPanelRailContainers(Root);
+    BuildPanelContextPages(Root);
     BuildPanelLayers(Root);
     TSharedRef<SVerticalBox> CenterCol = BuildPanelCanvas(Root);
     TSharedRef<SVerticalBox> PropPanel = SNew(SVerticalBox);
     BuildPanelSlotProps(Root, PropPanel);
-    BuildPanelArtRail();
-    BuildPanelNestedRail();
-    BuildPanelAnimatedSections();
-    BuildPanelCameraRail();
-    BuildPanelDiagnosticsRail();
+    BuildPanelAssignSections();
+    BuildPanelExpressionPage();
+    BuildPanelPreviewPage();
+    BuildPanelDeveloperPage();
     BuildPanelTimeline(Root);
     BuildPanelBottomBar(Root);
-    // Phase 4b: rail chips are built after every panel builder has registered
-    // its sections; a pending cross-rail search jump is consumed last.
-    BuildRailSectionChips();
+    // Phase 4b: page chips are built after every panel builder has registered
+    // its sections; a pending cross-page search jump is consumed last.
+    BuildPageSectionChips();
     ConsumePendingJump();
 
     // --- Pinned quick-actions strip: full-width Root row above the main row.
@@ -169,7 +168,7 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
         TSharedRef<SHorizontalBox> QB = SNew(SHorizontalBox);
         const std::vector<std::string>& QLabels = FPLayout::QuickActionLabels();
         TFunction<void()> QHandlers[] = {
-            [this]() { OpenImportFolderWizard(TEXT("")); },
+            [this]() { OpenImportArtDialog(); },      // W3: native picker is the primary import path; folder wizard stays bulk-only (Art rail)
             [this]() { ApplyAutoFitToAllSlots(); RefreshUI(); },
             [this]() { ClearAllOverrides(); RefreshUI(); },
         };
@@ -196,38 +195,38 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
             [SNew(SBox).HeightOverride(FPLayout::PinnedStripHeight)[QB]];
     }
 
-    // --- Top-level rail tab bar (TopTabs): labeled tabs replacing the old
-    // single-char icon column. Mirrors the manifest TopTabs row exactly
-    // (TT-Tab0..4 + TT-Spacer, fixed height FPLayout::TabBarHeight).
-    // P6: 5 tabs — Animated Variants merged into "Nested & Animated".
+    // --- Top-level page tab bar (CT-TabRow): labeled tabs switching the
+    // context panel. Mirrors the manifest CT-TabRow exactly (CT-Tab0..3 +
+    // CT-DevTab + CT-Spacer, fixed height FPLayout::TabBarHeight).
+    // W1: 4 task pages + the closed-by-default Developer drawer.
     {
         TSharedRef<SHorizontalBox> Tabs = SNew(SHorizontalBox);
         TopTabBar = Tabs;
         struct { int32 I; const TCHAR* T; float W; } TabDefs[] = {
-            {0, TEXT("View & Layer"), 82.0f},
-            {1, TEXT("Art"), 34.0f},
-            {2, TEXT("Nested & Animated"), 116.0f},
-            {3, TEXT("Camera/Preview"), 82.0f},
-            {4, TEXT("Diagnostics"), 100.0f},
+            {0, TEXT("Assign"), 56.0f},
+            {1, TEXT("Transform & Sync"), 118.0f},
+            {2, TEXT("Expression/Blink/Viseme"), 148.0f},
+            {3, TEXT("Preview & Debug"), 106.0f},
+            {4, TEXT("Developer"), 84.0f},
         };
         for (auto& Td : TabDefs)
         {
-            const int32 RI = Td.I;
-            // P7-A: programmatic rail jumps (canvas -> Art) flash the
+            const int32 TabIdx = Td.I;
+            // P7-A: programmatic page jumps (canvas -> Assign) flash the
             // destination tab amber for ~0.9s (TabFlashUntil), so the tab
             // switch is visible even when the user isn't looking at the bar.
             TSharedRef<SButton> TabBtn = SNew(SButton)
-                .OnClicked_Lambda([this, RI]()
+                .OnClicked_Lambda([this, TabIdx]()
                 {
-                    SetActiveRailIndex(RI);
+                    SetActivePageIndex(TabIdx);
                     return FReply::Handled();
                 })
-                .ButtonColorAndOpacity_Lambda([this, RI]()
+                .ButtonColorAndOpacity_Lambda([this, TabIdx]()
                 {
                     const bool bFlash = TabFlashUntil > FSlateApplication::Get().GetCurrentTime()
-                        && TabFlashIndex == RI;
+                        && TabFlashIndex == TabIdx;
                     if (bFlash) return FLinearColor(1.0f, 0.7f, 0.2f);
-                    return ActiveRailIndex == RI ? AccentBlue() : FLinearColor(0.14f, 0.14f, 0.16f);
+                    return ActivePageIndex == TabIdx ? AccentBlue() : FLinearColor(0.14f, 0.14f, 0.16f);
                 })
                 .Content()
                 [SNew(STextBlock)
@@ -237,42 +236,29 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
             Tabs->AddSlot().Padding(FMargin(2)).AutoWidth()
                 [SNew(SBox).WidthOverride(Td.W).HeightOverride(22)[TabBtn]];
         }
-        Tabs->AddSlot().FillWidth(1.0f);    // TT-Spacer
+        Tabs->AddSlot().FillWidth(1.0f);    // CT-Spacer
         Root->AddSlot().AutoHeight()
             [SNew(SBox).HeightOverride(FPLayout::TabBarHeight)[Tabs]];
     }
 
-    // --- Assemble main row: rail switcher | canvas | slot props ---
+    // --- Assemble main row: center canvas | context panel (W1) ---
     {
         TSharedRef<SHorizontalBox> MainRow = SNew(SHorizontalBox);
-        // Rail column: the rail switcher fills it; the pinned quick-actions
-        // strip is a full-width Root row above the main row (never scrolled).
-        TSharedRef<SVerticalBox> RailCol = SNew(SVerticalBox);
-        RailCol->AddSlot().FillHeight(1.0f)
-            [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("NoBorder"))
-                .BorderBackgroundColor(FLinearColor(0.07f,0.07f,0.07f))
-                .Padding(FMargin(0))
-                [RailSwitcher.ToSharedRef()]];
-        MainRow->AddSlot().AutoWidth().VAlign(VAlign_Fill)
-            [SAssignNew(RailWidthBox, SBox).WidthOverride(FPLayout::RailWidth)
-                [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("NoBorder"))
-                    .BorderBackgroundColor(FLinearColor(0.06f,0.06f,0.07f))
-                    .Padding(FMargin(0))
-                    [RailCol]]];
-        // The rail is FIXED at FPLayout::RailWidth (fills the edge-schematic
-        // section's empty space while leaving the 450px canvas + props pane
-        // fully visible). NO splitter here: a drag-resize handle between the
-        // rail and the canvas lets users steal the canvas's space, which clips
-        // the edge map and breaks the paged carousels (P24 defect class).
-        // Resizing only happens at the very outside of the widget.
         MainRow->AddSlot().FillWidth(1.0f).VAlign(VAlign_Fill)
             [CenterCol];
+        // The context panel is FIXED at FPLayout::ContextPanelWidth (621px =
+        // the merged old 273px rail + 340px props + 8px edge gap; fills the
+        // edge-schematic section's empty space while leaving the 450px canvas
+        // fully visible). NO splitter here: a drag-resize handle between the
+        // panel and the canvas lets users steal the canvas's space, which
+        // clips the edge map and breaks the paged carousels (P24 defect class).
+        // Resizing only happens at the very outside of the widget.
         MainRow->AddSlot().AutoWidth().VAlign(VAlign_Fill)
-                [SNew(SBox).WidthOverride(FPLayout::PropsWidth)
-                    [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("NoBorder"))
-                        .BorderBackgroundColor(FLinearColor(0.07f,0.07f,0.07f))
-                        .Padding(FMargin(0, 0, FPLayout::PropsRightGap, 0))
-                        [PropPanel]]];
+            [SAssignNew(ContextWidthBox, SBox).WidthOverride(FPLayout::ContextPanelWidth)
+                [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("NoBorder"))
+                    .BorderBackgroundColor(FLinearColor(0.07f,0.07f,0.07f))
+                    .Padding(FMargin(0))
+                    [PageSwitcher.ToSharedRef()]]];
         Root->AddSlot().AutoHeight()
             [SNew(SBox).HeightOverride((float)FPLayout::MainRowHeight)
                 .Clipping(EWidgetClipping::ClipToBounds)[MainRow]];

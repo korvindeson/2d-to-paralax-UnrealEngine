@@ -6515,7 +6515,7 @@ void TestPhaseHUIDesign() {
 
     // Positive contract: the real manifest must be clean.
     const std::vector<FPLayout::FPLayoutNode> Spec = FPLayout::BuildSpec();
-    TEST("Phase H: manifest builds (529 nodes)", Spec.size() == 529u);
+    TEST("Phase H: manifest builds (518 nodes)", Spec.size() == 518u);
     TEST("Phase H: every node reachable from root", FPLayout::CountReachable(Spec) == (int)Spec.size());
     const int RootIdx = FPLayout::FindRootIndex(Spec);
     TEST("Phase H: single root is the last node", RootIdx == (int)Spec.size() - 1);
@@ -6525,22 +6525,23 @@ void TestPhaseHUIDesign() {
     const std::vector<FPLayout::FPViolation> V = FPLayout::ValidateDesign(Spec);
     TEST("Phase H: zero design violations (P1..P23)", V.empty());
 
-    // Scroll-viewport contract: the 5 rails are fixed 273x800 clipped viewports,
-    // so their content can never overlap other panels or leave the screen.
-    // P6: Animated Variants merged into the Nested rail (RL-NestedAnimated).
+    // Scroll-viewport contract: the 5 context pages (CP-P0-Assign .. CP-P3-
+    // Preview + the closed-by-default CP-DevDrawer) are fixed 621x800 clipped
+    // bNoVScroll stacks switched by the CT-TabRow above MainRow, so their
+    // content can never overlap other panels or leave the screen (P24).
     {
-        const char* RailNames[5] = { "RL-ViewLayer", "RL-Art", "RL-NestedAnimated", "RL-CameraPrev", "RL-Diagnostics" };
+        const char* PageNames[5] = { "CP-P0-Assign", "CP-P1-Transform", "CP-P2-Expression", "CP-P3-Preview", "CP-DevDrawer" };
         bool bViewports = true;
-        for (const char* nm : RailNames)
+        for (const char* nm : PageNames)
         {
             const FPLayout::FPLayoutNode* found = nullptr;
             for (const FPLayout::FPLayoutNode& n : Spec)
                 if (std::string(n.Name) == nm) { found = &n; break; }
-            if (!found || !found->bClipH || found->FixedH != FPLayout::MainRowHeight
-                || found->FixedW != FPLayout::RailWidth)
+            if (!found || !found->bClipH || !found->bNoVScroll || found->FixedH != FPLayout::MainRowHeight
+                || found->FixedW != FPLayout::ContextPanelWidth)
                 bViewports = false;
         }
-        TEST("Phase H: rails are 273x800 clipped scroll viewports", bViewports);
+        TEST("Phase H: context pages are 621x800 clipped no-scroll stacks", bViewports);
     }
 
     // Design-system constants mirrored from RebuildWidget.
@@ -6548,6 +6549,12 @@ void TestPhaseHUIDesign() {
         FPLayout::RailWidth == FPLayout::MainRowWidth - FPLayout::PropsWidth
             - FPLayout::PropsRightGap - FPLayout::CenterColumnMinWidth);
     TEST("Phase H: RailWidth=273", FPLayout::RailWidth == 273.0);
+    TEST("Phase H: ContextPanelWidth fills the empty space (fixed, no splitter)",
+        FPLayout::ContextPanelWidth == FPLayout::MainRowWidth - FPLayout::CenterColumnMinWidth);
+    TEST("Phase H: ContextPanelWidth = old rail + props + gap",
+        FPLayout::ContextPanelWidth == FPLayout::RailWidth + FPLayout::PropsWidth
+            + FPLayout::PropsRightGap);
+    TEST("Phase H: ContextPanelWidth=621", FPLayout::ContextPanelWidth == 621.0);
     TEST("Phase H: rail width never shrinks the center column below its min",
         FPLayout::MainRowWidth - FPLayout::RailWidth - FPLayout::PropsWidth
             - FPLayout::PropsRightGap >= FPLayout::CenterColumnMinWidth);
@@ -6569,32 +6576,35 @@ void TestPhaseHUIDesign() {
         return false;
     };
     TEST("Phase H: Toolbar present", Has("Toolbar"));
-    TEST("Phase H: RAIL-Switcher present", Has("RAIL-Switcher"));
-    TEST("Phase H: RL-ViewLayer present", Has("RL-ViewLayer"));
-    TEST("Phase H: RL-Diagnostics present", Has("RL-Diagnostics"));
-    TEST("Phase H: RL-Art present", Has("RL-Art"));
+    TEST("Phase H: CP-Switcher present", Has("CP-Switcher"));
+    TEST("Phase H: CP-P0-Assign present", Has("CP-P0-Assign"));
+    TEST("Phase H: CP-P3-Preview present", Has("CP-P3-Preview"));
+    TEST("Phase H: CP-DevDrawer present", Has("CP-DevDrawer"));
     TEST("Phase H: AG-Grid present", Has("AG-Grid"));
     TEST("Phase H: AO-PerfCombo present", Has("AO-PerfCombo"));
-    TEST("Phase H: PR-ThumbCol0 present", Has("PR-ThumbCol0"));
+    TEST("Phase H: SL-ThumbCol0 present", Has("SL-ThumbCol0"));
     TEST("Phase H: TB-ClearStale present", Has("TB-ClearStale"));
     TEST("Phase H: BA-BotBar present", Has("BA-BotBar"));
     {
-        // Phase B/P6: the labeled 5-group tab bar replaces the icon rail column.
-        // It is a Root row between PinnedStrip and MainRow, exactly 6 nodes
-        // (5 tabs + spacer), fixed height TabBarHeight.
+        // W1: the 5-way task tab bar replaces the old 5-rail switcher. It is a
+        // Root row between PinnedStrip and MainRow, exactly 6 nodes (4 task tabs
+        // + Developer tab + spacer), fixed height TabBarHeight.
         const FPLayout::FPLayoutNode* RootNode = nullptr;
         const FPLayout::FPLayoutNode* Tabs = nullptr;
         for (const FPLayout::FPLayoutNode& n : Spec)
         {
             if (std::string(n.Name) == "Root") RootNode = &n;
-            if (std::string(n.Name) == "TopTabs") Tabs = &n;
+            if (std::string(n.Name) == "CT-TabRow") Tabs = &n;
         }
         bool bTabs = Tabs && Tabs->Children.size() == 6 && Tabs->FixedH == FPLayout::TabBarHeight;
         if (bTabs)
-            for (int i = 0; i < 5; ++i)
+            for (int i = 0; i < 4; ++i)
                 if (std::string(Spec[(size_t)Tabs->Children[(size_t)i]].Name) !=
-                        std::string("TT-Tab") + char('0' + i))
+                        std::string("CT-Tab") + char('0' + i))
                     bTabs = false;
+        if (bTabs)
+            bTabs = std::string(Spec[(size_t)Tabs->Children[4]].Name) == "CT-DevTab"
+                 && std::string(Spec[(size_t)Tabs->Children[5]].Name) == "CT-Spacer";
         int TabIdx = -1, StripIdx = -1;
         if (RootNode && Tabs)
             for (size_t i = 0; i < Spec.size(); ++i)
@@ -6602,24 +6612,24 @@ void TestPhaseHUIDesign() {
                 if (&Spec[i] == Tabs) TabIdx = (int)i;
                 if (std::string(Spec[i].Name) == "PinnedStrip") StripIdx = (int)i;
             }
-        TEST("Phase H: TopTabs is a 6-node fixed-height tab row (P6)",
+        TEST("Phase H: CT-TabRow is a 6-node fixed-height tab row (W1)",
             bTabs && RootNode && RootNode->Children.size() == 10
             && RootNode->Children[3] == StripIdx && RootNode->Children[4] == TabIdx
             && std::string(Spec[(size_t)RootNode->Children[5]].Name) == "MainRow");
     }
     {
-        // Dev tools relocated (A5): Tag Validator + Material Cross-Reference
-        // are Diagnostics-rail accordion sections, NOT bottom-bar leaves. Their
-        // leaves must be children of the Diagnostics rail, not of BotArea.
+        // Dev tools relocated (W1): Tag Validator + Material Cross-Reference
+        // are Developer-drawer accordion sections, NOT bottom-bar leaves. Their
+        // sections must be children of the CP-DevDrawer page, not of BotArea.
         const FPLayout::FPLayoutNode* BotArea = nullptr;
-        const FPLayout::FPLayoutNode* Adv = nullptr;
+        const FPLayout::FPLayoutNode* Dev = nullptr;
         for (const FPLayout::FPLayoutNode& n : Spec)
         {
             if (std::string(n.Name) == "BotArea") BotArea = &n;
-            if (std::string(n.Name) == "RL-Diagnostics") Adv = &n;
+            if (std::string(n.Name) == "CP-DevDrawer") Dev = &n;
         }
         bool bTagInBottom = false, bMCInBottom = false;
-        bool bTagInAdv = false, bMCInAdv = false;
+        bool bTagInDev = false, bMCInDev = false;
         if (BotArea)
         {
             for (int c : BotArea->Children)
@@ -6627,15 +6637,15 @@ void TestPhaseHUIDesign() {
             for (int c : BotArea->Children)
                 if (std::string(Spec[(size_t)c].Name) == "BA-MatCrossRef") bMCInBottom = true;
         }
-        if (Adv)
+        if (Dev)
         {
-            for (int c : Adv->Children)
-                if (std::string(Spec[(size_t)c].Name) == "Sec-TagValidator") bTagInAdv = true;
-            for (int c : Adv->Children)
-                if (std::string(Spec[(size_t)c].Name) == "Sec-MatCrossRef") bMCInAdv = true;
+            for (int c : Dev->Children)
+                if (std::string(Spec[(size_t)c].Name) == "Sec-TagValidator") bTagInDev = true;
+            for (int c : Dev->Children)
+                if (std::string(Spec[(size_t)c].Name) == "Sec-MatCrossRef") bMCInDev = true;
         }
-        TEST("Phase H: TagValidator moved out of bottom bar (A5)", !bTagInBottom && !bMCInBottom);
-        TEST("Phase H: TagValidator is a Diagnostics accordion section (A5)", bTagInAdv && bMCInAdv);
+        TEST("Phase H: TagValidator moved out of bottom bar (W1)", !bTagInBottom && !bMCInBottom);
+        TEST("Phase H: TagValidator is a Developer drawer section (W1)", bTagInDev && bMCInDev);
     }
 
     // Negative controls: every principle must fire on a planted violation.
@@ -6799,12 +6809,9 @@ void TestPhaseHUIDesign() {
             !Violates(B.N, FPLayout::DesignRule::DensityOverflow));
     }
     {
-        // Real manifest: the dense rails must be accordion-marked. Phase B
-        // regroup: Import + OutlineDepth (Art), NestedPins + Viseme + Hull
-        // (Nested & Animated, P6 merge), and all eight Diagnostics sections are
-        // accordions. The props sections were converted to carousel pages
-        // (P18) - one visible at a time - so they no longer need accordion
-        // collapse.
+        // Real manifest: the dense sections must be accordion-marked. Phase B
+        // regroup: Import + OutlineDepth (Assign), NestedPins + Viseme + Hull
+        // (Expression), and the Developer-drawer sections are accordions.
         const char* AccordionSections[] = { "Sec-Import", "Sec-OutlineDepth",
             "Sec-VisemeGrid", "Sec-HullReview", "Sec-ParamRef", "Sec-ParamTable", "Sec-NestedPins",
             "Sec-Config", "Sec-EdgeAnalysis", "Sec-DepthDebug", "Sec-Problems",
@@ -6822,7 +6829,7 @@ void TestPhaseHUIDesign() {
     }
     {
         // Phase 3: state strip is 10 plain tab buttons (always switch views);
-        // the ONE Copy/Sync panel lives on the props "Sync + Align" page.
+        // the ONE Copy/Sync panel lives on the Transform & Sync page.
         bool bPickBtn = false, bOldPickRow = false;
         bool bDstRows = true, bVoRow = false, bApplyViews = false;
         for (const FPLayout::FPLayoutNode& n : Spec)
@@ -6839,29 +6846,40 @@ void TestPhaseHUIDesign() {
         TEST("Phase H: Apply views anchor removed from Assign Ops", !bApplyViews);
     }
     {
-        // P14: the props pane must leave a right-edge gap against the screen
-        // (real widget: MainRow props slot gets right padding). Mirrors the
-        // "items overlap the end of the screen" defect.
+        // P14: the context panel spans to the window's right edge while the
+        // center column keeps its minimum width - nothing overflows the screen
+        // and nothing is clipped under the terminal (W1: the old props pane +
+        // right-edge gap merged into CP-ContextPanel).
         const FPLayout::FPRect& rr = Rects[(size_t)RootIdx];
-        int PropsIdx = -1;
+        int CtxIdx = -1, CenterIdx = -1;
         for (size_t pi = 0; pi < Spec.size(); ++pi)
-            if (std::string(Spec[pi].Name) == "PROPS") { PropsIdx = (int)pi; break; }
-        bool bGap = false;
-        if (PropsIdx >= 0)
         {
-            const FPLayout::FPRect& pr = Rects[(size_t)PropsIdx];
-            bGap = (rr.X + rr.W) - (pr.X + pr.W) >= FPLayout::PropsRightGap - 0.001;
+            if (std::string(Spec[pi].Name) == "CP-ContextPanel") CtxIdx = (int)pi;
+            if (std::string(Spec[pi].Name) == "MainRow") CenterIdx = (int)pi;
         }
-        TEST("Phase H: props pane keeps a right-edge gap (P14)", bGap);
+        bool bEdge = false;
+        if (CtxIdx >= 0)
+        {
+            const FPLayout::FPRect& pr = Rects[(size_t)CtxIdx];
+            bEdge = (pr.X + pr.W) - (rr.X + rr.W) <= 0.001;
+        }
+        TEST("Phase H: context panel reaches the window edge (P14)", bEdge);
+        bool bCenterW = CenterIdx >= 0 && Rects[(size_t)CenterIdx].W == FPLayout::MainRowWidth;
+        TEST("Phase H: MainRow width fills the root band (P14)", bCenterW);
     }
     {
-        // P15: scroll viewport content must keep a right inset so items do not
-        // run under the scrollbar (real widget: SBox padding inside PropScroll).
-        const FPLayout::FPLayoutNode* Scroll = nullptr;
-        for (const FPLayout::FPLayoutNode& n : Spec)
-            if (std::string(n.Name) == "PR-Scroll") { Scroll = &n; break; }
-        TEST("Phase H: PR-Scroll content keeps a right inset (P15)",
-            Scroll && Scroll->PadR >= FPLayout::PropsScrollInsetR - 0.001);
+        // P15: context pages are no-scroll stacks (bNoVScroll) - the old
+        // scrollbar-under-run defect is retired with PR-Scroll.
+        bool bNoV = true;
+        const char* PageNames[5] = { "CP-P0-Assign", "CP-P1-Transform", "CP-P2-Expression", "CP-P3-Preview", "CP-DevDrawer" };
+        for (const char* nm : PageNames)
+        {
+            const FPLayout::FPLayoutNode* found = nullptr;
+            for (const FPLayout::FPLayoutNode& n : Spec)
+                if (std::string(n.Name) == nm) { found = &n; break; }
+            if (!found || !found->bNoVScroll) bNoV = false;
+        }
+        TEST("Phase H: context pages are no-scroll (P15)", bNoV);
     }
     {
         // Section stacking guard: every section directly inside a clipped
@@ -6925,12 +6943,13 @@ void TestPhaseHUIDesign() {
         TEST("Phase H: CN-Preview resolved rect keeps the aspect ratio (P23)", bRatio);
     }
     {
-        // P22 positive: NO rail content may be wider than its 180px viewport -
-        // a wider row would scroll left-to-right under the face schematic.
+        // P22 positive: NO context-page content may be wider than the 621px
+        // viewport - a wider row would scroll left-to-right under the face
+        // schematic.
         bool bNoOverflow = true;
         for (const FPLayout::FPViolation& v : V)
             if (v.Rule == FPLayout::DesignRule::NoHorizontalOverflow) bNoOverflow = false;
-        TEST("Phase H: no rail content overflows 180px (P22)", bNoOverflow);
+        TEST("Phase H: no context-page content overflows 621px (P22)", bNoOverflow);
     }
     {
         // P22 negative: a wide row inside a 180px clipped viewport must fire.
@@ -6995,38 +7014,36 @@ void TestPhaseHUIDesign() {
         FPLayout::Builder B;
         const int Root = FPLayout::VF(B, "Root",
             FPLayout::HF(B, "MainRow",
-                FPLayout::LF(B, "RAIL", 180, 0),
                 FPLayout::VF(B, "CENTER",
                     FPLayout::LF(B, "CN-Preview", 450, 450),
                     FPLayout::LF(B, "CN-Legend", 300, 16)),
-                FPLayout::LF(B, "PROPS", 340, 0)));
+                FPLayout::LF(B, "CP-ContextPanel", 621, 0)));
         B.N[(size_t)Root].FixedW = 1089.0;
         B.N[(size_t)Root].FixedH = 920.0;
         const int MR = B.N[(size_t)Root].Children[0];
         B.N[(size_t)MR].FixedH = 620.0;
-        B.N[(size_t)B.N[(size_t)MR].Children[0]].FixedH = 620.0;   // RAIL fills band
-        B.N[(size_t)B.N[(size_t)MR].Children[1]].FixedW = 560.0;   // CENTER fixed col
-        B.N[(size_t)B.N[(size_t)MR].Children[1]].FixedH = 620.0;
-        B.N[(size_t)B.N[(size_t)MR].Children[2]].FixedH = 620.0;   // PROPS fills band
+        B.N[(size_t)B.N[(size_t)MR].Children[0]].FixedW = 468.0;   // CENTER fixed col
+        B.N[(size_t)B.N[(size_t)MR].Children[0]].FixedH = 620.0;
+        B.N[(size_t)B.N[(size_t)MR].Children[1]].FixedH = 620.0;   // context panel fills band
         // CENTER: preview canvas + legend total 466 < 620 -> clean baseline.
         TEST("P24: center column inside band passes",
             !Violates(B.N, FPLayout::DesignRule::NoTerminalOverlap));
         // Now plant the interior canvas resize: 700px canvas pokes past 620.
-        const int Center = B.N[(size_t)MR].Children[1];
+        const int Center = B.N[(size_t)MR].Children[0];
         const int Prev = B.N[(size_t)Center].Children[0];
         B.N[(size_t)Prev].FixedH = 700.0;
         B.N[(size_t)Prev].FixedW = 700.0;
         TEST("P24: oversized canvas under the terminal fires",
             Violates(B.N, FPLayout::DesignRule::NoTerminalOverlap));
     }
-    // No-interior-resize contract: MainRow holds exactly the three columns
-    // (rail | center | props) - an interior resizer handle between the canvas
-    // and the parts strip would add a 4th child and break the fit + carousels.
+    // No-interior-resize contract: MainRow holds exactly the two columns
+    // (center | context panel) - an interior resizer handle between the canvas
+    // and the context panel would add a 3rd child and break the fit + carousels.
     {
-        bool bThree = true;
+        bool bTwo = true;
         for (const FPLayout::FPLayoutNode& n : Spec)
-            if (std::string(n.Name) == "MainRow" && n.Children.size() != 3u) bThree = false;
-        TEST("Phase H: MainRow has exactly 3 columns (no interior resizer)", bThree);
+            if (std::string(n.Name) == "MainRow" && n.Children.size() != 2u) bTwo = false;
+        TEST("Phase H: MainRow has exactly 2 columns (no interior resizer)", bTwo);
     }
 
     // Status Detail matrix overlap guard (improved UI test). The real matrix
@@ -7054,19 +7071,20 @@ void TestPhaseHUIDesign() {
         TEST("Phase H: status matrix page budget fits the viewport",
             FPLayout::StatusMatrixHeaderH + FPLayout::StatusMatrixRowsPerPage * FPLayout::StatusMatrixRowH
                 + FPLayout::ScrollReserveBottom <= FPLayout::CarouselViewportH + 0.001);
-        // The rail-0 section set (header + layer carousel + nav + add button +
-        // paged status detail) fits the grown MainRowHeight band.
-        TEST("Phase H: rail-0 content fits the MainRowHeight band",
+        // The Assign-page section set (header + layer carousel + nav + add
+        // button + paged status detail) fits the grown MainRowHeight band.
+        TEST("Phase H: Assign-page content fits the MainRowHeight band",
             FPLayout::MainRowHeight >= 760.0);
     }
     // Negative: the UNPAGED status matrix (the pre-fix defect - 20 layer rows,
-    // last = "Hair") overflows a fit-first rail and fires P17, mirroring the
-    // real rail-0 section set; the PAGED matrix (viewport + nav strip) passes.
+    // last = "Hair") overflows a fit-first context page and fires P17, mirroring
+    // the real Assign-page section set; the PAGED matrix (viewport + nav strip)
+    // passes.
     {
-        auto RailBuilder = [](int BodyH) {
+        auto PageBuilder = [](int BodyH) {
             FPLayout::Builder B;
             const int Root = FPLayout::VF(B, "Root",
-                FPLayout::VF(B, "RL-ViewLayer",
+                FPLayout::VF(B, "CP-P0-Assign",
                     FPLayout::LF(B, "Header", 120, 14),
                     FPLayout::LF(B, "Scroll", 0, 184),
                     FPLayout::LF(B, "Nav", 120, 22),
@@ -7074,25 +7092,25 @@ void TestPhaseHUIDesign() {
                     FPLayout::VF(B, "Sec-StatusDetail",
                         FPLayout::LF(B, "Title", 120, 14),
                         FPLayout::LF(B, "Body", 160, BodyH))));
-            const int RL = B.N[(size_t)Root].Children[0];
-            B.N[(size_t)RL].bClipH = true;
-            B.N[(size_t)RL].bNoVScroll = true;
-            B.N[(size_t)RL].FixedW = FPLayout::RailWidth;
-            B.N[(size_t)RL].FixedH = FPLayout::MainRowHeight;
-            B.N[(size_t)RL].Spacing = 2.0;
-            const int Sec = B.N[(size_t)RL].Children[4];
+            const int P0 = B.N[(size_t)Root].Children[0];
+            B.N[(size_t)P0].bClipH = true;
+            B.N[(size_t)P0].bNoVScroll = true;
+            B.N[(size_t)P0].FixedW = FPLayout::ContextPanelWidth;
+            B.N[(size_t)P0].FixedH = FPLayout::MainRowHeight;
+            B.N[(size_t)P0].Spacing = 2.0;
+            const int Sec = B.N[(size_t)P0].Children[4];
             B.N[(size_t)Sec].bSection = true;
             B.N[(size_t)B.N[(size_t)Sec].Children[0]].bTitle = true;
             return B;
         };
         {
-            const FPLayout::Builder B = RailBuilder(28 + 20 * 44);   // unpaged: 20 layer rows
+            const FPLayout::Builder B = PageBuilder(28 + 20 * 44);  // unpaged: 20 layer rows
             TEST("P17: unpaged status matrix fires FitNoVScroll (hidden Hair)",
                 Violates(B.N, FPLayout::DesignRule::FitNoVScroll));
         }
         {
-            const FPLayout::Builder B = RailBuilder(184);            // paged: fixed viewport height
-            TEST("P17: paged status matrix fits the rail (Hair reachable)",
+            const FPLayout::Builder B = PageBuilder(184);           // paged: fixed viewport height
+            TEST("P17: paged status matrix fits the page (Hair reachable)",
                 !Violates(B.N, FPLayout::DesignRule::FitNoVScroll));
         }
     }
@@ -7138,20 +7156,20 @@ void TestPhaseIUITesting() {
         TEST("UI: last page of 17 rows spans 8..15", Start == 8 && End == 16);
     }
 
-    // --- Step 1 fit-first: the real rails pack without vertical scroll ---
+    // --- Step 1 fit-first: the real context pages pack without vertical scroll ---
     const std::vector<FPLayout::FPLayoutNode> Spec = FPLayout::BuildSpec();
-    TEST("UI: manifest builds (529 nodes)", Spec.size() == 529u);
+    TEST("UI: manifest builds (518 nodes)", Spec.size() == 518u);
     {
-        const char* RailNames[5] = { "RL-ViewLayer", "RL-Art", "RL-NestedAnimated", "RL-CameraPrev", "RL-Diagnostics" };
+        const char* PageNames[5] = { "CP-P0-Assign", "CP-P1-Transform", "CP-P2-Expression", "CP-P3-Preview", "CP-DevDrawer" };
         bool bNoV = true;
-        for (const char* nm : RailNames)
+        for (const char* nm : PageNames)
         {
             const FPLayout::FPLayoutNode* found = nullptr;
             for (const FPLayout::FPLayoutNode& n : Spec)
                 if (std::string(n.Name) == nm) { found = &n; break; }
             if (!found || !found->bNoVScroll) bNoV = false;
         }
-        TEST("UI: all 5 rails are fit-first (no vertical scroll)", bNoV);
+        TEST("UI: all 5 context pages are fit-first (no vertical scroll)", bNoV);
     }
     const std::vector<FPLayout::FPViolation> V = FPLayout::ValidateDesign(Spec);
     {
@@ -7162,7 +7180,7 @@ void TestPhaseIUITesting() {
             if (v.Rule == FPLayout::DesignRule::CarouselFallback) bP18 = false;
             if (v.Rule == FPLayout::DesignRule::ScrollbarReserve) bP19 = false;
         }
-        TEST("UI: rails fit without a vertical scroll bar (P17)", bP17);
+        TEST("UI: context pages fit without a vertical scroll bar (P17)", bP17);
         TEST("UI: every carousel has its nav strip (P18)", bP18);
         TEST("UI: every carousel keeps the 8px reserve (P19)", bP19);
     }
@@ -7174,45 +7192,42 @@ void TestPhaseIUITesting() {
         return nullptr;
     };
     {
-        const FPLayout::FPLayoutNode* L = Find("RL-LayersScroll");
+        const FPLayout::FPLayoutNode* L = Find("SL-Carousel");
         const FPLayout::FPLayoutNode* PB = Find("PB-Carousel");
         const FPLayout::FPLayoutNode* AL = Find("AL-Carousel");
-        const FPLayout::FPLayoutNode* PR = Find("PR-Carousel");
         const FPLayout::FPLayoutNode* SD = Find("SD-Carousel");
         bool bCar = L && L->bCarousel && L->FixedH == FPLayout::CarouselViewportH
                  && PB && PB->bCarousel && PB->FixedH == FPLayout::CarouselViewportH
                  && AL && AL->bCarousel && AL->FixedH == FPLayout::CarouselViewportH
-                 && PR && PR->bCarousel && PR->FixedH == FPLayout::CarouselViewportH
                  && SD && SD->bCarousel && SD->FixedH == FPLayout::CarouselViewportH;
-        TEST("UI: layers/problems/cross-layer/props/status are carousels (P18)", bCar);
+        TEST("UI: layers/problems/cross-layer/status are carousels (P18)", bCar);
     }
     {
-        const FPLayout::FPLayoutNode* LN = Find("RL-LayersNav");
+        const FPLayout::FPLayoutNode* LN = Find("SL-CarouselNav");
         const FPLayout::FPLayoutNode* PN = Find("PB-CarouselNav");
         const FPLayout::FPLayoutNode* AN = Find("AL-CarouselNav");
-        const FPLayout::FPLayoutNode* PRN = Find("PR-CarouselNav");
         const FPLayout::FPLayoutNode* SDN = Find("SD-CarouselNav");
         bool bNav = LN && LN->bCarouselNav && PN && PN->bCarouselNav
-                 && AN && AN->bCarouselNav && PRN && PRN->bCarouselNav
-                 && SDN && SDN->bCarouselNav;
+                 && AN && AN->bCarouselNav && SDN && SDN->bCarouselNav;
         TEST("UI: every carousel has a nav strip (P18)", bNav);
     }
     {
+        // W1: the props carousel (PR-Carousel / PR-CarouselNav / PR-Scroll) is
+        // retired - the props pane merged into the CP-P0-Assign context page.
         const FPLayout::FPLayoutNode* PR = Find("PR-Carousel");
-        TEST("UI: props carousel pages one-visible-at-a-time (P18)",
-            PR && PR->Kind == FPLayout::ContainerKind::Overlay && PR->Children.size() == 2);
+        const FPLayout::FPLayoutNode* PRN = Find("PR-CarouselNav");
+        const FPLayout::FPLayoutNode* PSc = Find("PR-Scroll");
+        TEST("UI: props carousel machinery retired (W1)",
+            !PR && !PRN && !PSc);
     }
     {
-        // P20: per-tab whitespace review - under-packed carousel pages must
-        // be combined into the minimum achievable page count. The props
-        // carousel packs View Override + Sync to Views + Alignment into one
-        // page (together they fit the 176px page viewport); Transform stays
-        // alone (it cannot merge with anything).
-        const FPLayout::FPLayoutNode* PR = Find("PR-Carousel");
-        TEST("UI: props carousel minimum page pack = 2 (P20)",
-            PR && FPLayout::CarouselMinPages(Spec, PR) == 2);
-        TEST("UI: props carousel fully packed - no whitespace flags (P20)",
-            PR && FPLayout::CarouselMinPages(Spec, PR) == (int)PR->Children.size());
+        // W1: the retired props carousel's content sections (View Override /
+        // Sync to Views / Alignment / Transform) now live as plain sections
+        // on the CP-P1-Transform page.
+        const FPLayout::FPLayoutNode* XF = Find("Sec-Transform");
+        const FPLayout::FPLayoutNode* SA = Find("Sec-SyncAlign");
+        TEST("UI: Transform + Sync/Align are plain sections on the Transform page (W1)",
+            XF && !XF->bCarousel && SA && !SA->bCarousel);
     }
     {
         // Reserve: 176px of page content + 8px reserve inside 184.
@@ -7230,10 +7245,9 @@ void TestPhaseIUITesting() {
                 + FPLayout::ScrollReserveBottom <= FPLayout::CarouselViewportH + 0.001);
     }
     {
-        // P15 preserved: PR-Scroll still leaves the scrollbar gap.
-        const FPLayout::FPLayoutNode* Scroll = Find("PR-Scroll");
-        TEST("UI: props pane keeps the right inset (P15)",
-            Scroll && Scroll->PadR >= FPLayout::PropsScrollInsetR - 0.001);
+        // W1: no internal scroll viewport remains - the context pages are
+        // bNoVScroll stacks (the retired PR-Scroll's scrollbar inset is moot).
+        TEST("UI: no internal scroll viewport in the manifest (W1)", !Find("PR-Scroll"));
     }
 
     // --- Negative controls ---
@@ -7455,23 +7469,23 @@ void TestHotspotRegions() {
     for (const R& r : Def)
         if (!r.Name || !r.Name[0] || r.Outer.empty()) bNamed = false;
     TEST("Template: all named and non-empty", bNamed);
-    TEST("Template: bridge hits Nose", std::string(FPLayout::FPHotspotHit(Def, 0.5, 0.30)) == "Nose");
-    TEST("Template: tip boundary hits Nose", std::string(FPLayout::FPHotspotHit(Def, 0.5, 0.52)) == "Nose");
-    TEST("Template: below tip misses", FPLayout::FPHotspotHit(Def, 0.5, 0.55) == nullptr);
-    TEST("Template: lip hits Mouth", std::string(FPLayout::FPHotspotHit(Def, 0.5, 0.61)) == "Mouth");
-    TEST("Template: mouth hole yields Teeth", std::string(FPLayout::FPHotspotHit(Def, 0.5, 0.66)) == "Teeth");
-    TEST("Template: hole side yields Teeth too", std::string(FPLayout::FPHotspotHit(Def, 0.55, 0.66)) == "Teeth");
-    TEST("Template: chin hits Chin", std::string(FPLayout::FPHotspotHit(Def, 0.5, 0.76)) == "Chin");
+    TEST("Template: bridge hits Nose", std::string(FPLayout::FPHotspotHit(Def, 0.5, 0.64)) == "Nose");
+    TEST("Template: tip boundary hits Nose", std::string(FPLayout::FPHotspotHit(Def, 0.5, 0.69)) == "Nose");
+    TEST("Template: below tip misses", FPLayout::FPHotspotHit(Def, 0.5, 0.72) == nullptr);
+    TEST("Template: lip hits Mouth", std::string(FPLayout::FPHotspotHit(Def, 0.5, 0.76)) == "Mouth");
+    TEST("Template: mouth hole yields Teeth", std::string(FPLayout::FPHotspotHit(Def, 0.5, 0.79)) == "Teeth");
+    TEST("Template: hole side yields Teeth too", std::string(FPLayout::FPHotspotHit(Def, 0.55, 0.79)) == "Teeth");
+    TEST("Template: chin hits Chin", std::string(FPLayout::FPHotspotHit(Def, 0.5, 0.84)) == "Chin");
     TEST("Template: neck hits Neck", std::string(FPLayout::FPHotspotHit(Def, 0.5, 0.94)) == "Neck");
-    TEST("Template: cheek hits CheekL", std::string(FPLayout::FPHotspotHit(Def, 0.10, 0.35)) == "CheekL");
-    TEST("Template: cheek right hits CheekR", std::string(FPLayout::FPHotspotHit(Def, 0.90, 0.35)) == "CheekR");
-    TEST("Template: ear hits EarL", std::string(FPLayout::FPHotspotHit(Def, 0.05, 0.35)) == "EarL");
-    TEST("Template: ear overlap resolves to CheekL", std::string(FPLayout::FPHotspotHit(Def, 0.08, 0.35)) == "CheekL");
-    TEST("Template: outside ear misses", FPLayout::FPHotspotHit(Def, 0.02, 0.35) == nullptr);
-    TEST("Template: eye hits EyeL", std::string(FPLayout::FPHotspotHit(Def, 0.25, 0.24)) == "EyeL");
-    TEST("Template: eye right hits EyeR", std::string(FPLayout::FPHotspotHit(Def, 0.75, 0.24)) == "EyeR");
-    TEST("Template: brow hits BrowL", std::string(FPLayout::FPHotspotHit(Def, 0.26, 0.14)) == "BrowL");
-    TEST("Template: forehead misses", FPLayout::FPHotspotHit(Def, 0.5, 0.14) == nullptr);
+    TEST("Template: cheek hits CheekL", std::string(FPLayout::FPHotspotHit(Def, 0.22, 0.58)) == "CheekL");
+    TEST("Template: cheek right hits CheekR", std::string(FPLayout::FPHotspotHit(Def, 0.78, 0.58)) == "CheekR");
+    TEST("Template: ear hits EarL", std::string(FPLayout::FPHotspotHit(Def, 0.05, 0.55)) == "EarL");
+    TEST("Template: ear overlap resolves to CheekL", std::string(FPLayout::FPHotspotHit(Def, 0.09, 0.55)) == "CheekL");
+    TEST("Template: outside ear misses", FPLayout::FPHotspotHit(Def, 0.02, 0.55) == nullptr);
+    TEST("Template: eye hits EyeL", std::string(FPLayout::FPHotspotHit(Def, 0.33, 0.44)) == "EyeL");
+    TEST("Template: eye right hits EyeR", std::string(FPLayout::FPHotspotHit(Def, 0.67, 0.44)) == "EyeR");
+    TEST("Template: brow hits BrowL", std::string(FPLayout::FPHotspotHit(Def, 0.32, 0.315)) == "BrowL");
+    TEST("Template: forehead misses", FPLayout::FPHotspotHit(Def, 0.5, 0.36) == nullptr);
     TEST("Template: corner misses", FPLayout::FPHotspotHit(Def, 0.01, 0.01) == nullptr);
 }
 
@@ -8344,66 +8358,69 @@ void TestPinDataSurvivesSync() {
 void TestAccessibilityMirrors() {
     printf("\n=== Accessibility Mirrors (Phase 4b) ===\n");
 
-    // ---- Rail section registry (chips + search jump source of truth) ----
-    const std::vector<std::vector<std::string>>& Titles = FPLayout::RailSectionTitles();
-    TEST("Registry: 5 rails", Titles.size() == 5);
-    TEST("Registry: rail 0 View & Layer 3 sections", Titles[0].size() == 3
-        && Titles[0][0] == "Layers" && Titles[0][1] == "Status Detail"
-        && Titles[0][2] == "All Layers (current state)");
-    TEST("Registry: rail 1 Art 4 sections (Phase 3 consolidation)", Titles[1].size() == 4
-        && Titles[1][0] == "Import" && Titles[1][1] == "Outline -> Depth"
-        && Titles[1][2] == "Bulk Assign" && Titles[1][3] == "Assign Ops");
-    TEST("Registry: rail 2 Nested & Animated 3 sections", Titles[2].size() == 3
+    // ---- Page section registry (chips + search jump source of truth) ----
+    const std::vector<std::vector<std::string>>& Titles = FPLayout::PageSectionTitles();
+    TEST("Registry: 5 pages (4 task pages + Developer drawer)", Titles.size() == 5);
+    TEST("Registry: page 0 Assign 6 sections", Titles[0].size() == 6
+        && Titles[0][0] == "Selected Layer" && Titles[0][1] == "Layers"
+        && Titles[0][2] == "Import" && Titles[0][3] == "Outline -> Depth"
+        && Titles[0][4] == "Bulk Assign" && Titles[0][5] == "Assign Ops");
+    TEST("Registry: page 1 Transform & Sync 2 sections", Titles[1].size() == 2
+        && Titles[1][0] == "Transform" && Titles[1][1] == "Sync + Align");
+    TEST("Registry: page 2 Expression/Blink/Viseme 3 sections", Titles[2].size() == 3
         && Titles[2][0] == "Nested Art / Pins"
         && Titles[2][1] == "Viseme Frames (click filled cell = play)"
         && Titles[2][2] == "Hull Review (click thumb = jump)");
-    TEST("Registry: rail 3 Camera/Preview 3 sections", Titles[3].size() == 3
+    TEST("Registry: page 3 Preview & Debug 5 sections", Titles[3].size() == 5
         && Titles[3][0] == "Camera Follow" && Titles[3][1] == "Camera"
-        && Titles[3][2] == "Blend Preview");
-    TEST("Registry: rail 4 Diagnostics 8 sections (P6 diagnostics lead)", Titles[4].size() == 8
+        && Titles[3][2] == "Blend Preview" && Titles[3][3] == "Edge Analysis"
+        && Titles[3][4] == "Depth Debug");
+    TEST("Registry: page 4 Developer 8 sections", Titles[4].size() == 8
         && Titles[4][0] == "Tag Validator" && Titles[4][1] == "Material Cross-Reference"
-        && Titles[4][2] == "Param Reference" && Titles[4][3] == "Edge Analysis"
-        && Titles[4][4] == "Config" && Titles[4][5] == "Param Bindings (state + layer)"
-        && Titles[4][6] == "Depth Debug"
-        && Titles[4][7] == "Problems (click row = jump)");
+        && Titles[4][2] == "Param Reference" && Titles[4][3] == "Config"
+        && Titles[4][4] == "Param Bindings (state + layer)"
+        && Titles[4][5] == "Problems (click row = jump)"
+        && Titles[4][6] == "Status Detail"
+        && Titles[4][7] == "All Layers (current state)");
 
-    // ---- Cross-rail search jump (mirror of OnRailSearchCommitted) ----
-    int OutRail = -1, OutIdx = -1;
-    TEST("Search: 'config' -> Diagnostics/Config",
-        FPLayout::FindRailSectionByTitle("config", OutRail, OutIdx) == 0
-        && OutRail == 4 && OutIdx == 4);
+    // ---- Cross-page search jump (mirror of OnPageSearchCommitted) ----
+    int OutPage = -1, OutIdx = -1;
+    TEST("Search: 'config' -> Developer/Config",
+        FPLayout::FindPageSectionByTitle("config", OutPage, OutIdx) == 0
+        && OutPage == 4 && OutIdx == 3);
     TEST("Search: 'CONFIG' case-insensitive",
-        FPLayout::FindRailSectionByTitle("CONFIG", OutRail, OutIdx) == 0
-        && OutRail == 4 && OutIdx == 4);
-    TEST("Search: 'viseme' -> Nested & Animated/Viseme",
-        FPLayout::FindRailSectionByTitle("viseme", OutRail, OutIdx) == 0
-        && OutRail == 2 && OutIdx == 1);
+        FPLayout::FindPageSectionByTitle("CONFIG", OutPage, OutIdx) == 0
+        && OutPage == 4 && OutIdx == 3);
+    TEST("Search: 'viseme' -> Expression/Viseme",
+        FPLayout::FindPageSectionByTitle("viseme", OutPage, OutIdx) == 0
+        && OutPage == 2 && OutIdx == 1);
     TEST("Search: 'quick' no longer matches (Quick Actions removed)",
-        FPLayout::FindRailSectionByTitle("quick", OutRail, OutIdx) != 0);
-    TEST("Search: 'import' -> Art/Import (Phase 3 lead)",
-        FPLayout::FindRailSectionByTitle("import", OutRail, OutIdx) == 0
-        && OutRail == 1 && OutIdx == 0);
-    TEST("Search: 'camera' first match is rail 3",
-        FPLayout::FindRailSectionByTitle("camera", OutRail, OutIdx) == 0
-        && OutRail == 3 && OutIdx == 0);
-    TEST("Search: 'blend' -> rail 3 idx 2",
-        FPLayout::FindRailSectionByTitle("blend", OutRail, OutIdx) == 0
-        && OutRail == 3 && OutIdx == 2);
-    TEST("Search: 'status' -> rail 0 Status Detail",
-        FPLayout::FindRailSectionByTitle("status", OutRail, OutIdx) == 0
-        && OutRail == 0 && OutIdx == 1);
-    TEST("Search: 'problem' -> rail 4 Problems",
-        FPLayout::FindRailSectionByTitle("problem", OutRail, OutIdx) == 0
-        && OutRail == 4 && OutIdx == 7);
+        FPLayout::FindPageSectionByTitle("quick", OutPage, OutIdx) != 0);
+    TEST("Search: 'import' -> Assign/Import",
+        FPLayout::FindPageSectionByTitle("import", OutPage, OutIdx) == 0
+        && OutPage == 0 && OutIdx == 2);
+    TEST("Search: 'camera' first match is Preview",
+        FPLayout::FindPageSectionByTitle("camera", OutPage, OutIdx) == 0
+        && OutPage == 3 && OutIdx == 0);
+    TEST("Search: 'blend' -> Preview idx 2",
+        FPLayout::FindPageSectionByTitle("blend", OutPage, OutIdx) == 0
+        && OutPage == 3 && OutIdx == 2);
+    TEST("Search: 'status' -> Developer Status Detail",
+        FPLayout::FindPageSectionByTitle("status", OutPage, OutIdx) == 0
+        && OutPage == 4 && OutIdx == 6);
+    TEST("Search: 'problem' -> Developer Problems",
+        FPLayout::FindPageSectionByTitle("problem", OutPage, OutIdx) == 0
+        && OutPage == 4 && OutIdx == 5);
     TEST("Search: 'xyzzy' no match -> -1",
-        FPLayout::FindRailSectionByTitle("xyzzy", OutRail, OutIdx) == -1);
+        FPLayout::FindPageSectionByTitle("xyzzy", OutPage, OutIdx) == -1);
     TEST("Search: empty query -> no match",
-        FPLayout::FindRailSectionByTitle("", OutRail, OutIdx) == -1);
+        FPLayout::FindPageSectionByTitle("", OutPage, OutIdx) == -1);
 
-    // ---- Config disclosure summary ("K of 8 on") ----
-    TEST("Config summary: 3 of 8", FPLayout::ConfigSummary(3) == "3 of 8 on");
-    TEST("Config summary: 0 of 8", FPLayout::ConfigSummary(0) == "0 of 8 on");
-    TEST("Config summary: 8 of 8", FPLayout::ConfigSummary(8) == "8 of 8 on");
+// ---- Config disclosure summary ("K of 4 on"; W7 retired the four
+// display-mode checks, leaving Blinking/Swoosh/Nested Art/Params) ----
+TEST("Config summary: 3 of 4", FPLayout::ConfigSummary(3) == "3 of 4 on");
+TEST("Config summary: 0 of 4", FPLayout::ConfigSummary(0) == "0 of 4 on");
+TEST("Config summary: 4 of 4", FPLayout::ConfigSummary(4) == "4 of 4 on");
 
     // ---- Viseme disclosure summary ("N viseme rows") ----
     TEST("Viseme summary: 5 rows", FPLayout::VisemeSummary(5) == "5 viseme rows");
@@ -8508,7 +8525,7 @@ void TestPinnedActionsRule() {
                 FPLayout::LF(B, "Auto-Fit All", 98, 20),
                 FPLayout::LF(B, "Clear All Overrides", 147, 20),
                 FPLayout::LF(B, "PS-Spacer", 0, 0)),
-            FPLayout::VF(B, "RailViewport",
+            FPLayout::VF(B, "ClipViewport",
                 FPLayout::LF(B, "QA-AutoFitAll", 98, 20)));
         B.N[(size_t)Root].FixedW = 1089.0;
         B.N[(size_t)Root].FixedH = 900.0;
@@ -8522,7 +8539,7 @@ void TestPinnedActionsRule() {
         B.N[(size_t)Rail].FixedW = 180.0;
         B.N[(size_t)Rail].FixedH = 560.0;
         B.N[(size_t)B.N[(size_t)Rail].Children[0]].bPinnedAction = true;
-        TEST("P21: canonical action inside a rail viewport fires",
+        TEST("P21: canonical action inside a clip viewport fires",
             Violates(B.N, FPLayout::DesignRule::PinnedActionsNeverInScroll));
     }
     // Negative: a pinned action as a direct root child (outside the strip)
@@ -9129,15 +9146,15 @@ void TestSchematicParts() {
     // region, so their probes must hit the schematic only.
     struct Probe { const char* Name; double X; double Y; };
     static const Probe Probes[] = {
-        { "BrowL", 0.24, 0.14 }, { "BrowR", 0.76, 0.14 },
-        { "EyeL", 0.25, 0.24 },  { "EyeR", 0.75, 0.24 },
-        { "Nose", 0.50, 0.376 }, { "CheekL", 0.1367, 0.4333 },
-        { "CheekR", 0.8633, 0.4333 }, { "Mouth", 0.50, 0.61 },
-        { "Teeth", 0.50, 0.66 }, { "Chin", 0.50, 0.80 },
-        { "EarL", 0.06, 0.40 },  { "EarR", 0.94, 0.40 },
-        { "Neck", 0.50, 0.93 },  { "Bangs", 0.50, 0.10 },
-        { "Hair", 0.50, 0.04 },  { "BackHair", 0.30, 0.80 },
-        { "Head", 0.85, 0.70 },
+        { "BrowL", 0.32, 0.315 }, { "BrowR", 0.68, 0.315 },
+        { "EyeL", 0.33, 0.44 },   { "EyeR", 0.67, 0.44 },
+        { "Nose", 0.50, 0.65 },   { "CheekL", 0.17, 0.58 },
+        { "CheekR", 0.83, 0.58 }, { "Mouth", 0.50, 0.76 },
+        { "Teeth", 0.50, 0.79 },  { "Chin", 0.50, 0.84 },
+        { "EarL", 0.06, 0.55 },   { "EarR", 0.94, 0.55 },
+        { "Neck", 0.50, 0.93 },   { "Bangs", 0.50, 0.06 },
+        { "Hair", 0.50, 0.015 },  { "BackHair", 0.30, 0.85 },
+        { "Head", 0.50, 0.40 },
     };
     for (const Probe& Pr : Probes)
     {
@@ -9159,10 +9176,10 @@ void TestSchematicParts() {
 
     // Boundary-inclusive semantics (same as the region hit-testing).
     TEST("schematic: Bangs top edge is boundary-inclusive",
-        FPSchematicPartAt(Parts, 0.50, 0.05) &&
-        std::string(FPSchematicPartAt(Parts, 0.50, 0.05)->Name) == "Bangs");
+        FPSchematicPartAt(Parts, 0.50, 0.02) &&
+        std::string(FPSchematicPartAt(Parts, 0.50, 0.02)->Name) == "Bangs");
     TEST("schematic: just above the cap misses",
-        FPSchematicPartAt(Parts, 0.50, 0.01) == nullptr);
+        FPSchematicPartAt(Parts, 0.50, 0.005) == nullptr);
     TEST("schematic: empty space at bottom-right corner misses",
         FPSchematicPartAt(Parts, 0.98, 0.99) == nullptr);
 
@@ -9190,7 +9207,7 @@ void TestSchematicParts() {
                 FPLayout::FPHotspotPoint{ Pt.X, Pt.Y }, 0.1, 0.1, 1.0, 1.0, 0.0);
             T.Outline.push_back({ H.X, H.Y });
         }
-        const FPSchematicPart* Hit = FPSchematicPartAt(Moved, 0.6, 0.476);
+        const FPSchematicPart* Hit = FPSchematicPartAt(Moved, 0.6, 0.72);
         return Hit && std::string(Hit->Name) == "Nose";
     }());
 }
@@ -9260,6 +9277,292 @@ void TestSchematicCoverage() {
         }
         return true;
     }());
+}
+
+// --- W2: cycle-through-stack + hover region label (Batch 1 remediation) ---
+// The real schematic is used for overlap probes: Teeth (listed before Mouth)
+// and Mouth overlap at the open-mouth hole, so the schematic's stack at that
+// point is {Teeth, Mouth} — the same first-match-wins the probe table pins.
+void TestBatch1StackCycle() {
+    printf("\n=== Batch1 StackCycle (W2) ===\n");
+    using namespace FPSchematic;
+    const std::vector<FPSchematicPart> Parts = DefaultPartSchematics();
+
+    // ---- FPSchematicPartStackCount: depth of the stack under a point ----
+    // The real schematic has the Head silhouette under every feature, so the
+    // open-mouth hole stacks Teeth + Mouth + Head; the Mouth ring is Mouth +
+    // Head; the cap is Bangs + Head.
+    TEST("stack: Teeth-under-Mouth hole point has depth 3",
+        FPSchematicPartStackCount(Parts, 0.50, 0.79) == 3);
+    TEST("stack: Mouth ring point has depth 2 (Teeth glyph doesn't reach it)",
+        FPSchematicPartStackCount(Parts, 0.50, 0.76) == 2);
+    TEST("stack: Bangs-over-Head cap point has depth 2",
+        FPSchematicPartStackCount(Parts, 0.50, 0.06) == 2);
+    TEST("stack: empty space bottom-right has depth 0",
+        FPSchematicPartStackCount(Parts, 0.98, 0.99) == 0);
+    TEST("stack: just above the cap misses (depth 0)",
+        FPSchematicPartStackCount(Parts, 0.50, 0.005) == 0);
+    TEST("stack: empty parts vector has depth 0",
+        FPSchematicPartStackCount(std::vector<FPSchematicPart>(), 0.5, 0.5) == 0);
+
+    // ---- FPSchematicPartCycleAt: resolve a stack index to a part ----
+    // Teeth is listed BEFORE Mouth, and Head is last, so at the hole index
+    // 0 = Teeth, 1 = Mouth, 2 = Head, 3 wraps to Teeth.
+    const FPSchematicPart* T0 = FPSchematicPartCycleAt(Parts, 0.50, 0.79, 0);
+    const FPSchematicPart* T1 = FPSchematicPartCycleAt(Parts, 0.50, 0.79, 1);
+    TEST("cycle: index 0 is Teeth (topmost, matches PartAt)",
+        T0 && std::string(T0->Name) == "Teeth");
+    TEST("cycle: index 1 is Mouth",
+        T1 && std::string(T1->Name) == "Mouth");
+    TEST("cycle: index 0 agrees with PartAt at the hole",
+        FPSchematicPartCycleAt(Parts, 0.50, 0.79, 0) == FPSchematicPartAt(Parts, 0.50, 0.79));
+    TEST("cycle: index 2 is Head (silhouette under the feature)",
+        FPSchematicPartCycleAt(Parts, 0.50, 0.79, 2) &&
+        std::string(FPSchematicPartCycleAt(Parts, 0.50, 0.79, 2)->Name) == "Head");
+    TEST("cycle: wraps back to Teeth at index 3 (mod 3)",
+        FPSchematicPartCycleAt(Parts, 0.50, 0.79, 3) &&
+        std::string(FPSchematicPartCycleAt(Parts, 0.50, 0.79, 3)->Name) == "Teeth");
+    TEST("cycle: wraps back to Teeth at index 6 (mod 3)",
+        FPSchematicPartCycleAt(Parts, 0.50, 0.79, 6) &&
+        std::string(FPSchematicPartCycleAt(Parts, 0.50, 0.79, 6)->Name) == "Teeth");
+    TEST("cycle: negative index wraps (index -1 -> Head)",
+        FPSchematicPartCycleAt(Parts, 0.50, 0.79, -1) &&
+        std::string(FPSchematicPartCycleAt(Parts, 0.50, 0.79, -1)->Name) == "Head");
+    TEST("cycle: Mouth ring point cycles Mouth then Head",
+        FPSchematicPartCycleAt(Parts, 0.50, 0.76, 0) &&
+        std::string(FPSchematicPartCycleAt(Parts, 0.50, 0.76, 0)->Name) == "Mouth" &&
+        FPSchematicPartCycleAt(Parts, 0.50, 0.76, 1) &&
+        std::string(FPSchematicPartCycleAt(Parts, 0.50, 0.76, 1)->Name) == "Head");
+    TEST("cycle: cap point cycles Bangs then Head",
+        FPSchematicPartCycleAt(Parts, 0.50, 0.06, 0) &&
+        std::string(FPSchematicPartCycleAt(Parts, 0.50, 0.06, 0)->Name) == "Bangs" &&
+        FPSchematicPartCycleAt(Parts, 0.50, 0.06, 1) &&
+        std::string(FPSchematicPartCycleAt(Parts, 0.50, 0.06, 1)->Name) == "Head");
+    TEST("cycle: miss returns nullptr at any index",
+        FPSchematicPartCycleAt(Parts, 0.98, 0.99, 0) == nullptr &&
+        FPSchematicPartCycleAt(Parts, 0.98, 0.99, 3) == nullptr);
+
+    // Synthetic 3-deep stack: three nested squares, topmost-first order.
+    std::vector<FPSchematicPart> Three = {
+        { "Outer", { SPT(0.2,0.2), SPT(0.8,0.2), SPT(0.8,0.8), SPT(0.2,0.8) }, FPDepthClass::Front },
+        { "Mid",   { SPT(0.3,0.3), SPT(0.7,0.3), SPT(0.7,0.7), SPT(0.3,0.7) }, FPDepthClass::Base },
+        { "Inner", { SPT(0.4,0.4), SPT(0.6,0.4), SPT(0.6,0.6), SPT(0.4,0.6) }, FPDepthClass::Back },
+    };
+    TEST("stack: 3-deep synthetic stack has depth 3",
+        FPSchematicPartStackCount(Three, 0.5, 0.5) == 3);
+    TEST("stack: synthetic ring between Mid and Inner has depth 2",
+        FPSchematicPartStackCount(Three, 0.65, 0.5) == 2);
+    TEST("cycle: 3-deep index 0 is Outer",
+        FPSchematicPartCycleAt(Three, 0.5, 0.5, 0) &&
+        std::string(FPSchematicPartCycleAt(Three, 0.5, 0.5, 0)->Name) == "Outer");
+    TEST("cycle: 3-deep index 1 is Mid",
+        FPSchematicPartCycleAt(Three, 0.5, 0.5, 1) &&
+        std::string(FPSchematicPartCycleAt(Three, 0.5, 0.5, 1)->Name) == "Mid");
+    TEST("cycle: 3-deep index 2 is Inner",
+        FPSchematicPartCycleAt(Three, 0.5, 0.5, 2) &&
+        std::string(FPSchematicPartCycleAt(Three, 0.5, 0.5, 2)->Name) == "Inner");
+    TEST("cycle: 3-deep index 3 wraps to Outer",
+        FPSchematicPartCycleAt(Three, 0.5, 0.5, 3) &&
+        std::string(FPSchematicPartCycleAt(Three, 0.5, 0.5, 3)->Name) == "Outer");
+    TEST("cycle: 3-deep index -1 wraps to Inner",
+        FPSchematicPartCycleAt(Three, 0.5, 0.5, -1) &&
+        std::string(FPSchematicPartCycleAt(Three, 0.5, 0.5, -1)->Name) == "Inner");
+
+    // ---- FPSchematicCycleIndex (LayoutSpec): next stack index on repeat ----
+    TEST("cycleidx: zero stack stays 0", FPLayout::FPSchematicCycleIndex(0, 2, true) == 0);
+    TEST("cycleidx: single stack never cycles", FPLayout::FPSchematicCycleIndex(1, 5, true) == 0);
+    TEST("cycleidx: new spot resets to 0", FPLayout::FPSchematicCycleIndex(3, 1, false) == 0);
+    TEST("cycleidx: repeat on fresh click advances to 1",
+        FPLayout::FPSchematicCycleIndex(3, 0, true) == 1);
+    TEST("cycleidx: repeat advances 1->2", FPLayout::FPSchematicCycleIndex(3, 1, true) == 2);
+    TEST("cycleidx: repeat wraps 2->0", FPLayout::FPSchematicCycleIndex(3, 2, true) == 0);
+    TEST("cycleidx: negative cycle wraps modulo depth",
+        FPLayout::FPSchematicCycleIndex(3, -1, true) == 0);
+    TEST("cycleidx: depth 2 wraps 1->0", FPLayout::FPSchematicCycleIndex(2, 1, true) == 0);
+}
+
+// --- W2: hover region label (pure FPLayout::FPHoverPartLabel) ---
+void TestBatch1HoverLabel() {
+    printf("\n=== Batch1 HoverLabel (W2) ===\n");
+    TEST("hover: same-name resolution draws no arrow",
+        FPLayout::FPHoverPartLabel("Nose", "Nose") == "Nose");
+    TEST("hover: differing layer draws arrow",
+        FPLayout::FPHoverPartLabel("Teeth", "Mouth") == "Teeth -> Mouth");
+    TEST("hover: null layer draws bare part name",
+        FPLayout::FPHoverPartLabel("Nose", nullptr) == "Nose");
+    TEST("hover: empty layer draws bare part name",
+        FPLayout::FPHoverPartLabel("Nose", "") == "Nose");
+    TEST("hover: null part is guarded (empty string)",
+        FPLayout::FPHoverPartLabel(nullptr, "Mouth").empty());
+    TEST("hover: empty part is guarded (empty string)",
+        FPLayout::FPHoverPartLabel("", "Mouth").empty());
+    TEST("hover: both null is guarded",
+        FPLayout::FPHoverPartLabel(nullptr, nullptr).empty());
+    TEST("hover: alias through layer map draws arrow once",
+        FPLayout::FPHoverPartLabel("Chin", "Head") == "Chin -> Head");
+}
+
+// --- W8: persistent status badge (pure FPLayout::FPStatusSummary) ---
+void TestBatch1StatusBadge() {
+    printf("\n=== Batch1 StatusBadge (W8) ===\n");
+    TEST("badge: partial coverage 8/10 states 3/4 layers",
+        FPLayout::FPStatusSummary(8, 10, 3, 4) == "8/10 states, 3/4 layers");
+    TEST("badge: complete coverage 10/10 states 4/4 layers",
+        FPLayout::FPStatusSummary(10, 10, 4, 4) == "10/10 states, 4/4 layers");
+    TEST("badge: empty preset 0/10 states 0/4 layers",
+        FPLayout::FPStatusSummary(0, 10, 0, 4) == "0/10 states, 0/4 layers");
+    TEST("badge: everything zero 0/0 states, 0/0 layers",
+        FPLayout::FPStatusSummary(0, 0, 0, 0) == "0/0 states, 0/0 layers");
+    TEST("badge: states clamped to total", FPLayout::FPStatusSummary(12, 10, 3, 4) == "10/10 states, 3/4 layers");
+    TEST("badge: layers clamped to total", FPLayout::FPStatusSummary(8, 10, 9, 4) == "8/10 states, 4/4 layers");
+    TEST("badge: negative counts guarded to zero",
+        FPLayout::FPStatusSummary(-3, 10, -1, 4) == "0/10 states, 0/4 layers");
+    TEST("badge: totals never come from negative counts (count clamped to total)",
+        FPLayout::FPStatusSummary(3, -10, 1, -4) == "-10/-10 states, -4/-4 layers");
+}
+
+// --- Batch 2 (W4/W6/W7) ---
+void TestBatch2SyncOpSelector() {
+    printf("\n=== Batch2 SyncOpSelector (W4) ===\n");
+    // Default set is exactly the two single-channel ops, in that order.
+    const std::vector<int>& D = FPLayout::SyncOpDefaultOps();
+    TEST("syncop: defaults are exactly {Transform, Textures}",
+        D.size() == 2 && D[0] == FPLayout::SyncOpTransform && D[1] == FPLayout::SyncOpTextures);
+    // More set is exactly the combined op.
+    const std::vector<int>& M = FPLayout::SyncOpMoreOps();
+    TEST("syncop: more set is exactly {Both}",
+        M.size() == 1 && M[0] == FPLayout::SyncOpBoth);
+    // Classification: single-channel ops are defaults, the combined op is more.
+    TEST("syncop: Transform is a default", FPLayout::SyncOpIsDefault(FPLayout::SyncOpTransform));
+    TEST("syncop: Textures is a default", FPLayout::SyncOpIsDefault(FPLayout::SyncOpTextures));
+    TEST("syncop: Both is NOT a default", !FPLayout::SyncOpIsDefault(FPLayout::SyncOpBoth));
+    TEST("syncop: Both is more", FPLayout::SyncOpIsMore(FPLayout::SyncOpBoth));
+    TEST("syncop: Transform is NOT more", !FPLayout::SyncOpIsMore(FPLayout::SyncOpTransform));
+    TEST("syncop: Textures is NOT more", !FPLayout::SyncOpIsMore(FPLayout::SyncOpTextures));
+    // Out-of-range op normalizes to Both (SyncOpNormalized) -> classified as more.
+    TEST("syncop: out-of-range normalizes to Both -> is more",
+        FPLayout::SyncOpIsMore(99) && !FPLayout::SyncOpIsDefault(99));
+    // Defaults and more are disjoint and together cover the full op space.
+    bool bDisjoint = true;
+    for (int a : D) for (int b : M) if (a == b) bDisjoint = false;
+    TEST("syncop: default and more sets are disjoint", bDisjoint);
+    // The default labels match the op labels (the row shows these).
+    TEST("syncop: default labels are Transform/Textures",
+        std::string(FPLayout::SyncOpLabel(FPLayout::SyncOpTransform)) == "Transform" &&
+        std::string(FPLayout::SyncOpLabel(FPLayout::SyncOpTextures)) == "Textures");
+    TEST("syncop: more label is Both",
+        std::string(FPLayout::SyncOpLabel(FPLayout::SyncOpBoth)) == "Both");
+}
+
+void TestBatch2ViewStripDrift() {
+    printf("\n=== Batch2 ViewStripDrift (W4) ===\n");
+    // Same: identical art presence, identical transform and texture.
+    TEST("drift: fully synced state -> Same",
+        FPLayout::FPViewStripDrift(true, true, true, true) == FPLayout::SyncDriftSame);
+    TEST("drift: both artless, synced -> Same",
+        FPLayout::FPViewStripDrift(false, false, true, true) == FPLayout::SyncDriftSame);
+    // Art drift: active has art the dest lacks (texture equality irrelevant).
+    TEST("drift: active art, dest none -> Art",
+        FPLayout::FPViewStripDrift(true, false, true, true) == FPLayout::SyncDriftArt);
+    TEST("drift: dest art, active none -> Art",
+        FPLayout::FPViewStripDrift(false, true, true, true) == FPLayout::SyncDriftArt);
+    // Texture inequality between two art-bearing states is art drift.
+    TEST("drift: both art but textures differ -> Art",
+        FPLayout::FPViewStripDrift(true, true, true, false) == FPLayout::SyncDriftArt);
+    // Transform drift.
+    TEST("drift: transform differs, art same -> Xform",
+        FPLayout::FPViewStripDrift(true, true, false, true) == FPLayout::SyncDriftXform);
+    TEST("drift: artless states, transform differs -> Xform",
+        FPLayout::FPViewStripDrift(false, false, false, true) == FPLayout::SyncDriftXform);
+    // Both.
+    TEST("drift: art + transform differ -> Both",
+        FPLayout::FPViewStripDrift(true, false, false, true) == FPLayout::SyncDriftBoth);
+    TEST("drift: textures + transform differ -> Both",
+        FPLayout::FPViewStripDrift(true, true, false, false) == FPLayout::SyncDriftBoth);
+    TEST("drift: art presence + transform differ -> Both",
+        FPLayout::FPViewStripDrift(false, true, false, true) == FPLayout::SyncDriftBoth);
+    // Exhaustive check: no two distinct inputs map to the wrong class.
+    int Counts[4] = {0, 0, 0, 0};
+    for (int A = 0; A < 2; ++A)
+        for (int B = 0; B < 2; ++B)
+            for (int T = 0; T < 2; ++T)
+                for (int E = 0; E < 2; ++E)
+                {
+                    const int C = FPLayout::FPViewStripDrift(A != 0, B != 0, T != 0, E != 0);
+                    if (C >= 0 && C < 4) ++Counts[C];
+                }
+    // 16 inputs, enumerated by hand:
+    //   both artless: texture equality irrelevant -> Same when xform equal (2),
+    //                  Xform when xform differs (2)
+    //   both art:     1 Same (T,E equal), 1 Art (textures differ), 1 Xform
+    //                  (transform differs), 1 Both
+    //   art presence differs (active<->dest): Art when xform equal (2 each
+    //                  direction = 4), Both when xform differs (4)
+    TEST("drift: exhaustive 16-input sweep lands in all four classes",
+        Counts[FPLayout::SyncDriftSame] == 3 && Counts[FPLayout::SyncDriftArt] == 5 &&
+        Counts[FPLayout::SyncDriftXform] == 3 && Counts[FPLayout::SyncDriftBoth] == 5);
+}
+
+void TestBatch2TransformReadout() {
+    printf("\n=== Batch2 TransformReadout (W6) ===\n");
+    TEST("readout: origin identity",
+        FPLayout::FPTransformReadout(0.0f, 0.0f, 1.0f, 1.0f, 0.0f) == "P(0, 0) S(100%, 100%) R(0)");
+    TEST("readout: rounded to whole pixels",
+        FPLayout::FPTransformReadout(12.4f, -7.6f, 0.5f, 2.0f, 0.0f) == "P(12, -8) S(50%, 200%) R(0)");
+    TEST("readout: rotation normalized to -180..180",
+        FPLayout::FPTransformReadout(0.0f, 0.0f, 1.0f, 1.0f, 190.0f) == "P(0, 0) S(100%, 100%) R(-170)");
+    TEST("readout: rotation wraps below -180",
+        FPLayout::FPTransformReadout(0.0f, 0.0f, 1.0f, 1.0f, -190.0f) == "P(0, 0) S(100%, 100%) R(170)");
+    TEST("readout: rotation exactly 180 stays 180",
+        FPLayout::FPTransformReadout(0.0f, 0.0f, 1.0f, 1.0f, 180.0f) == "P(0, 0) S(100%, 100%) R(180)");
+    TEST("readout: rotation exactly -180 stays -180",
+        FPLayout::FPTransformReadout(0.0f, 0.0f, 1.0f, 1.0f, -180.0f) == "P(0, 0) S(100%, 100%) R(-180)");
+    TEST("readout: scale printed as percent (0.75 -> 75%)",
+        FPLayout::FPTransformReadout(0.0f, 0.0f, 0.75f, 1.25f, 0.0f) == "P(0, 0) S(75%, 125%) R(0)");
+    TEST("readout: NaN rotation guarded to dash",
+        FPLayout::FPTransformReadout(0.0f, 0.0f, 1.0f, 1.0f,
+            std::numeric_limits<float>::quiet_NaN()) == "-");
+    // Round-trip sanity: a large multi-turn rotation normalizes into range.
+    TEST("readout: 720 degrees normalizes to 0",
+        FPLayout::FPTransformReadout(0.0f, 0.0f, 1.0f, 1.0f, 720.0f) == "P(0, 0) S(100%, 100%) R(0)");
+    TEST("readout: 540 degrees normalizes to 180",
+        FPLayout::FPTransformReadout(0.0f, 0.0f, 1.0f, 1.0f, 540.0f) == "P(0, 0) S(100%, 100%) R(180)");
+}
+
+void TestBatch2ModeRow() {
+    printf("\n=== Batch2 ModeRow (W7) ===\n");
+    // W7: the 5-way segmented row is the sole display-mode control. Every
+    // canonical mode's combo re-derives back to itself via DeriveInspectMode
+    // (stable highlight), and the custom legacy Split combo (textures+depth,
+    // both selected) is NOT canonical (no highlight).
+    const int Modes[5] = { FPLayout::InspectTextured, FPLayout::InspectOutline,
+        FPLayout::InspectDepth, FPLayout::InspectWireframe, FPLayout::InspectDepthHeatmap };
+    bool bAllStable = true;
+    for (int i = 0; i < 5; ++i)
+    {
+        const FPLayout::FPInspectCombo B = FPLayout::InspectComboForMode(Modes[i]);
+        const int Re = FPLayout::DeriveInspectMode(B.T, B.D, B.W, B.O, B.C);
+        if (Re != Modes[i]) bAllStable = false;
+    }
+    TEST("moderow: every canonical combo re-derives to itself (stable highlight)",
+        bAllStable);
+    TEST("moderow: legacy Split (textures+depth) is custom (no highlight)",
+        FPLayout::DeriveInspectMode(true, true, false, false, false) == FPLayout::InspectCustom);
+    TEST("moderow: all-off is custom",
+        FPLayout::DeriveInspectMode(false, false, false, false, false) == FPLayout::InspectCustom);
+    TEST("moderow: textured is canonical",
+        FPLayout::DeriveInspectMode(true, false, false, false, false) == FPLayout::InspectTextured);
+    TEST("moderow: outline is canonical",
+        FPLayout::DeriveInspectMode(true, false, false, true, false) == FPLayout::InspectOutline);
+    TEST("moderow: depth is canonical",
+        FPLayout::DeriveInspectMode(false, true, false, false, true) == FPLayout::InspectDepthHeatmap);
+    // Labels the segmented buttons show (pinned by the manifest library).
+    TEST("moderow: labels match the 5 modes",
+        std::string(FPLayout::InspectModeLabel(FPLayout::InspectTextured)) == "Textured" &&
+        std::string(FPLayout::InspectModeLabel(FPLayout::InspectOutline)) == "Outline" &&
+        std::string(FPLayout::InspectModeLabel(FPLayout::InspectDepth)) == "Depth" &&
+        std::string(FPLayout::InspectModeLabel(FPLayout::InspectWireframe)) == "Wireframe" &&
+        std::string(FPLayout::InspectModeLabel(FPLayout::InspectDepthHeatmap)) == "Heatmap");
 }
 
 // --- Central canvas redesign: hair system contract ---
@@ -9621,6 +9924,363 @@ void TestYawRule() {
     TEST("tag: empty tag -> Base", FPSchematic::FPDepthClassForTag("") == C::Base);
 }
 
+// Phase 0: the disclosure-glyph warning fix. The two popup buttons (Canvas
+// Options, History) used U+25BE (▾) which DroidSansFallback lacks, logging
+// LogSlate warnings on every paint. FPDisclosureGlyph is the single source
+// the widget now paints; the tests pin the exact UTF-8 bytes (Latin-1 U+00BB
+// »), the Latin-1 range guarantee (present in every fallback font), and the
+// negative case that the missing U+25BE glyph never returns.
+void TestPhase0GlyphFix() {
+    printf("\n=== Phase0GlyphFix ===\n");
+    const char* G = FPLayout::FPDisclosureGlyph();
+    TEST("glyph: non-empty", G && G[0] != 0);
+    const unsigned char* B = reinterpret_cast<const unsigned char*>(G);
+    TEST("glyph: exactly 2 UTF-8 bytes", B[0] != 0 && B[1] != 0 && B[2] == 0);
+    // U+00BB (») encodes to C2 BB in UTF-8.
+    TEST("glyph: is Latin-1 U+00BB bytes", B[0] == 0xC2 && B[1] == 0xBB);
+    // Decode the code point to prove it is in Latin-1 (always in the fallback
+    // font set) and not the missing U+25BE.
+    unsigned long Cp = 0;
+    if (B[0] < 0x80) Cp = B[0];
+    else if ((B[0] & 0xE0) == 0xC0) Cp = ((unsigned long)(B[0] & 0x1F) << 6) | (unsigned long)(B[1] & 0x3F);
+    TEST("glyph: decodes to a single code point", Cp != 0);
+    TEST("glyph: Latin-1 range (fallback-safe)", Cp >= 0x20 && Cp <= 0xFF);
+    // Negative: never the missing ▾ (U+25BE = E2 96 BE in UTF-8, 3 bytes).
+    TEST("glyph: NOT the missing U+25BE", !(B[0] == 0xE2 && B[1] == 0x96 && B[2] == 0xBE));
+    // Negative/edge: not an ASCII control or a whitespace-only glyph.
+    TEST("glyph: printable (not control)", Cp >= 0x20 && Cp != 0x7F);
+    // The two button sites share the same single source.
+    TEST("glyph: single source (stable)", std::string(G) == "\u00BB");
+}
+
+// Phase 1: zone-strip rotation scrub. Dragging the zone diagram in empty
+// space rotates the preview yaw; the pixel->degree mapping and wrap live in
+// the pure FPLayout::FPZoneScrubYawAfterDrag contract (the widget calls it on
+// every mouse move). Tests pin the mapping, the [-180,180) wrap across the
+// back, and the degenerate edge cases (zero width, NaN).
+void TestPhase1ZoneScrub() {
+    printf("\n=== Phase1ZoneScrub ===\n");
+    namespace L = FPLayout;
+    // Basic mapping: full strip width = 360 deg.
+    TEST("scrub: zero delta keeps yaw", L::FPZoneScrubYawAfterDrag(0.0, 0.0, 360.0) == 0.0);
+    TEST("scrub: +25% width -> +90", L::FPZoneScrubYawAfterDrag(0.0, 90.0, 360.0) == 90.0);
+    TEST("scrub: -25% width -> -90", L::FPZoneScrubYawAfterDrag(0.0, -90.0, 360.0) == -90.0);
+    TEST("scrub: half width -> 180 maps to -180", L::FPZoneScrubYawAfterDrag(0.0, 180.0, 360.0) == -180.0);
+    TEST("scrub: relative to start (no jump)", L::FPZoneScrubYawAfterDrag(45.0, 22.5, 360.0) == 67.5);
+    // Wrap across the back in both directions.
+    TEST("scrub: +wrap 170+40 -> -150", L::FPZoneScrubYawAfterDrag(170.0, 40.0, 360.0) == -150.0);
+    TEST("scrub: -wrap -170-40 -> +150", L::FPZoneScrubYawAfterDrag(-170.0, -40.0, 360.0) == 150.0);
+    TEST("scrub: multi-turn wraps into range", [&]() {
+        const double V = L::FPZoneScrubYawAfterDrag(0.0, 540.0, 360.0);
+        return V >= -180.0 && V < 180.0;
+    }());
+    TEST("scrub: result always in [-180,180)", [&]() {
+        for (int i = -40; i <= 40; ++i)
+        {
+            const double V = L::FPZoneScrubYawAfterDrag(0.0, (double)i * 37.0, 360.0);
+            if (V < -180.0 || V >= 180.0) return false;
+        }
+        return true;
+    }());
+    // Negative/edge: degenerate width and NaN never poison the orbit.
+    TEST("scrub: zero width is identity", L::FPZoneScrubYawAfterDrag(30.0, 50.0, 0.0) == 30.0);
+    TEST("scrub: negative width is identity", L::FPZoneScrubYawAfterDrag(30.0, 50.0, -1.0) == 30.0);
+    TEST("scrub: NaN start guarded to 0", L::FPZoneScrubYawAfterDrag(
+        std::nan(""), 50.0, 360.0) == 0.0);
+    TEST("scrub: sub-pixel delta still shifts", L::FPZoneScrubYawAfterDrag(0.0, 0.5, 360.0) == 0.5);
+}
+
+// Phase B/C: the billboard turn-to-camera contract. FPOrientationOutline
+// flips the front-facing placeholder glyph to any yaw/pitch by BLENDING
+// (smoothstep) between the authored 2D layouts centered on the yaw states
+// 0/45/90/135/180, mirroring the left half of the turn, while the flat layers
+// SLIDE against each other along the far-edge direction (closest Z furthest,
+// the Z-5 backdrop anchored) and along pitch (features + hair encroach, ears +
+// V-chin counter-translate) — real 2D art is BILLBOARDED, so the placeholder
+// never foreshortens paper-thin; the far-side pair of a paired part folds to
+// zero width by the 90° profile and STAYS folded through the back, features
+// fade past 135°, silhouettes survive the back (full width), and Top/Bottom
+// squash the layout vertically. Every result keeps the front point count and
+// stays in [0,1]^2.
+void TestPhase2Orientation() {
+    printf("\n=== Phase2Orientation ===\n");
+    using namespace FPSchematic;
+    using P = FPSchematicPoint;
+    const std::vector<FPSchematicPart> Parts = DefaultPartSchematics();
+    auto Find = [&](const char* N) -> const FPSchematicPart& {
+        const FPSchematicPart* F = FPSchematicFindPart(Parts, N);
+        return *F;
+    };
+    auto CX = [](const std::vector<P>& V) {
+        double S = 0; for (const P& p : V) S += p.X;
+        return V.empty() ? 0.0 : S / (double)V.size();
+    };
+    auto CY = [](const std::vector<P>& V) {
+        double S = 0; for (const P& p : V) S += p.Y;
+        return V.empty() ? 0.0 : S / (double)V.size();
+    };
+    auto W = [](const std::vector<P>& V) {
+        if (V.empty()) return 0.0;
+        double Mn = 2.0, Mx = -1.0;
+        for (const P& p : V) { Mn = std::min(Mn, p.X); Mx = std::max(Mx, p.X); }
+        return Mx - Mn;
+    };
+    auto H = [](const std::vector<P>& V) {
+        if (V.empty()) return 0.0;
+        double Mn = 2.0, Mx = -1.0;
+        for (const P& p : V) { Mn = std::min(Mn, p.Y); Mx = std::max(Mx, p.Y); }
+        return Mx - Mn;
+    };
+    const double Eps = 1e-9;
+
+    // Identity: yaw 0, pitch 0 reproduces the front glyph exactly.
+    TEST("orient: identity at front", [&]() {
+        for (const FPSchematicPart& Part : Parts)
+        {
+            const std::vector<P> O = FPOrientationOutline(
+                Part.Name, Part.Outline, Part.DepthClass, 0.0, 0.0);
+            if (O.size() != Part.Outline.size()) return false;
+            for (size_t i = 0; i < O.size(); ++i)
+                if (std::abs(O[i].X - Part.Outline[i].X) > Eps
+                    || std::abs(O[i].Y - Part.Outline[i].Y) > Eps) return false;
+        }
+        return true;
+    }());
+    TEST("orient: point count preserved", [&]() {
+        for (int Y = -180; Y <= 180; Y += 15)
+            for (int Pi = -90; Pi <= 90; Pi += 90)
+                for (const FPSchematicPart& Part : Parts)
+                    if (FPOrientationOutline(Part.Name, Part.Outline,
+                            Part.DepthClass, (double)Y, (double)Pi).size()
+                        != Part.Outline.size()) return false;
+        return true;
+    }());
+
+    // The authored 2D layout table (control points sit on the exact state
+    // centers, so each view state flips to its own layout).
+    TEST("orient: each state has its OWN authored 2D layout",
+        FPSilhouetteWidthAt(0.0) == 1.0 && FPSilhouetteWidthAt(180.0) == 1.0
+        && std::abs(FPSilhouetteWidthAt(90.0) - 0.55) < Eps
+        && std::abs(FPSilhouetteWidthAt(45.0) - 0.80) < Eps
+        && std::abs(FPSilhouetteWidthAt(135.0) - 0.82) < Eps);
+    TEST("orient: near-side features readable through the profile",
+        FPNearFeatureWidthAt(0.0) == 1.0
+        && std::abs(FPNearFeatureWidthAt(45.0) - 0.90) < Eps
+        && std::abs(FPNearFeatureWidthAt(90.0) - 0.80) < Eps);
+    TEST("orient: far-side pair folds to zero by the profile and stays folded",
+        FPFarFeatureWidthAt(0.0) == 1.0
+        && std::abs(FPFarFeatureWidthAt(45.0) - 0.55) < Eps
+        && FPFarFeatureWidthAt(90.0) == 0.0
+        && FPFarFeatureWidthAt(180.0) == 0.0);
+    TEST("orient: features fade only in walk-behind states",
+        FPFeatureAlphaAt(0.0) == 1.0 && FPFeatureAlphaAt(90.0) == 1.0
+        && FPFeatureAlphaAt(112.5) == 1.0
+        && FPFeatureAlphaAt(135.0) == 0.0 && FPFeatureAlphaAt(180.0) == 0.0);
+    TEST("orient: pitch scale 1 at 0, 0.7 at top/bottom",
+        FPOrientationPitchScale(0.0) == 1.0
+        && std::abs(FPOrientationPitchScale(90.0) - 0.7) < Eps
+        && std::abs(FPOrientationPitchScale(-90.0) - 0.7) < Eps);
+    TEST("orient: rot factor clamps",
+        FPOrientationRotFactor(180.0) == 1.0
+        && FPOrientationRotFactor(-180.0) == -1.0 && FPOrientationRotFactor(90.0) == 1.0);
+    TEST("orient: far-side detection is yaw-signed",
+        FPSchematicIsFarSide("EyeL", 10.0) && !FPSchematicIsFarSide("EyeL", -10.0)
+        && FPSchematicIsFarSide("EyeR", -10.0) && !FPSchematicIsFarSide("EyeR", 10.0)
+        && !FPSchematicIsFarSide("Nose", 10.0) && !FPSchematicIsFarSide("BackHair", 10.0));
+    TEST("orient: paired detection is L/R suffix only",
+        FPSchematicIsPairedPart("EyeL") && FPSchematicIsPairedPart("EarR")
+        && !FPSchematicIsPairedPart("Nose") && !FPSchematicIsPairedPart("BackHair"));
+    TEST("orient: silhouette = Head + hair layers only",
+        FPSchematicIsSilhouette("Head") && FPSchematicIsSilhouette("Hair")
+        && FPSchematicIsSilhouette("Bangs") && FPSchematicIsSilhouette("BackHair")
+        && !FPSchematicIsSilhouette("EyeL") && !FPSchematicIsSilhouette("Nose"));
+
+    // Billboard camera-translation parallax along yaw: the flat layers slide
+    // toward the FAR EDGE (opposite the camera orbit), closest Z furthest.
+    TEST("orient: Z-5 backdrop never slides on yaw", [&]() {
+        const double C0 = CX(Find("BackHair").Outline);
+        const double C90 = CX(FPOrientationOutline("BackHair", Find("BackHair").Outline, FPDepthClass::Back, 90.0, 0.0));
+        const double C180 = CX(FPOrientationOutline("BackHair", Find("BackHair").Outline, FPDepthClass::Back, 180.0, 0.0));
+        return FPYawSlidePeak(FPZDepth::Farthest) == FPOrientationParams::FarSlide
+            && FPYawSlideAt(FPZDepth::Farthest, 90.0) == 0.0
+            && std::abs(C90 - C0) < 1e-9
+            && std::abs(C180 - C0) < 1e-9;
+    }());
+    TEST("orient: face content slides toward the far edge", [&]() {
+        const double CR = CX(Find("EyeR").Outline);
+        const double CL = CX(Find("EyeL").Outline);
+        return CX(FPOrientationOutline("EyeR", Find("EyeR").Outline, FPDepthClass::Front, 45.0, 0.0)) < CR - 0.01
+            && CX(FPOrientationOutline("EyeL", Find("EyeL").Outline, FPDepthClass::Front, -45.0, 0.0)) > CL + 0.01;
+    }());
+    TEST("orient: Z-depth slides ordered closest-first", [&]() {
+        const double NoseD = std::abs(CX(FPOrientationOutline("Nose", Find("Nose").Outline, FPDepthClass::Front, 90.0, 0.0)) - CX(Find("Nose").Outline));
+        const double EyeD = std::abs(CX(FPOrientationOutline("EyeR", Find("EyeR").Outline, FPDepthClass::Front, 90.0, 0.0)) - CX(Find("EyeR").Outline));
+        const double HairD = std::abs(CX(FPOrientationOutline("Hair", Find("Hair").Outline, FPDepthClass::Back, 90.0, 0.0)) - CX(Find("Hair").Outline));
+        const double BaseD = std::abs(CX(FPOrientationOutline("Head", Find("Head").Outline, FPDepthClass::Base, 90.0, 0.0)) - CX(Find("Head").Outline));
+        return NoseD > EyeD && EyeD > HairD && HairD > BaseD;
+    }());
+    TEST("orient: slide peaks follow the Z-depth plane (pure)",
+        FPYawSlidePeak(FPZDepth::Closest) == FPOrientationParams::NoseSlide
+        && FPYawSlidePeak(FPZDepth::NearFeatures) == FPOrientationParams::FeatureSlide
+        && FPYawSlidePeak(FPZDepth::EarSideHair) == FPOrientationParams::EarSlide
+        && FPYawSlidePeak(FPZDepth::Farthest) == FPOrientationParams::FarSlide
+        && FPYawSlidePeak(FPZDepth::FaceBase) == FPOrientationParams::FaceBaseSlide);
+    TEST("orient: face base stays near-static (residual < any slide)",
+        FPZDepthForPart("Head") == FPZDepth::FaceBase
+        && FPYawSlidePeak(FPZDepth::FaceBase) < FPYawSlidePeak(FPZDepth::NearFeatures));
+    TEST("orient: side hair and near ear share the Z-4 plane",
+        FPZDepthForPart("Hair") == FPZDepth::EarSideHair
+        && FPZDepthForPart("EarL") == FPZDepth::EarSideHair
+        && FPYawSlidePeak(FPZDepthForPart("Hair")) == FPYawSlidePeak(FPZDepthForPart("EarL")));
+
+    // Phase C: vertical (pitch) parallax — features + hair ENCROACH on the
+    // face at the top view (down) / bottom view (up), the ears + V-chin
+    // COUNTER-translate, the face base stays near-static.
+    TEST("orient: pitch encroach/counter contract (pure)", [&]() {
+        return FPOrientationVerticalShift("Nose", 90.0) == FPOrientationParams::NosePitch
+            && FPOrientationVerticalShift("Nose", -90.0) == -FPOrientationParams::NosePitch
+            && FPOrientationVerticalShift("EyeR", 90.0) == FPOrientationParams::FeaturePitch
+            && FPOrientationVerticalShift("BackHair", 90.0) == FPOrientationParams::FarPitch
+            && FPOrientationVerticalShift("EarL", 90.0) == -FPOrientationParams::EarPitch
+            && FPOrientationVerticalShift("Chin", 90.0) == -FPOrientationParams::ChinPitch
+            && FPOrientationVerticalShift("EarL", -90.0) == FPOrientationParams::EarPitch
+            && FPOrientationVerticalShift("Chin", -90.0) == FPOrientationParams::ChinPitch
+            && FPOrientationVerticalShift("Head", 90.0) == FPOrientationParams::FaceBasePitch
+            && std::abs(FPOrientationVerticalShift("Nose", 45.0)) > std::abs(FPOrientationVerticalShift("EyeR", 45.0))
+            && std::abs(FPOrientationVerticalShift("EyeR", 45.0)) > std::abs(FPOrientationVerticalShift("Head", 45.0));
+    }());
+    TEST("orient: top view sinks the near features", [&]() {
+        const double C0 = CY(Find("EyeR").Outline);
+        return CY(FPOrientationOutline("EyeR", Find("EyeR").Outline, FPDepthClass::Front, 0.0, 90.0)) > C0 + 0.05;
+    }());
+    TEST("orient: top view tucks the V-chin up", [&]() {
+        const double C0 = CY(Find("Chin").Outline);
+        return CY(FPOrientationOutline("Chin", Find("Chin").Outline, FPDepthClass::Base, 0.0, 90.0)) < C0 - 0.03;
+    }());
+
+    // Far-side folding: a profile shows exactly ONE eye/ear/cheek.
+    TEST("orient: far-side part folds at profile", [&]() {
+        return W(FPOrientationOutline("EyeL", Find("EyeL").Outline, FPDepthClass::Front, 90.0, 0.0)) < 1e-6
+            && W(FPOrientationOutline("EyeL", Find("EyeL").Outline, FPDepthClass::Front, -90.0, 0.0)) > 0.01;
+    }());
+    TEST("orient: near-side part stays at profile", [&]() {
+        return W(FPOrientationOutline("EyeR", Find("EyeR").Outline, FPDepthClass::Front, 90.0, 0.0)) > 0.01
+            && W(FPOrientationOutline("EyeR", Find("EyeR").Outline, FPDepthClass::Front, -90.0, 0.0)) < 1e-6;
+    }());
+
+    // Back views: features vanish, silhouettes survive.
+    TEST("orient: features fade out at back", [&]() {
+        return W(FPOrientationOutline("EyeL", Find("EyeL").Outline, FPDepthClass::Front, 180.0, 0.0)) < 1e-6
+            && W(FPOrientationOutline("Nose", Find("Nose").Outline, FPDepthClass::Front, 135.0, 0.0)) < 1e-6;
+    }());
+    TEST("orient: silhouette survives back (full width)", [&]() {
+        const double FrontW = W(Find("Head").Outline);
+        return W(FPOrientationOutline("Head", Find("Head").Outline, FPDepthClass::Base, 180.0, 0.0)) > 0.8 * FrontW;
+    }());
+    TEST("orient: silhouette narrows at profile", [&]() {
+        const double FrontW = W(Find("Head").Outline);
+        const double P90 = W(FPOrientationOutline("Head", Find("Head").Outline, FPDepthClass::Base, 90.0, 0.0));
+        return P90 < 0.8 * FrontW;
+    }());
+
+    // Z-1 nose darts toward the far edge at the profile (the closest layer
+    // slides furthest, per the camera-translation parallax).
+    TEST("orient: nose darts toward the far edge at profile", [&]() {
+        const double C0 = CX(Find("Nose").Outline);
+        return CX(FPOrientationOutline("Nose", Find("Nose").Outline, FPDepthClass::Front, 90.0, 0.0)) < C0 - 0.05
+            && CX(FPOrientationOutline("Nose", Find("Nose").Outline, FPDepthClass::Front, -90.0, 0.0)) > C0 + 0.05;
+    }());
+
+    // Top/Bottom squash vertically.
+    TEST("orient: top/bottom squash vertically", [&]() {
+        const double FrontH = H(Find("Head").Outline);
+        const double TopH = H(FPOrientationOutline("Head", Find("Head").Outline, FPDepthClass::Base, 0.0, 90.0));
+        return TopH < 0.85 * FrontH;
+    }());
+
+    // Mirror symmetry across the turn (left half = flip of right half).
+    TEST("orient: left/right profiles mirror", [&]() {
+        const double Wr = W(FPOrientationOutline("EyeR", Find("EyeR").Outline, FPDepthClass::Front, 90.0, 0.0));
+        const double Wl = W(FPOrientationOutline("EyeL", Find("EyeL").Outline, FPDepthClass::Front, -90.0, 0.0));
+        const double HC = CX(Find("Head").Outline);
+        const double HR = CX(FPOrientationOutline("Head", Find("Head").Outline, FPDepthClass::Base, 90.0, 0.0));
+        const double HL = CX(FPOrientationOutline("Head", Find("Head").Outline, FPDepthClass::Base, -90.0, 0.0));
+        return std::abs(Wr - Wl) < 1e-6
+            && std::abs((HR - HC) - (HC - HL)) < 1e-6;
+    }());
+    TEST("orient: far-side fold dots mirror across the turn", [&]() {
+        const double R = CX(FPOrientationOutline("EyeL", Find("EyeL").Outline, FPDepthClass::Front, 90.0, 0.0));
+        const double L = CX(FPOrientationOutline("EyeR", Find("EyeR").Outline, FPDepthClass::Front, -90.0, 0.0));
+        return std::abs((1.0 - R) - L) < Eps;
+    }());
+    TEST("orient: 3/4 mirror preserves width symmetry", [&]() {
+        const double Wr = W(FPOrientationOutline("EyeR", Find("EyeR").Outline, FPDepthClass::Front, 45.0, 0.0));
+        const double Wl = W(FPOrientationOutline("EyeL", Find("EyeL").Outline, FPDepthClass::Front, -45.0, 0.0));
+        return std::abs(Wr - Wl) < 1e-6;
+    }());
+
+    // Containment + non-degenerate sweep (negative/edge cases).
+    TEST("orient: every output point stays in [0,1]^2", [&]() {
+        for (int Y = -180; Y <= 180; Y += 15)
+            for (int Pi = -90; Pi <= 90; Pi += 90)
+                for (const FPSchematicPart& Part : Parts)
+                {
+                    const std::vector<P> O = FPOrientationOutline(
+                        Part.Name, Part.Outline, Part.DepthClass, (double)Y, (double)Pi);
+                    for (const P& p : O)
+                        if (p.X < 0.0 || p.X > 1.0 || p.Y < 0.0 || p.Y > 1.0) return false;
+                }
+        return true;
+    }());
+    TEST("orient: silhouettes never degenerate at any yaw", [&]() {
+        for (int Y = -180; Y <= 180; Y += 15)
+        {
+            const std::vector<P> OH = FPOrientationOutline(
+                "Head", Find("Head").Outline, FPDepthClass::Base, (double)Y, 0.0);
+            const std::vector<P> OHa = FPOrientationOutline(
+                "Hair", Find("Hair").Outline, FPDepthClass::Back, (double)Y, 0.0);
+            if (W(OH) < 0.2 || W(OHa) < 0.2) return false;
+        }
+        return true;
+    }());
+}
+
+// Phase C: up/down view scrub (the vertical mirror of the yaw scrub). The
+// widget feeds the pitch strip's pixel drag through the pure
+// FPLayout::FPZoneScrubPitchAfterDrag contract — full strip height = 180 deg,
+// clamped to [-90, 90] (no wrap: a head can't tilt past straight-down and
+// come back from the other side). Reaching the ends parks at the Top/Bottom
+// dedicated view states.
+void TestPhaseCUpDownScrub() {
+    printf("\n=== PhaseC UpDownScrub ===\n");
+    namespace L = FPLayout;
+    TEST("scrubPitch: zero delta keeps pitch", L::FPZoneScrubPitchAfterDrag(0.0, 0.0, 180.0) == 0.0);
+    TEST("scrubPitch: +25% height -> +45", L::FPZoneScrubPitchAfterDrag(0.0, 45.0, 180.0) == 45.0);
+    TEST("scrubPitch: -25% height -> -45", L::FPZoneScrubPitchAfterDrag(0.0, -45.0, 180.0) == -45.0);
+    TEST("scrubPitch: full height -> Top (90)", L::FPZoneScrubPitchAfterDrag(0.0, 180.0, 180.0) == 90.0);
+    TEST("scrubPitch: full height down -> Bottom (-90)", L::FPZoneScrubPitchAfterDrag(0.0, -180.0, 180.0) == -90.0);
+    TEST("scrubPitch: relative to start (no jump)", L::FPZoneScrubPitchAfterDrag(-15.0, 45.0, 180.0) == 30.0);
+    TEST("scrubPitch: overshoot clamps at top", L::FPZoneScrubPitchAfterDrag(80.0, 100.0, 180.0) == 90.0);
+    TEST("scrubPitch: overshoot clamps at bottom", L::FPZoneScrubPitchAfterDrag(-80.0, -100.0, 180.0) == -90.0);
+    TEST("scrubPitch: zero height is identity", L::FPZoneScrubPitchAfterDrag(30.0, 50.0, 0.0) == 30.0);
+    TEST("scrubPitch: negative height is identity", L::FPZoneScrubPitchAfterDrag(30.0, 50.0, -1.0) == 30.0);
+    TEST("scrubPitch: NaN start guarded to 0", L::FPZoneScrubPitchAfterDrag(
+        std::nan(""), 50.0, 180.0) == 0.0);
+    TEST("scrubPitch: result always in [-90,90]", [&]() {
+        for (int i = -40; i <= 40; ++i)
+        {
+            const double V = L::FPZoneScrubPitchAfterDrag(0.0, (double)i * 37.0, 180.0);
+            if (V < -90.0 || V > 90.0) return false;
+        }
+        return true;
+    }());
+    // Phase B/C parity: yaw scrub wraps (360), pitch scrub clamps (180).
+    TEST("scrubPitch: pitch never wraps like yaw", [&]() {
+        return L::FPZoneScrubYawAfterDrag(170.0, 40.0, 360.0) == -150.0
+            && L::FPZoneScrubPitchAfterDrag(80.0, 40.0, 180.0) == 90.0;
+    }());
+}
+
 int main() {
     printf("===== Face Parallax Math Tests =====\n\n");
 
@@ -9721,11 +10381,22 @@ int main() {
     TestPhasePinMgrMirrors();
     TestSchematicParts();
     TestSchematicCoverage();
+    TestBatch1StackCycle();
+    TestBatch1HoverLabel();
+    TestBatch1StatusBadge();
+    TestBatch2SyncOpSelector();
+    TestBatch2ViewStripDrift();
+    TestBatch2TransformReadout();
+    TestBatch2ModeRow();
     TestHairSystem();
     TestHairMidpointJiggle();
     TestSchematicFilters();
     TestEdgeMapMirrors();
     TestYawRule();
+    TestPhase0GlyphFix();
+    TestPhase1ZoneScrub();
+    TestPhaseCUpDownScrub();
+    TestPhase2Orientation();
 
     printf("\n===== Results: %d/%d passed (%d failed) =====\n",
         g_passed, g_total, g_total - g_passed);

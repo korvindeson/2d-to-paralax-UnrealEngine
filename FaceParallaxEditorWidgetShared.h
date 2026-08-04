@@ -456,6 +456,29 @@ public:
         if (Owner->bShowPins)
             PaintPinMarkers(AllottedGeometry, OutDrawElements, LayerId, CanvasSize);
 
+        // W6: canvas transform readout — a compact "P(x, y) S(x%, y%) R(deg)"
+        // label pinned to the top-left corner of the canvas so it is always
+        // visible regardless of where the gizmo box sits. Drawn through the
+        // pure FPTransformReadout contract so the math tests pin the string.
+        // Only shown while a layer is selected (a default/empty transform
+        // would print a misleading all-zero readout).
+        if (Owner->GetSelectedLayerName().IsValid())
+        {
+            const std::string Readout = FPLayout::FPTransformReadout(
+                T.Position.X, T.Position.Y, T.Scale.X, T.Scale.Y, T.Rotation);
+            const FVector2D RLblSize(((float)Readout.size() * 6.5f + 14.0f), 18.0f);
+            const FVector2D RLblPos(10.0f, 10.0f);
+            FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 4,
+                AllottedGeometry.ToPaintGeometry(RLblSize, FSlateLayoutTransform(RLblPos)),
+                Brush, ESlateDrawEffect::None, FLinearColor(0.0f, 0.0f, 0.0f, 0.75f));
+            FSlateDrawElement::MakeText(OutDrawElements, LayerId + 5,
+                AllottedGeometry.ToPaintGeometry(
+                    FSlateLayoutTransform(RLblPos + FVector2D(7.0f, 3.0f))),
+                FText::FromString(FString(UTF8_TO_TCHAR(Readout.c_str()))),
+                FCoreStyle::GetDefaultFontStyle("Regular", 9),
+                ESlateDrawEffect::None, FLinearColor(0.8f, 0.95f, 1.0f, 1.0f));
+        }
+
         return LayerId + 3;
     }
 
@@ -1048,6 +1071,8 @@ private:
     FFaceArtTransform GizmoDragStart;                // Phase 1: transform snapshotted at mouse-down
     FVector2D GizmoDragStartPx = FVector2D::ZeroVector; // Phase 1: grab point (canvas-local px)
     bool bDragActive = false;                        // Phase 2: valid image drag hovering the canvas
+    int32 SchematicCycleIndex = 0;                   // W2: current cycle index for the stacked glyphs under the cursor
+    FVector2D SchematicLastClickUV = FVector2D(-100.0f, -100.0f); // W2: last glyph-click UV (repeat detection)
 };
 
 // SFaceSchematicLayer - the central-canvas DEFAULT VIEW (redesign): paints the
@@ -1172,6 +1197,7 @@ public:
                 }
             }
         }
+        HoverUV = CanvasUV;
         if (NewHover != HoveredIndex)
         {
             HoveredIndex = NewHover;
@@ -1186,6 +1212,7 @@ public:
             HoveredIndex = -1;
             Invalidate(EInvalidateWidgetReason::Paint);
         }
+        HoverUV = FVector2D(-1.0f, -1.0f);
     }
 
     bool HasHover() const { return HoveredIndex >= 0; }
@@ -1206,6 +1233,64 @@ public:
             }
         }
         return nullptr;
+    }
+
+    // W2 cycle-through-stack: resolve the stack index under a canvas UV to a
+    // part, honoring the filter (filtered-out stack members are skipped, so
+    // what is clickable is what cycles). Uses the pure schematic contracts
+    // FPSchematicPartStackCount/FPSchematicPartCycleAt + FPLayout::
+    // FPSchematicCycleIndex. The hotspot layer holds the cycle counter and
+    // decides repeat-click; this layer only maps (UV, CycleIndex) -> part.
+    const FPSchematic::FPSchematicPart* HitTestCycle(const FVector2D& CanvasUV,
+        int CycleIndex) const
+    {
+        const int Allowed = AllowedStackDepth(CanvasUV);
+        if (Allowed <= 0) return nullptr;
+        int Wrapped = CycleIndex % Allowed;
+        if (Wrapped < 0) Wrapped += Allowed;
+        int Seen = 0;
+        for (const FPSchematic::FPSchematicPart& P : Parts)
+        {
+            if (!P.Name || P.Outline.empty()) continue;
+            if (!FPSchematic::FPPartInOutline(InverseFocusUV(CanvasUV).X,
+                    InverseFocusUV(CanvasUV).Y, P.Outline)) continue;
+            bool bAllowed = false;
+            for (size_t i = 0; i < Parts.size(); ++i)
+            {
+                if (Parts[i].Name && std::string(Parts[i].Name) == std::string(P.Name))
+                {
+                    bAllowed = FilterAllows((int32)i);
+                    break;
+                }
+            }
+            if (!bAllowed) continue;
+            if (Seen == Wrapped) return &P;
+            ++Seen;
+        }
+        return nullptr;
+    }
+
+    // W2: filter-aware count of parts stacked under a canvas UV. This is the
+    // stack depth the hotspot layer feeds to FPLayout::FPSchematicCycleIndex —
+    // filtered-out members are excluded so the cycle index stays consistent
+    // with what HitTestCycle resolves.
+    int AllowedStackDepth(const FVector2D& CanvasUV) const
+    {
+        const FVector2D UV = InverseFocusUV(CanvasUV);
+        int Allowed = 0;
+        for (const FPSchematic::FPSchematicPart& P : Parts)
+        {
+            if (!P.Name || P.Outline.empty()) continue;
+            if (!FPSchematic::FPPartInOutline(UV.X, UV.Y, P.Outline)) continue;
+            for (size_t i = 0; i < Parts.size(); ++i)
+            {
+                if (Parts[i].Name && std::string(Parts[i].Name) == std::string(P.Name))
+                {
+                    if (FilterAllows((int32)i)) { ++Allowed; break; }
+                }
+            }
+        }
+        return Allowed;
     }
 
     virtual FVector2D ComputeDesiredSize(float) const override
@@ -1304,6 +1389,72 @@ public:
                 AllottedGeometry.ToPaintGeometry(FVector2D(5.0f, 5.0f),
                     FSlateLayoutTransform(C - FVector2D(2.5f, 2.5f))),
                 WhiteBrush, ESlateDrawEffect::None, DotColor);
+        }
+        // W2 hover label: paint the region label at the cursor while a part
+        // is hovered — "<Part>" or "<Part> -> <Layer>" when the resolution
+        // differs. Matches the pure FPLayout::FPHoverPartLabel contract.
+        if (HoveredIndex >= 0 && (size_t)HoveredIndex < Parts.size()
+            && Parts[(size_t)HoveredIndex].Name && HoveredIndex < (int32)PartLayerTags.size())
+        {
+            const FPSchematic::FPSchematicPart& HP = Parts[(size_t)HoveredIndex];
+            const char* Resolved = (!PartLayerTags[(size_t)HoveredIndex].empty())
+                ? PartLayerTags[(size_t)HoveredIndex].c_str() : nullptr;
+            const std::string Label = FPLayout::FPHoverPartLabel(HP.Name, Resolved);
+            if (!Label.empty() && HoverUV.X >= 0.0f && HoverUV.Y >= 0.0f)
+            {
+                const FVector2D Anchor((float)(HoverUV.X * Size.X), (float)(HoverUV.Y * Size.Y));
+                const FVector2D LblSize(Label.size() * 7.0f + 12.0f, 16.0f);
+                const FVector2D LblPos(Anchor.X + 8.0f, Anchor.Y + 6.0f);
+                FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 2,
+                    AllottedGeometry.ToPaintGeometry(LblSize, FSlateLayoutTransform(LblPos)),
+                    WhiteBrush, ESlateDrawEffect::None,
+                    FLinearColor(0.05f, 0.05f, 0.08f, 0.85f));
+                FSlateDrawElement::MakeText(OutDrawElements, LayerId + 3,
+                    AllottedGeometry.ToPaintGeometry(
+                        FSlateLayoutTransform(LblPos + FVector2D(6.0f, 3.0f))),
+                    FText::FromString(FString(UTF8_TO_TCHAR(Label.c_str()))),
+                    FCoreStyle::GetDefaultFontStyle("Regular", 8),
+                    ESlateDrawEffect::None, FLinearColor(0.95f, 0.95f, 0.9f, 1.0f));
+            }
+        }
+        // W5 pin-placement marker: when Add Pin has armed a one-shot
+        // placement, draw a crosshair + "Place pin on <Layer>" label at the
+        // hover position so the user sees where the pin will land before the
+        // click. Only drawn while hovering the canvas (HoverUV valid).
+        if (Owner && Owner->IsPendingPinPlacement()
+            && HoverUV.X >= 0.0f && HoverUV.Y >= 0.0f)
+        {
+            const FVector2D Anchor((float)(HoverUV.X * Size.X), (float)(HoverUV.Y * Size.Y));
+            const FLinearColor PinCol(0.35f, 0.9f, 1.0f, 1.0f);   // cyan, distinct from part/edge tints
+            // Crosshair: two lines through the anchor.
+            const float Arm = 7.0f;
+            TArray<FVector2D> HLine;
+            HLine.Reserve(2);
+            HLine.Add(FVector2D(Anchor.X - Arm, Anchor.Y));
+            HLine.Add(FVector2D(Anchor.X + Arm, Anchor.Y));
+            TArray<FVector2D> VLine;
+            VLine.Reserve(2);
+            VLine.Add(FVector2D(Anchor.X, Anchor.Y - Arm));
+            VLine.Add(FVector2D(Anchor.X, Anchor.Y + Arm));
+            FSlateDrawElement::MakeLines(OutDrawElements, LayerId + 4,
+                AllottedGeometry.ToPaintGeometry(), HLine, ESlateDrawEffect::None, PinCol, true, 1.5f);
+            FSlateDrawElement::MakeLines(OutDrawElements, LayerId + 4,
+                AllottedGeometry.ToPaintGeometry(), VLine, ESlateDrawEffect::None, PinCol, true, 1.5f);
+            // Label: "<Layer> pin" on a dark chip to the right of the anchor.
+            const FString PinLabel = Owner->GetSelectedLayerName().IsValid()
+                ? FString::Printf(TEXT("%s pin"), *Owner->GetSelectedLayerName().ToString())
+                : TEXT("Place pin");
+            const FVector2D PLblSize((PinLabel.Len() * 6.5f + 12.0f), 16.0f);
+            const FVector2D PLblPos(Anchor.X + 10.0f, Anchor.Y - 8.0f);
+            FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 4,
+                AllottedGeometry.ToPaintGeometry(PLblSize, FSlateLayoutTransform(PLblPos)),
+                WhiteBrush, ESlateDrawEffect::None, FLinearColor(0.02f, 0.05f, 0.09f, 0.9f));
+            FSlateDrawElement::MakeText(OutDrawElements, LayerId + 5,
+                AllottedGeometry.ToPaintGeometry(
+                    FSlateLayoutTransform(PLblPos + FVector2D(6.0f, 3.0f))),
+                FText::FromString(PinLabel),
+                FCoreStyle::GetDefaultFontStyle("Regular", 8),
+                ESlateDrawEffect::None, FLinearColor(0.75f, 0.95f, 1.0f, 1.0f));
         }
         return LayerId + 1;
     }
@@ -1423,6 +1574,7 @@ private:
     FPSchematic::FPSchematicPoint FocusCenter{ 0.5, 0.5 };
     float FocusScale = 1.0f;
     int32 HoveredIndex = -1;
+    FVector2D HoverUV = FVector2D(-1.0f, -1.0f);   // W2: hover label anchor (canvas UV)
 };
 
 // ====================================================================
@@ -1488,20 +1640,38 @@ inline FReply UFaceParallaxEditorWidget::SFaceHotspotLayer::OnMouseButtonDown(
     // (1) Schematic glyph (lens- and filter-aware) — P1 one-map: the glyph
     // is the SINGLE canvas map. Left-click selects the resolved layer (and
     // opens the import wizard when it has no art); right-click opens the
-    // remap menu. The old named-region and layer-art-quad click layers are
-    // gone — no Alt/Ctrl modifier paths remain.
+    // remap menu. W2: stacked glyphs under one point cycle on repeat clicks
+    // (or Alt-click) — a click at a NEW spot resets to the topmost part, a
+    // repeat click at the same spot advances through the stack. The old
+    // named-region and layer-art-quad click layers are gone — no other
+    // modifier paths remain.
     if (Schematic.IsValid())
     {
-        const FPSchematic::FPSchematicPart* Part = Schematic->HitTest(UV);
+        // W2 repeat detection: a click counts as "same spot" when it lands
+        // within a small UV tolerance of the previous glyph click.
+        const bool bRepeatClick = (UV - SchematicLastClickUV).Size() < 0.03f
+            || Ev.IsAltDown();
+        const int StackDepth = Schematic->AllowedStackDepth(UV);
+        SchematicCycleIndex = FPLayout::FPSchematicCycleIndex(
+            StackDepth, SchematicCycleIndex, bRepeatClick);
+        const FPSchematic::FPSchematicPart* Part = Schematic->HitTestCycle(UV, SchematicCycleIndex);
+        if (!Part)
+        {
+            // Fall back to the plain topmost hit (miss-only when nothing is
+            // under the cursor at all, or every stack member is filtered).
+            Part = Schematic->HitTest(UV);
+        }
         if (Part && Part->Name && Part->Name[0])
         {
             const FString PartName(Part->Name);
+            SchematicLastClickUV = UV;
             if (bRight)
                 Owner->OpenHotspotRemapMenu(PartName, Ev);
             else
                 Owner->HandleSchematicPartClick(PartName);
             return FReply::Handled();
         }
+        SchematicLastClickUV = UV;
     }
 
     // (2) Miss: swallow. SOverlay does NOT re-route Unhandled to sibling
@@ -1849,9 +2019,17 @@ public:
                 bDrag ? FLinearColor(1.0f, 0.85f, 0.35f, 0.95f)
                       : FLinearColor(0.04f, 0.04f, 0.07f, 0.85f));
         }
-        if (Comp)
+        const float CursorYaw = (Owner && Owner->IsZoneScrubbing())
+            ? Owner->GetZoneScrubYaw()
+            : (Owner ? Owner->GetOrbitYaw() : (Comp ? Comp->CurrentYaw : 0.0f));
+        if (CursorYaw == CursorYaw)   // NaN guard
         {
-            const float YPx = (Comp->CurrentYaw + 180.0f) / 360.0f * Sz.X;
+            // Normalize 0..360 orbit storage back into the strip's [-180,180)
+            // span so the cursor always stays on the diagram.
+            float Yaw = CursorYaw;
+            while (Yaw >= 180.0f) Yaw -= 360.0f;
+            while (Yaw < -180.0f) Yaw += 360.0f;
+            const float YPx = (Yaw + 180.0f) / 360.0f * Sz.X;
             if (YPx >= 0.0f && YPx <= Sz.X)
                 FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 1,
                     AllottedGeometry.ToPaintGeometry(FVector2D(3.0f, Sz.Y),
@@ -1866,7 +2044,17 @@ public:
         if (Ev.GetEffectingButton() != EKeys::LeftMouseButton) return FReply::Unhandled();
         const FVector2D Local = Geo.AbsoluteToLocal(Ev.GetScreenSpacePosition());
         const int32 Side = HitTest(Geo, Local);
-        if (Side == 0) return FReply::Unhandled();
+        if (Side == 0)
+        {
+            // Phase 1: press in empty space = rotation scrub, not a boundary
+            // edit. The drag is relative (no jump to the press pixel) and
+            // drives the orbit + active view state live.
+            DragSide = 0;
+            DragStartPx = Local.X;
+            bScrubDrag = true;
+            if (Owner) Owner->BeginZoneScrub();
+            return FReply::Handled().CaptureMouse(SharedThis(this));
+        }
         DragSide = Side;
         DragStartPx = Local.X;
         UFaceParallaxComponent* Comp = Owner ? Owner->GetParallaxComponent() : nullptr;
@@ -1877,9 +2065,15 @@ public:
 
     virtual FReply OnMouseMove(const FGeometry& Geo, const FPointerEvent& Ev) override
     {
-        if (DragSide == 0) return FReply::Unhandled();
         const float W = Geo.GetLocalSize().X;
         if (W <= 1.0f) return FReply::Handled();
+        if (bScrubDrag)
+        {
+            const float DeltaPx = Geo.AbsoluteToLocal(Ev.GetScreenSpacePosition()).X - DragStartPx;
+            if (Owner) Owner->ScrubZoneYawDelta(DeltaPx, W);
+            return FReply::Handled();
+        }
+        if (DragSide == 0) return FReply::Unhandled();
         const float DeltaPx = Geo.AbsoluteToLocal(Ev.GetScreenSpacePosition()).X - DragStartPx;
         const double DeltaDeg = (DragSide < 0 ? -1.0 : 1.0) * (double)DeltaPx * 360.0 / (double)W;
         UFaceParallaxComponent* Comp = Owner ? Owner->GetParallaxComponent() : nullptr;
@@ -1892,6 +2086,12 @@ public:
 
     virtual FReply OnMouseButtonUp(const FGeometry&, const FPointerEvent&) override
     {
+        if (bScrubDrag)
+        {
+            bScrubDrag = false;
+            if (Owner) Owner->CommitZoneScrub();
+            return FReply::Handled().ReleaseMouseCapture();
+        }
         if (DragSide == 0) return FReply::Unhandled();
         DragSide = 0;
         if (Owner) Owner->CommitZoneBoundaryDrag();
@@ -1900,17 +2100,175 @@ public:
 
     virtual void OnMouseCaptureLost(const FCaptureLostEvent&) override
     {
+        if (bScrubDrag)
+        {
+            bScrubDrag = false;
+            if (Owner) Owner->CommitZoneScrub();
+        }
         DragSide = 0;
     }
 
-    virtual FCursorReply OnCursorQuery(const FGeometry&, const FPointerEvent&) const override
+    virtual FCursorReply OnCursorQuery(const FGeometry& Geo, const FPointerEvent& Ev) const override
     {
-        return FCursorReply::Cursor(EMouseCursor::ResizeLeftRight);
+        const FVector2D Local = Geo.AbsoluteToLocal(Ev.GetScreenSpacePosition());
+        const int32 Side = HitTest(Geo, Local);
+        return FCursorReply::Cursor(Side != 0
+            ? EMouseCursor::ResizeLeftRight : EMouseCursor::Hand);
     }
 
 private:
     int32 DragSide = 0;
+    bool bScrubDrag = false;        // Phase 1: rotation scrub (empty-space drag)
     float DragStartPx = 0.0f;
     float DragStartMultiplier = 1.0f;
+};
+
+// SFacePitchStrip - Phase C: dedicated up/down view slider (the vertical pitch
+// mirror of the yaw zone scrub). A slim vertical strip mounted UNDER the 360
+// deg yaw zone diagram; dragging up lifts the head (toward Top), dragging down
+// lowers it (toward Bottom). Relative pixel drags map through the pure
+// FPLayout::FPZoneScrubPitchAfterDrag contract (full strip height = 180 deg,
+// clamped to [-90,90], no wrap), drive the orbit pitch live, and repoint the
+// ActiveViewState at the Top/Bottom art states past their thresholds so the
+// schematic + per-view art follow the up/down rotation. The strip paints a
+// track with tick marks at every 30 deg, a Top/Bottom label, and a live cursor
+// (red while scrubbing, grey at rest).
+class UFaceParallaxEditorWidget::SFacePitchStrip : public SLeafWidget
+{
+public:
+    SLATE_BEGIN_ARGS(SFacePitchStrip) {}
+    SLATE_END_ARGS()
+
+    void Construct(const FArguments&) {}
+
+    UFaceParallaxEditorWidget* Owner = nullptr;
+
+    virtual FVector2D ComputeDesiredSize(float) const override
+    {
+        return FVector2D(14.0f, 108.0f);
+    }
+
+    // Map pitch (deg, [-90,90]) to a vertical pixel offset: +90 sits at the
+    // very top of the strip, -90 at the very bottom.
+    static float PitchToPixel(float Pitch, float HeightPx)
+    {
+        return (90.0f - FMath::Clamp(Pitch, -90.0f, 90.0f)) / 180.0f * HeightPx;
+    }
+
+    virtual int32 OnPaint(const FPaintArgs&, const FGeometry& AllottedGeometry,
+        const FSlateRect&, FSlateWindowElementList& OutDrawElements,
+        int32 LayerId, const FWidgetStyle&, bool) const override
+    {
+        const FSlateBrush* Brush = FCoreStyle::Get().GetBrush("WhiteBrush");
+        if (!Brush) return LayerId;
+        const FVector2D Sz = AllottedGeometry.GetLocalSize();
+        if (Sz.Y <= 1.0f) return LayerId;
+
+        // Track.
+        FSlateDrawElement::MakeBox(OutDrawElements, LayerId,
+            AllottedGeometry.ToPaintGeometry(FVector2D(3.0f, Sz.Y),
+                FSlateLayoutTransform(FVector2D((Sz.X - 3.0f) * 0.5f, 0.0f))),
+            Brush, ESlateDrawEffect::None, FLinearColor(0.04f, 0.04f, 0.07f, 0.85f));
+
+        // Tick marks every 30 deg (Top/Bottom ends get a brighter cap).
+        const FSlateFontInfo TickFont = FCoreStyle::GetDefaultFontStyle("Regular", 7);
+        for (int32 P = -90; P <= 90; P += 30)
+        {
+            const float Y = PitchToPixel((float)P, Sz.Y);
+            const bool bEnd = (P == -90 || P == 90);
+            const float TW = bEnd ? 8.0f : 6.0f;
+            FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 1,
+                AllottedGeometry.ToPaintGeometry(FVector2D(TW, 1.0f),
+                    FSlateLayoutTransform(FVector2D((Sz.X - TW) * 0.5f, Y))),
+                Brush, ESlateDrawEffect::None,
+                bEnd ? FLinearColor(0.6f, 0.85f, 0.6f, 0.95f)
+                     : FLinearColor(0.35f, 0.35f, 0.45f, 0.9f));
+            if (P == 90)
+            {
+                FSlateDrawElement::MakeText(OutDrawElements, LayerId + 1,
+                    AllottedGeometry.ToPaintGeometry(FSlateLayoutTransform(FVector2D(1.0f, 0.0f))),
+                    FText::FromString(TEXT("T")), TickFont,
+                    ESlateDrawEffect::None, FLinearColor(0.7f, 1.0f, 0.7f, 1.0f));
+            }
+            else if (P == -90)
+            {
+                FSlateDrawElement::MakeText(OutDrawElements, LayerId + 1,
+                    AllottedGeometry.ToPaintGeometry(FSlateLayoutTransform(
+                        FVector2D(1.0f, Sz.Y - 9.0f))),
+                    FText::FromString(TEXT("B")), TickFont,
+                    ESlateDrawEffect::None, FLinearColor(0.7f, 1.0f, 0.7f, 1.0f));
+            }
+        }
+
+        // Live cursor: the scrub pitch while dragging, else the orbit pitch.
+        const float CursorPitch = (Owner && Owner->IsPitchScrubbing())
+            ? Owner->GetPitchScrubPitch()
+            : (Owner ? Owner->GetOrbitPitch() : 0.0f);
+        if (CursorPitch == CursorPitch)   // NaN guard
+        {
+            const bool bScrubbing = Owner && Owner->IsPitchScrubbing();
+            const float Y = PitchToPixel(CursorPitch, Sz.Y);
+            FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 2,
+                AllottedGeometry.ToPaintGeometry(FVector2D(Sz.X, 3.0f),
+                    FSlateLayoutTransform(FVector2D(0.0f, Y - 1.5f))),
+                Brush, ESlateDrawEffect::None,
+                bScrubbing ? FLinearColor(1.0f, 0.2f, 0.2f, 0.95f)
+                           : FLinearColor(0.55f, 0.55f, 0.6f, 0.9f));
+        }
+        return LayerId + 3;
+    }
+
+    virtual FReply OnMouseButtonDown(const FGeometry& Geo, const FPointerEvent& Ev) override
+    {
+        if (Ev.GetEffectingButton() != EKeys::LeftMouseButton) return FReply::Unhandled();
+        const FVector2D Local = Geo.AbsoluteToLocal(Ev.GetScreenSpacePosition());
+        DragStartPy = Local.Y;
+        bScrubDrag = true;
+        if (Owner) Owner->BeginPitchScrub();
+        return FReply::Handled().CaptureMouse(SharedThis(this));
+    }
+
+    virtual FReply OnMouseMove(const FGeometry& Geo, const FPointerEvent& Ev) override
+    {
+        const float H = Geo.GetLocalSize().Y;
+        if (H <= 1.0f) return FReply::Handled();
+        if (bScrubDrag)
+        {
+            // Moving UP (negative screen delta) raises the pitch toward Top.
+            const float DeltaPx = -(Geo.AbsoluteToLocal(Ev.GetScreenSpacePosition()).Y - DragStartPy);
+            if (Owner) Owner->ScrubPitchDelta(DeltaPx, H);
+            return FReply::Handled();
+        }
+        return FReply::Unhandled();
+    }
+
+    virtual FReply OnMouseButtonUp(const FGeometry&, const FPointerEvent&) override
+    {
+        if (bScrubDrag)
+        {
+            bScrubDrag = false;
+            if (Owner) Owner->CommitPitchScrub();
+            return FReply::Handled().ReleaseMouseCapture();
+        }
+        return FReply::Unhandled();
+    }
+
+    virtual void OnMouseCaptureLost(const FCaptureLostEvent&) override
+    {
+        if (bScrubDrag)
+        {
+            bScrubDrag = false;
+            if (Owner) Owner->CommitPitchScrub();
+        }
+    }
+
+    virtual FCursorReply OnCursorQuery(const FGeometry&, const FPointerEvent&) const override
+    {
+        return FCursorReply::Cursor(EMouseCursor::ResizeUpDown);
+    }
+
+private:
+    bool bScrubDrag = false;        // Phase C: pitch scrub (vertical drag)
+    float DragStartPy = 0.0f;
 };
 #endif

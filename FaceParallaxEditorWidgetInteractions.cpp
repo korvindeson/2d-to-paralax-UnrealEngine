@@ -75,8 +75,8 @@ void UFaceParallaxEditorWidget::SelectPartOrImport(const FString& PartName)
         return;
     }
     SetSelectedLayer(LayerTag.ToString());
-    FlashTab(1);                 // P7-A: amber pulse on the Art tab — visible rail-jump transition
-    SetActiveRailIndex(1);   // Art rail: import + tweak controls
+    FlashTab(0);                 // P7-A: amber pulse on the Assign tab — visible page-jump transition
+    SetActivePageIndex(0);   // Assign page: import + tweak controls
     const FString ClassName = UTF8_TO_TCHAR(FPSchematic::FPDepthClassName(
         FPSchematic::FPDepthClassForTag(TCHAR_TO_UTF8(*LayerTag.ToString()))));
     SetBreadcrumb(LayerTag.ToString() == PartName
@@ -121,12 +121,12 @@ void UFaceParallaxEditorWidget::SetBreadcrumb(const FString& Text)
         BreadcrumbText->SetText(FText::FromString(Text));
 }
 
-// P7-A tab flash: amber-pulse the destination rail tab for ~0.9s so a
-// programmatic rail jump (canvas click -> Art rail) is visually traceable.
+// P7-A tab flash: amber-pulse the destination page tab for ~0.9s so a
+// programmatic page jump (canvas click -> Assign page) is visually traceable.
 // NativeTick repaints the tab bar while the pulse is live.
-void UFaceParallaxEditorWidget::FlashTab(int32 RailIndex)
+void UFaceParallaxEditorWidget::FlashTab(int32 PageIndex)
 {
-    TabFlashIndex = RailIndex;
+    TabFlashIndex = PageIndex;
     TabFlashUntil = FSlateApplication::Get().GetCurrentTime() + 0.9;
     if (TopTabBar.IsValid())
         TopTabBar->Invalidate(EInvalidateWidgetReason::Paint);
@@ -468,54 +468,54 @@ void UFaceParallaxEditorWidget::OpenHotspotRemapMenu(const FString& RegionName, 
 }
 
 // ====================================================================
-// PHASE A: WORKSPACE RAIL
+// W1: WORKSPACE PAGES (context panel replaces the rail switcher)
 // ====================================================================
 
-void UFaceParallaxEditorWidget::SetActiveRailIndex(int32 Index)
+void UFaceParallaxEditorWidget::SetActivePageIndex(int32 Index)
 {
-    ActiveRailIndex = FMath::Clamp(Index, 0, 4);
+    ActivePageIndex = FMath::Clamp(Index, 0, 4);
     RebuildWidget();
 }
 
 // ====================================================================
-// PHASE 4b: RAIL ACCESSIBILITY (chips / jump / search / resizer)
-// Mirrors: FPLayout::RailSectionTitles / FindRailSectionByTitle /
+// PHASE 4b: PAGE ACCESSIBILITY (chips / jump / search / resizer)
+// Mirrors: FPLayout::PageSectionTitles / FindPageSectionByTitle /
 // ConfigSummary / VisemeSummary / RailWidthAfterDrag / QuickActionLabels
 // (Tests/ParallaxMathTests.cpp::TestAccessibilityMirrors).
 // ====================================================================
 
-void UFaceParallaxEditorWidget::RegisterRailSection(int32 RailIdx, const FString& Title,
+void UFaceParallaxEditorWidget::RegisterPageSection(int32 PageIdx, const FString& Title,
     TSharedRef<SWidget> Target, const TSharedPtr<SFaceAccordion>& Accordion, int32 AccordionIdx)
 {
-    if (!RailSections.IsValidIndex(RailIdx)) return;
-    FFaceRailSection Sec(Title, Target);
+    if (!PageSections.IsValidIndex(PageIdx)) return;
+    FFacePageSection Sec(Title, Target);
     Sec.Accordion = Accordion;
     Sec.AccordionIdx = AccordionIdx;
-    RailSections[RailIdx].Add(MoveTemp(Sec));
+    PageSections[PageIdx].Add(MoveTemp(Sec));
 }
 
-void UFaceParallaxEditorWidget::RegisterAccordionSections(int32 RailIdx, const TSharedPtr<SFaceAccordion>& Accordion)
+void UFaceParallaxEditorWidget::RegisterAccordionPageSections(int32 PageIdx, const TSharedPtr<SFaceAccordion>& Accordion)
 {
     if (!Accordion.IsValid()) return;
     for (int32 i = 0; i < Accordion->NumSections(); ++i)
-        RegisterRailSection(RailIdx, Accordion->SectionTitle(i),
+        RegisterPageSection(PageIdx, Accordion->SectionTitle(i),
             Accordion->GetSectionHeader(i), Accordion, i);
 }
 
-void UFaceParallaxEditorWidget::BuildRailSectionChips()
+void UFaceParallaxEditorWidget::BuildPageSectionChips()
 {
-    for (int32 Ri = 0; Ri < 5 && Ri < RailChipsRows.Num() && Ri < RailSections.Num(); ++Ri)
+    for (int32 Pi = 0; Pi < 5 && Pi < PageChipsRows.Num() && Pi < PageSections.Num(); ++Pi)
     {
-        RailChipsRows[Ri]->ClearChildren();
-        for (int32 Si = 0; Si < RailSections[Ri].Num(); ++Si)
+        PageChipsRows[Pi]->ClearChildren();
+        for (int32 Si = 0; Si < PageSections[Pi].Num(); ++Si)
         {
-            const FString Title = RailSections[Ri][Si].Title;
-            const bool bActive = (ActiveChipRail == Ri && ActiveChipIdx == Si);
+            const FString Title = PageSections[Pi][Si].Title;
+            const bool bActive = (ActiveChipPage == Pi && ActiveChipIdx == Si);
             TSharedRef<SButton> Chip = SNew(SButton)
                 .ButtonColorAndOpacity(bActive ? AccentBlue() : FLinearColor(0.1f, 0.1f, 0.12f))
-                .OnClicked_Lambda([this, Ri, Si]()
+                .OnClicked_Lambda([this, Pi, Si]()
                 {
-                    JumpToRailSection(Ri, Si);
+                    JumpToPageSection(Pi, Si);
                     return FReply::Handled();
                 })
                 .Content()
@@ -524,60 +524,60 @@ void UFaceParallaxEditorWidget::BuildRailSectionChips()
                     .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
                     .ColorAndOpacity(FLinearColor(0.75f, 0.75f, 0.8f))];
             Chip->SetToolTipText(FText::FromString(TEXT("Jump to section: ") + Title));
-            RailChipsRows[Ri]->AddSlot().AutoWidth().Padding(FMargin(2, 2, 0, 2))[Chip];
+            PageChipsRows[Pi]->AddSlot().AutoWidth().Padding(FMargin(2, 2, 0, 2))[Chip];
         }
     }
 }
 
-void UFaceParallaxEditorWidget::JumpToRailSection(int32 RailIdx, int32 SectionIdx)
+void UFaceParallaxEditorWidget::JumpToPageSection(int32 PageIdx, int32 SectionIdx)
 {
-    if (!RailSections.IsValidIndex(RailIdx) || !RailSections[RailIdx].IsValidIndex(SectionIdx))
+    if (!PageSections.IsValidIndex(PageIdx) || !PageSections[PageIdx].IsValidIndex(SectionIdx))
         return;
-    ActiveChipRail = RailIdx;
+    ActiveChipPage = PageIdx;
     ActiveChipIdx = SectionIdx;
-    if (RailIdx != ActiveRailIndex)
+    if (PageIdx != ActivePageIndex)
     {
-        // Rail switch rebuilds the tree; queue the jump for the rebuild end.
-        PendingJumpRail = RailIdx;
-        PendingJumpTitle = RailSections[RailIdx][SectionIdx].Title;
-        SetActiveRailIndex(RailIdx);
+        // Page switch rebuilds the tree; queue the jump for the rebuild end.
+        PendingJumpPage = PageIdx;
+        PendingJumpTitle = PageSections[PageIdx][SectionIdx].Title;
+        SetActivePageIndex(PageIdx);
         return;
     }
-    const FFaceRailSection& Sec = RailSections[RailIdx][SectionIdx];
+    const FFacePageSection& Sec = PageSections[PageIdx][SectionIdx];
     if (Sec.Accordion.IsValid() && Sec.AccordionIdx >= 0)
         Sec.Accordion->SetExpanded(Sec.AccordionIdx, true);
-    // No rail scrolling (P17 fit-first): every section is reachable without
+    // No page scrolling (P17 fit-first): every section is reachable without
     // a vertical scroll bar, so the jump only opens the accordion section.
-    BuildRailSectionChips();
+    BuildPageSectionChips();
 }
 
 void UFaceParallaxEditorWidget::ConsumePendingJump()
 {
-    if (PendingJumpRail < 0) return;
-    const int32 Ri = PendingJumpRail;
+    if (PendingJumpPage < 0) return;
+    const int32 Pi = PendingJumpPage;
     const FString Title = PendingJumpTitle;
-    PendingJumpRail = -1;
+    PendingJumpPage = -1;
     PendingJumpTitle.Empty();
-    if (!RailSections.IsValidIndex(Ri)) return;
-    for (int32 Si = 0; Si < RailSections[Ri].Num(); ++Si)
+    if (!PageSections.IsValidIndex(Pi)) return;
+    for (int32 Si = 0; Si < PageSections[Pi].Num(); ++Si)
     {
-        if (RailSections[Ri][Si].Title == Title)
+        if (PageSections[Pi][Si].Title == Title)
         {
-            JumpToRailSection(Ri, Si);
+            JumpToPageSection(Pi, Si);
             return;
         }
     }
 }
 
-void UFaceParallaxEditorWidget::OnRailSearchCommitted(const FString& Query)
+void UFaceParallaxEditorWidget::OnPageSearchCommitted(const FString& Query)
 {
     if (Query.IsEmpty()) return;
-    int32 OutRail = -1;
+    int32 OutPage = -1;
     int32 OutIdx = -1;
     const std::string Q(TCHAR_TO_UTF8(*Query));
-    if (FPLayout::FindRailSectionByTitle(Q, OutRail, OutIdx) == 0)
+    if (FPLayout::FindPageSectionByTitle(Q, OutPage, OutIdx) == 0)
     {
-        JumpToRailSection(OutRail, OutIdx);
+        JumpToPageSection(OutPage, OutIdx);
         return;
     }
     if (TextStatus.IsValid())
@@ -597,10 +597,6 @@ void UFaceParallaxEditorWidget::UpdateDisclosureSummaries()
         if (Comp->GetNestedArtEnabled()) ++NumOn;
         if (Comp->GetParamsEnabled()) ++NumOn;
     }
-    if (bLocalShowTextures) ++NumOn;
-    if (bLocalShowDepthMesh) ++NumOn;
-    if (bLocalShowWireframe) ++NumOn;
-    if (bLocalColorByDepth) ++NumOn;
     ConfigDisclosure->SetSummary(FString(UTF8_TO_TCHAR(FPLayout::ConfigSummary(NumOn).c_str())));
 }
 
@@ -612,8 +608,8 @@ float UFaceParallaxEditorWidget::GetRailWidthPx() const
 void UFaceParallaxEditorWidget::SetRailWidthLive(float W)
 {
     RailWidthPx = (float)FPLayout::ClampRailWidth((double)W);
-    if (RailWidthBox.IsValid())
-        RailWidthBox->SetWidthOverride(RailWidthPx);
+    if (ContextWidthBox.IsValid())
+        ContextWidthBox->SetWidthOverride(RailWidthPx);
 }
 
 void UFaceParallaxEditorWidget::ApplyRailWidthDelta(float DeltaPx)
@@ -661,6 +657,93 @@ void UFaceParallaxEditorWidget::RefreshViewStripDots()
         if (ViewTabDots[i].IsValid())
             ViewTabDots[i]->SetColorAndOpacity(GetStateDotColor((EFaceAngleState)i));
     }
+}
+
+// W4 view-strip drift: when a layer is selected, each state tab dot reflects
+// whether that state's selected-layer slot has DRIFTED from the active state
+// (transform and/or art, exact-equality semantics via FPLayout::FPViewStripDrift,
+// the same math the Sync + Align panel's drift indicator uses). No selected
+// layer falls back to the completeness dots (GetStateDotColor).
+void UFaceParallaxEditorWidget::RefreshViewStripDrift()
+{
+    if (!SelectedLayerName.IsValid() || !ActivePreset)
+    {
+        RefreshViewStripDots();
+        return;
+    }
+    const FFaceArtSlot& ActiveSlot = ActivePreset->GetSlot(ActiveViewState, SelectedLayerName);
+    const FFaceArtTransform Active = ActiveSlot.CanonicalTransform;
+    const bool bActiveHasArt = ActiveSlot.Textures.Albedo != nullptr;
+    for (int32 i = 0; i < ViewTabDots.Num() && i <= (int32)EFaceAngleState::Bottom; ++i)
+    {
+        if (ViewTabDots[i].IsValid())
+        {
+            const FFaceArtSlot& Dest = ActivePreset->GetSlot((EFaceAngleState)i, SelectedLayerName);
+            const FFaceArtTransform DT = Dest.CanonicalTransform;
+            const bool bTransformEqual = DT.Position == Active.Position
+                && DT.Scale == Active.Scale && DT.Rotation == Active.Rotation;
+            const bool bTextureEqual = (Dest.Textures.Albedo == ActiveSlot.Textures.Albedo);
+            const int Drift = FPLayout::FPViewStripDrift(bActiveHasArt,
+                Dest.Textures.Albedo != nullptr, bTransformEqual, bTextureEqual);
+            // Drift colors outrank completeness so the strip reads the same
+            // story as the Sync + Align panel; synced states keep the dot.
+            switch (Drift)
+            {
+            case FPLayout::SyncDriftSame:
+                ViewTabDots[i]->SetColorAndOpacity(GetStateDotColor((EFaceAngleState)i));
+                break;
+            case FPLayout::SyncDriftArt:
+                ViewTabDots[i]->SetColorAndOpacity(FLinearColor(1.0f, 0.4f, 0.4f)); // red: missing art
+                break;
+            case FPLayout::SyncDriftXform:
+                ViewTabDots[i]->SetColorAndOpacity(FLinearColor(1.0f, 0.7f, 0.2f)); // orange: transform differs
+                break;
+            default:
+                ViewTabDots[i]->SetColorAndOpacity(FLinearColor(1.0f, 0.35f, 0.35f)); // both
+                break;
+            }
+        }
+    }
+}
+
+void UFaceParallaxEditorWidget::RefreshStatusBadge()
+{
+    if (!TextStatusBadge.IsValid()) return;
+    int32 StatesReady = 0, TotalStates = 10, LayersWithArt = 0, TotalLayers = 0;
+    TArray<FName> AllTags;
+    {
+        UFaceParallaxComponent* Comp = GetParallaxComponent();
+        if (Comp)
+        {
+            for (int32 i = 0; i < Comp->GetNumLayerDefinitions(); ++i)
+            {
+                FFaceLayerDef Def = Comp->GetLayerDefinition(i);
+                if (IsSeedPlaceholderLayerDef(Def)) continue;
+                AllTags.Add(Def.LayerTag);
+            }
+        }
+    }
+    TotalLayers = AllTags.Num();
+    if (ActivePreset)
+    {
+        for (int32 S = 0; S < 10; ++S)
+        {
+            bool bAllArt = AllTags.Num() > 0;
+            for (const FName& Tag : AllTags)
+            {
+                const FFaceTextureSet Tex = ActivePreset->GetTexturesForSlot((EFaceAngleState)S, Tag);
+                if (!Tex.Albedo) { bAllArt = false; break; }
+            }
+            if (bAllArt) ++StatesReady;
+        }
+        for (const FName& Tag : AllTags)
+        {
+            const FFaceTextureSet Tex = ActivePreset->GetTexturesForSlot(ActiveViewState, Tag);
+            if (Tex.Albedo) ++LayersWithArt;
+        }
+    }
+    const FString Summary = UTF8_TO_TCHAR(FPLayout::FPStatusSummary(StatesReady, TotalStates, LayersWithArt, TotalLayers).c_str());
+    TextStatusBadge->SetText(FText::FromString(Summary));
 }
 
 int32 UFaceParallaxEditorWidget::FillMissingViewsFromActiveSlot()
@@ -1487,10 +1570,8 @@ void UFaceParallaxEditorWidget::SetInspectMode(int32 Mode)
     bLocalShowDepthMesh = B.D;
     bLocalShowWireframe = B.W;
     bLocalColorByDepth = B.C;
-    if (CheckShowTextures.IsValid()) CheckShowTextures->SetIsChecked(B.T);
-    if (CheckDepthMesh.IsValid()) CheckDepthMesh->SetIsChecked(B.D);
-    if (CheckWireframe.IsValid()) CheckWireframe->SetIsChecked(B.W);
-    if (CheckColorByDepth.IsValid()) CheckColorByDepth->SetIsChecked(B.C);
+    // W7: the segmented row is the sole display-mode control — the old rail
+    // Config checkbox sync is gone (those checks were retired).
     SetOutlineOverlayVisible(B.O);
     SetStatus(FString::Printf(TEXT("Inspect mode: %s"),
         UTF8_TO_TCHAR(FPLayout::InspectModeLabel(Mode))), AccentBlue());
@@ -2255,16 +2336,20 @@ void UFaceParallaxEditorWidget::RebuildNestedOutliner()
                 [SNew(SBox).WidthOverride(68)[NameLbl]]];
         R->AddSlot().FillWidth(1.0f);
         R->AddSlot().Padding(FMargin(4,2)).AutoWidth()
-            [MakeBtn(TEXT("Dup"), [this, i]()
-            {
-                UFaceParallaxComponent* Comp = GetParallaxComponent();
-                if (!Comp || !SelectedLayerName.IsValid()) return;
-                if (i < 0 || i >= Comp->GetNestedElementCount(ActiveViewState, SelectedLayerName)) return;
-                int32 NewIndex = Comp->GetNestedElementCount(ActiveViewState, SelectedLayerName);
-                DuplicateNestedElement(ActiveViewState, SelectedLayerName, i, NewIndex);
-                SelectedNestedElementIndex = NewIndex;
-                RefreshUI();
-            }, FLinearColor(0.6f,1.0f,0.6f), FLinearColor(0.1f,0.1f,0.1f))];
+            [SNew(SFaceFlashButton).Text(TEXT("Dup"))
+                .OnClicked_Lambda([this, i]()
+                {
+                    UFaceParallaxComponent* Comp = GetParallaxComponent();
+                    if (!Comp || !SelectedLayerName.IsValid()) return FReply::Handled();
+                    if (i < 0 || i >= Comp->GetNestedElementCount(ActiveViewState, SelectedLayerName)) return FReply::Handled();
+                    int32 NewIndex = Comp->GetNestedElementCount(ActiveViewState, SelectedLayerName);
+                    DuplicateNestedElement(ActiveViewState, SelectedLayerName, i, NewIndex);
+                    SelectedNestedElementIndex = NewIndex;
+                    SetStatus(FString::Printf(TEXT("Duplicated nested element %d on %s"),
+                        NewIndex, *SelectedLayerName.ToString()), FLinearColor(0.6f, 1.0f, 0.6f));
+                    RefreshUI();
+                    return FReply::Handled();
+                })];
         R->AddSlot().Padding(FMargin(4,2)).AutoWidth()
             [MakeBtn(TEXT("Del"), [this, i]()
             {
@@ -2662,12 +2747,12 @@ void UFaceParallaxEditorWidget::RebuildProblemsPanel()
     if (!ProblemsPanelBox.IsValid()) return;
     ProblemsPanelBox->ClearChildren();
 
-    // ---- Phase 4: quick-actions bar (rail jump chips + tools) ----
+    // ---- Phase 4: quick-actions bar (page jump chips + tools) ----
     {
-        // P22: five rail chips in two rows (3+2) so every chip fits the
-        // 168px rail budget; Import + Clear Stale live on the toolbar only.
+        // W1: five page chips in two rows (3+2) jump to the context-panel
+        // pages (0 Assign, 1 Transform & Sync, 3 Preview & Debug, 4 Developer).
         static const TCHAR* ChipNames[5] = { TEXT("Layers"), TEXT("Transform"), TEXT("Camera"), TEXT("Debug"), TEXT("Adv") };
-        static const int32 ChipRails[5] = { 0, 1, 3, 4, 4 };
+        static const int32 ChipPages[5] = { 0, 1, 3, 4, 4 };
         static const int32 RowA[3] = { 0, 2, 3 };
         static const int32 RowB[2] = { 1, 4 };
         auto AddChips = [this](TSharedRef<SHorizontalBox> Row, const int32* Idx, int32 N)
@@ -2675,12 +2760,12 @@ void UFaceParallaxEditorWidget::RebuildProblemsPanel()
             for (int32 k = 0; k < N; ++k)
             {
                 const int32 r = Idx[k];
-                const int32 Ri = ChipRails[r];
+                const int32 Pi = ChipPages[r];
                 Row->AddSlot().Padding(FMargin(0, 2)).AutoWidth()
-                    [MakeBtn(ChipNames[r], [this, Ri]()
+                    [MakeBtn(ChipNames[r], [this, Pi]()
                     {
-                        SetActiveRailIndex(Ri);
-                    }, ActiveRailIndex == Ri ? AccentBlue() : FLinearColor(0.12f, 0.12f, 0.14f))];
+                        SetActivePageIndex(Pi);
+                    }, ActivePageIndex == Pi ? AccentBlue() : FLinearColor(0.12f, 0.12f, 0.14f))];
             }
         };
         TSharedRef<SHorizontalBox> QaRowA = SNew(SHorizontalBox);
@@ -2942,11 +3027,11 @@ void UFaceParallaxEditorWidget::RebuildProblemsPanel()
 }
 
 // Phase 4: shows the issues summary in the Problems accordion header
-// (Problems is Diagnostics-rail section index 3 per FPLayout::RailSectionTitles()).
+// (Problems is Developer-page section index 5 per FPLayout::PageSectionTitles()).
 void UFaceParallaxEditorWidget::RefreshProblemsSummary()
 {
-    if (!DiagnosticsAccordion.IsValid()) return;
-    if (DiagnosticsAccordion->NumSections() <= 3) return;
-    DiagnosticsAccordion->SetSectionSummary(3, ProblemsSummaryText, ProblemsSummaryColor);
+    if (!DeveloperAccordion.IsValid()) return;
+    if (DeveloperAccordion->NumSections() <= 5) return;
+    DeveloperAccordion->SetSectionSummary(5, ProblemsSummaryText, ProblemsSummaryColor);
 }
 #endif

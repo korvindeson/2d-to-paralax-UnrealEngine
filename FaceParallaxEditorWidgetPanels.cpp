@@ -52,6 +52,8 @@ void UFaceParallaxEditorWidget::RefreshUI()
     RefreshTextureThumbs();
     RefreshCanvasPreview();
     RefreshViewStripDots();
+    RefreshViewStripDrift();
+    RefreshStatusBadge();
     RefreshSlotPropStatus();
     RefreshOnionSkin();
     if (GizmoWidget.IsValid())
@@ -169,14 +171,11 @@ void UFaceParallaxEditorWidget::RefreshConfigCheckboxes()
     ApplyCheck(CheckSwoosh, CompCfg->GetSwooshEnabled());
     ApplyCheck(CheckNestedArt, CompCfg->GetNestedArtEnabled());
     ApplyCheck(CheckParams, CompCfg->GetParamsEnabled());
-    ApplyCheck(CheckShowTextures, bLocalShowTextures);
-    ApplyCheck(CheckDepthMesh, bLocalShowDepthMesh);
-    ApplyCheck(CheckWireframe, bLocalShowWireframe);
-    ApplyCheck(CheckColorByDepth, bLocalColorByDepth);
-    // Display-mode dedupe (P3): the Diagnostics rail's Config checks (Show
-    // Textures / Depth Mesh / Wireframe) are the source of truth; the canvas
-    // mode row is derived from them (custom combos and
-    // all-off clear the row highlight via -1), mirroring DeriveDisplayMode.
+    // W7: the segmented canvas mode row is the SOLE display-mode control; the
+    // rail Config section keeps only the four system toggles above. The mode
+    // row's bLocal* source flags are private intermediate state (set by
+    // SetInspectMode) — the row highlight derives from them via
+    // DeriveInspectMode, and the outline overlay via bOutlineOverlayVisible.
     DisplayMode = FPLayout::DeriveDisplayMode(bLocalShowTextures, bLocalShowDepthMesh, bLocalShowWireframe);
     // Phase C: the unified inspect row adds the Outline overlay + Color by
     // Depth to the same five-toggle source set (DeriveInspectMode).
@@ -268,8 +267,7 @@ void UFaceParallaxEditorWidget::RefreshLayerList()
                 .ButtonColorAndOpacity(bSelected ? AccentBlue() : FLinearColor(0.08f,0.08f,0.08f))
                 .OnClicked_Lambda([this, Tag]()
                 {
-                    SelectedLayerName = Tag;
-                    RefreshUI();
+                    SetSelectedLayer(Tag.ToString());
                     return FReply::Handled();
                 })
                 .ToolTipText(FText::FromString(BadgeTip))
@@ -619,8 +617,10 @@ bool UFaceParallaxEditorWidget::AssignImageDropToSlot(EFaceAngleState State, con
     }
     if (Assigned > 0)
     {
-        SetStatus(FString::Printf(TEXT("Drop: assigned %d texture(s) to %s by channel suffix"),
-            Assigned, *LayerTag.ToString()), FLinearColor(0.3f, 1.0f, 0.3f));
+        SetStatus(FString::Printf(TEXT("Drop: assigned %d texture(s) to %s:%s by channel suffix"),
+            Assigned, *LayerTag.ToString(),
+            *StaticEnum<EFaceAngleState>()->GetNameStringByValue((int64)State)),
+            FLinearColor(0.3f, 1.0f, 0.3f));
         RefreshUI();
     }
     else if (Dropped.Num() > 0)
@@ -677,7 +677,9 @@ bool UFaceParallaxEditorWidget::AssignImageDropToBlinkFrame(EFaceAngleState Stat
             else Set.Albedo = Tex;
         }
         SetBlinkFrameTextures(State, Tag, FrameIdx, Set);
-        SetStatus(FString::Printf(TEXT("Dropped %d texture(s) onto blink frame %d"), Dropped.Num(), FrameIdx),
+        SetStatus(FString::Printf(TEXT("Drop: assigned %d texture(s) to %s:%s blink frame %d"),
+            Dropped.Num(), *Tag.ToString(),
+            *StaticEnum<EFaceAngleState>()->GetNameStringByValue((int64)State), FrameIdx),
             FLinearColor(0.3f, 1.0f, 0.3f));
         RefreshUI();
         return true;
@@ -1603,18 +1605,19 @@ void UFaceParallaxEditorWidget::ApplySearchFilter(const FString& Filter)
         }
         if (!bHit && MatchingLayers.Num() > 0) Acc->ExpandAll();
     };
-    ExpandAccordion(ArtAccordion);
-    ExpandAccordion(NestedAccordion);
-    ExpandAccordion(DiagnosticsAccordion);
+    ExpandAccordion(AssignAccordion);
+    ExpandAccordion(ExpressionAccordion);
+    ExpandAccordion(DeveloperAccordion);
+    ExpandAccordion(PreviewAccordion);
+    ExpandAccordion(TransformAccordion);
+    ExpandAccordion(LayersPinsAccordion);
 
-    for (int32 Ri = 0; Ri < PropTabContent.Num(); ++Ri)
+    for (int32 Pi = 0; Pi < PageContent.Num(); ++Pi)
     {
-        // Accordion-managed rails (Art/Animated/NestedPins/Diagnostics = tabs
-        // 2,3,4,6) are expanded above; plain-section rails (Layers/Camera =
-        // tabs 1,5) still use the visibility-toggle contract. Slot 0 is the
-        // shared right pane - never visibility-toggled.
-        if (Ri == 0 || Ri == 2 || Ri == 3 || Ri == 4 || Ri == 6) continue;
-        ApplyToChildren(PropTabContent[Ri]);
+        // Accordion-managed pages (Assign/Expression/Developer/Preview/
+        // Transform = pages 0,2,3,4,1) are expanded above; plain-section
+        // content still uses the visibility-toggle contract.
+        ApplyToChildren(PageContent[Pi]);
     }
 }
 
@@ -2088,7 +2091,7 @@ TSharedRef<SVerticalBox> UFaceParallaxEditorWidget::BuildPanelCanvas(const TShar
                             + SHorizontalBox::Slot().Padding(FMargin(4,2)).AutoWidth().VAlign(VAlign_Center)
                                 [MakeLbl(TEXT("Canvas Options"), 8, FLinearColor(0.75f,0.75f,0.75f))]
                             + SHorizontalBox::Slot().Padding(FMargin(2,2,6,2)).AutoWidth().VAlign(VAlign_Center)
-                                [MakeLbl(TEXT("\u25BE"), 8, FLinearColor(0.6f,0.6f,0.6f))]]]];
+                                [MakeLbl(UTF8_TO_TCHAR(FPLayout::FPDisclosureGlyph()), 8, FLinearColor(0.6f,0.6f,0.6f))]]]];
             ModeRow->AddSlot().FillWidth(1.0f);
             CenterCol->AddSlot().AutoHeight().Padding(FMargin(2,2,2,0))
                 [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("NoBorder"))
@@ -2389,6 +2392,23 @@ void UFaceParallaxEditorWidget::RefreshSchematic()
     const FString SelTag = SelectedLayerName.IsValid() ? SelectedLayerName.ToString() : FString();
     if (ActivePreset)
     {
+        // Phase 2: resolve the CURRENT orientation — the live scrub yaw while
+        // the zone strip is being dragged, otherwise the active view's zone
+        // center. Every part glyph is rotated to this orientation first, so
+        // the placeholder follows the head's turn (per-view layer transforms
+        // still place each part afterwards).
+        float OriYaw = 0.0f, OriPitch = 0.0f;
+        const bool bScrubbing = bZoneScrubbing || bPitchScrubbing;
+        if (bScrubbing)
+        {
+            OriYaw = bZoneScrubbing ? ZoneScrubYaw : GetOrbitYaw();
+            OriPitch = bPitchScrubbing ? PitchScrubPitch : GetOrbitPitch();
+        }
+        else if (PreviewActor.IsValid() && PreviewActor->FaceParallax)
+        {
+            OriYaw = PreviewActor->FaceParallax->GetZoneCenterYaw(ActiveViewState);
+            OriPitch = PreviewActor->FaceParallax->GetZoneCenterPitch(ActiveViewState);
+        }
         for (FPSchematic::FPSchematicPart& P : Parts)
         {
             if (!P.Name || !P.Name[0] || P.Outline.empty())
@@ -2413,12 +2433,17 @@ void UFaceParallaxEditorWidget::RefreshSchematic()
                 Tex.Albedo != nullptr, Tex.Normal != nullptr, Tex.Depth != nullptr));
             const FFaceArtSlot& ArtSlot = ActivePreset->GetSlot(ActiveViewState, LayerTag);
             const FFaceArtTransform T = ArtSlot.GetEffectiveTransform(ActiveViewState);
+            // Phase 2: rotate the front glyph to the current orientation
+            // (same depth-class rules as the real art) before the authored
+            // per-view transform places it on the canvas.
+            const std::vector<FPSchematic::FPSchematicPoint> Oriented =
+                FPSchematic::FPOrientationOutline(P.Name, P.Outline, P.DepthClass, OriYaw, OriPitch);
             FPSchematic::FPSchematicPart Transformed;
             Transformed.Name = P.Name;
             Transformed.DepthClass = P.DepthClass;
-            Transformed.Outline.reserve(P.Outline.size());
+            Transformed.Outline.reserve(Oriented.size());
             const bool bInFocusBox = bSchematicFocus && !SelTag.IsEmpty() && LayerTag.ToString() == SelTag;
-            for (const FPSchematic::FPSchematicPoint& Pt : P.Outline)
+            for (const FPSchematic::FPSchematicPoint& Pt : Oriented)
             {
                 const FPLayout::FPHotspotPoint H = FPLayout::FPHotspotTransformPoint(
                     FPLayout::FPHotspotPoint{ Pt.X, Pt.Y }, T.Position.X, T.Position.Y,
@@ -2597,9 +2622,11 @@ void UFaceParallaxEditorWidget::RebuildPartsStrip()
 
 void UFaceParallaxEditorWidget::BuildPanelSlotProps(const TSharedRef<SVerticalBox>& Root, TSharedRef<SVerticalBox>& PropPanelOut)
 {
-    // --- 3c. SLOT PROPERTIES (right pane) ---
-    TSharedRef<SVerticalBox> PropPanel = SNew(SVerticalBox).Visibility(EVisibility::Visible);
-    PropsPages.Reset();
+    // --- 3c. SELECTED LAYER (Assign page, Sec-SelectedLayer) ---
+    // W1: the selected-slot header/thumbs/actions/status build into the
+    // Assign page (page 0); the Transform + Sync+Align carousel becomes the
+    // Transform & Sync page (page 1) as two plain sections.
+    TSharedRef<SVerticalBox> PropPanel = PageContent[0].ToSharedRef();
 
     {
         // Header: layer + state
@@ -2743,7 +2770,20 @@ void UFaceParallaxEditorWidget::BuildPanelSlotProps(const TSharedRef<SVerticalBo
             ActRow->AddSlot().Padding(FMargin(2)).AutoWidth()
                 [MakeBtn(TEXT("Auto-Fit"), [this](){ if (SelectedLayerName.IsValid()) { ApplyAutoFit(ActiveViewState, SelectedLayerName); RefreshUI(); } })];
             ActRow->AddSlot().Padding(FMargin(2)).AutoWidth()
-                [MakeBtn(TEXT("Reset"), [this](){ if (SelectedLayerName.IsValid()) { ResetLayerTransform(ActiveViewState, SelectedLayerName); RefreshUI(); } })];
+                [SNew(SFaceFlashButton).Text(TEXT("Reset"))
+                    .OnClicked_Lambda([this]()
+                    {
+                        if (SelectedLayerName.IsValid())
+                        {
+                            ResetLayerTransform(ActiveViewState, SelectedLayerName);
+                            SetStatus(FString::Printf(TEXT("Reset %s:%s transform to default"),
+                                *SelectedLayerName.ToString(),
+                                *StaticEnum<EFaceAngleState>()->GetNameStringByValue((int64)ActiveViewState)),
+                                FLinearColor(0.5f, 0.9f, 0.5f));
+                            RefreshUI();
+                        }
+                        return FReply::Handled();
+                    })];
             ActRow->AddSlot().Padding(FMargin(2)).AutoWidth()
                 [MakeBtn(TEXT("Sync Tex->All"), [this]()
                 {
@@ -2883,7 +2923,8 @@ void UFaceParallaxEditorWidget::BuildPanelSlotProps(const TSharedRef<SVerticalBo
                         SetLayerRotation(ActiveViewState, SelectedLayerName, V);
                     }
                 });
-                PropsPages.Add(MakeSectionBox(TEXT("Transform"), XForm));
+                PageContent[1]->AddSlot().AutoHeight().Padding(FMargin(2, 1))
+                    [MakeSectionBox(TEXT("Transform"), XForm)];
             }
 
             // Phase 3: the ONE Copy/Sync panel. Every sync + copy path now
@@ -2896,13 +2937,15 @@ void UFaceParallaxEditorWidget::BuildPanelSlotProps(const TSharedRef<SVerticalBo
             {
                 TSharedRef<SVerticalBox> SaBox = SNew(SVerticalBox);
 
-                // Op selector: Transform / Textures / Both.
+                // Op selector (W4): the two common defaults (Transform,
+                // Textures) are always visible; the combined op (Both) tucks
+                // behind a "more..." disclosure (bSyncMoreOps).
                 TSharedRef<SHorizontalBox> OpRow = SNew(SHorizontalBox);
                 TSharedRef<STextBlock> SyncLbl = MakeLbl(TEXT("Sync layer to:"), 9, FLinearColor(0.6f,0.8f,1.0f));
                 SyncLbl->SetToolTipText(FText::FromString(TEXT("Choose what to copy (Transform / Textures / Both), then apply to the "
                     "destinations checked below or to all views.")));
                 OpRow->AddSlot().Padding(FMargin(0,2)).AutoWidth()[SyncLbl];
-                for (int32 O = 0; O < 3; ++O)
+                for (int32 O : FPLayout::SyncOpDefaultOps())
                 {
                     const int32 OO = O;
                     OpRow->AddSlot().Padding(FMargin(6,2)).AutoWidth()
@@ -2918,7 +2961,45 @@ void UFaceParallaxEditorWidget::BuildPanelSlotProps(const TSharedRef<SVerticalBo
                                 .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
                                 .ColorAndOpacity(FLinearColor(0.85f, 0.85f, 0.85f))]];
                 }
+                OpRow->AddSlot().Padding(FMargin(6,2)).AutoWidth()
+                    [SNew(SButton)
+                        .ButtonColorAndOpacity_Lambda([this]()
+                        {
+                            return bSyncMoreOps ? AccentBlue() : FLinearColor(0.13f, 0.13f, 0.15f);
+                        })
+                        .OnClicked_Lambda([this]()
+                        {
+                            bSyncMoreOps = !bSyncMoreOps;
+                            RebuildSyncOpMore();
+                            return FReply::Handled();
+                        })
+                        .Content()
+                        [SNew(STextBlock)
+                            .Text(FText::FromString(bSyncMoreOps ? TEXT("fewer") : TEXT("more...")))
+                            .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+                            .ColorAndOpacity(FLinearColor(0.7f, 0.7f, 0.7f))]];
+                SyncOpMoreRow = SNew(SHorizontalBox);
+                SyncOpMoreRow->AddSlot().Padding(FMargin(6,2)).AutoWidth()
+                    [MakeLbl(TEXT("Combine:"), 9, FLinearColor(0.7f,0.7f,0.7f))];
+                for (int32 O : FPLayout::SyncOpMoreOps())
+                {
+                    const int32 OO = O;
+                    SyncOpMoreRow->AddSlot().Padding(FMargin(6,2)).AutoWidth()
+                        [SNew(SButton)
+                            .ButtonColorAndOpacity_Lambda([this, OO]()
+                            {
+                                return SyncOp == OO ? AccentBlue() : FLinearColor(0.13f, 0.13f, 0.15f);
+                            })
+                            .OnClicked_Lambda([this, OO](){ SyncOp = OO; RefreshSyncDestDiff(); return FReply::Handled(); })
+                            .Content()
+                            [SNew(STextBlock)
+                                .Text(FText::FromString(UTF8_TO_TCHAR(FPLayout::SyncOpLabel(OO))))
+                                .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
+                                .ColorAndOpacity(FLinearColor(0.85f, 0.85f, 0.85f))]];
+                }
+                SyncOpMoreRow->SetVisibility(bSyncMoreOps ? EVisibility::Visible : EVisibility::Collapsed);
                 SaBox->AddSlot().AutoHeight()[OpRow];
+                SaBox->AddSlot().AutoHeight()[SyncOpMoreRow.ToSharedRef()];
 
                 // Destinations header + clear.
                 TSharedRef<SHorizontalBox> DstHdr = SNew(SHorizontalBox);
@@ -3115,36 +3196,12 @@ void UFaceParallaxEditorWidget::BuildPanelSlotProps(const TSharedRef<SVerticalBo
                 LinkRow->AddSlot().AutoWidth().Padding(FMargin(2,2))
                     [TextSyncDrift.ToSharedRef()];
                 SaBox->AddSlot().AutoHeight()[LinkRow];
-                PropsPages.Add(MakeSectionBox(TEXT("Sync + Align"), SaBox));
+                PageContent[1]->AddSlot().AutoHeight().Padding(FMargin(2, 1))
+                    [MakeSectionBox(TEXT("Sync + Align"), SaBox)];
             }
 
         }
 
-        // P17/P18: fixed page viewport (right inset keeps the old scrollbar
-        // gap - P15) + prev/page/next strip; the bottom reserve (P19) keeps
-        // the last row clear of the nav and the status line under it.
-        PropsPageBox = SNew(SVerticalBox);
-        SlotPropsBox->AddSlot().AutoHeight().Padding(FMargin(0, 0, 0, FPLayout::ScrollReserveBottom))
-            [SNew(SBox)
-                .HeightOverride(FPLayout::CarouselViewportH)
-                .Padding(FMargin(0, 0, FPLayout::PropsScrollInsetR, 0))
-                [PropsPageBox.ToSharedRef()]];
-        TSharedRef<SFaceCarouselNav> PropsNav = SNew(SFaceCarouselNav)
-            .OnPrev_Lambda([this]()
-            {
-                ShowPropsPage(PropsPageIndex - 1);
-                return FReply::Handled();
-            })
-            .OnNext_Lambda([this]()
-            {
-                ShowPropsPage(PropsPageIndex + 1);
-                return FReply::Handled();
-            });
-        PropsPageLabel = PropsNav->Label;
-        SlotPropsBox->AddSlot().AutoHeight().Padding(FMargin(4, 0, 4, 2))[PropsNav];
-        ShowPropsPage(0);
-        PropPanel->AddSlot().AutoHeight()
-            [SlotPropsBox.ToSharedRef()];
         TextStatus = MakeLbl(TEXT("Ready"), 9, FLinearColor(0.5f,0.8f,0.5f));
         PropPanel->AddSlot().AutoHeight().Padding(FMargin(6,2))
             [TextStatus.ToSharedRef()];
@@ -3152,19 +3209,13 @@ void UFaceParallaxEditorWidget::BuildPanelSlotProps(const TSharedRef<SVerticalBo
     PropPanelOut = PropPanel;
 }
 
-// P18: flips the right-pane carousel to the given page (clamped).
-void UFaceParallaxEditorWidget::ShowPropsPage(int32 Page)
+// W4: re-applies the 'more...' disclosure visibility after toggling.
+void UFaceParallaxEditorWidget::RebuildSyncOpMore()
 {
-    PropsPageIndex = FPLayout::ClampCarouselPage(Page, PropsPages.Num());
-    if (PropsPageBox.IsValid())
-    {
-        PropsPageBox->ClearChildren();
-        if (PropsPages.IsValidIndex(PropsPageIndex))
-            PropsPageBox->AddSlot().AutoHeight()[PropsPages[PropsPageIndex]];
-    }
-    if (PropsPageLabel.IsValid())
-        PropsPageLabel->SetText(FText::FromString(FString::Printf(TEXT("Page %d/%d"),
-            PropsPageIndex + 1, PropsPages.Num())));
+    if (SyncOpMoreRow.IsValid())
+        SyncOpMoreRow->SetVisibility(bSyncMoreOps ? EVisibility::Visible : EVisibility::Collapsed);
+    if (TextStatus.IsValid())
+        TextStatus->SetText(FText::FromString(bSyncMoreOps ? TEXT("Combined op shown") : TEXT("Defaults shown")));
 }
 
 void UFaceParallaxEditorWidget::BuildPanelToolbar(const TSharedRef<SVerticalBox>& Root)
@@ -3272,7 +3323,7 @@ void UFaceParallaxEditorWidget::BuildPanelToolbar(const TSharedRef<SVerticalBox>
                         + SHorizontalBox::Slot().Padding(FMargin(6,2,2,2)).AutoWidth().VAlign(VAlign_Center)
                             [MakeLbl(TEXT("History"), 10, FLinearColor(0.9f,0.85f,0.7f))]
                         + SHorizontalBox::Slot().Padding(FMargin(2,2,6,2)).AutoWidth().VAlign(VAlign_Center)
-                            [MakeLbl(TEXT("\u25BE"), 8, FLinearColor(0.6f,0.6f,0.6f))]]]];
+                            [MakeLbl(UTF8_TO_TCHAR(FPLayout::FPDisclosureGlyph()), 8, FLinearColor(0.6f,0.6f,0.6f))]]]];
         TB->AddSlot().Padding(FMargin(8,2)).AutoWidth()
             [MakeBtn(TEXT("Import Art..."), [this]()
             {
@@ -3293,7 +3344,7 @@ void UFaceParallaxEditorWidget::BuildPanelToolbar(const TSharedRef<SVerticalBox>
             .OnTextCommitted_Lambda([this](const FText& T, ETextCommit::Type C)
             {
                 if (C == ETextCommit::OnEnter)
-                    OnRailSearchCommitted(T.ToString());
+                    OnPageSearchCommitted(T.ToString());
             });
         TB->AddSlot().Padding(FMargin(6,2)).AutoWidth()
             [SNew(SBox).WidthOverride(140)[SearchBox.ToSharedRef()]];
@@ -3488,6 +3539,11 @@ void UFaceParallaxEditorWidget::BuildPanelStateStrip(const TSharedRef<SVerticalB
                     + SHorizontalBox::Slot().FillWidth(1.0f)[TabBtn]
                     + SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)[AnchorRef]];
         }
+        // W8: persistent status badge at the right of the strip — '8/10 states, 3/4 layers'.
+        TextStatusBadge = MakeLbl(TEXT(""), 9, FLinearColor(0.7f,0.85f,0.7f));
+        RefreshStatusBadge();
+        StateBar->AddSlot().AutoWidth().VAlign(VAlign_Center).Padding(FMargin(8,0,2,0))
+            [TextStatusBadge.ToSharedRef()];
         Root->AddSlot().AutoHeight()
             [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("NoBorder"))
                 .BorderBackgroundColor(FLinearColor(0.1f,0.1f,0.1f))
@@ -3507,12 +3563,6 @@ void UFaceParallaxEditorWidget::BuildPanelZoneDiagram(const TSharedRef<SVertical
             .ColorAndOpacity(FLinearColor(0.6f,0.6f,0.6f));
         ZoneCol->AddSlot().AutoHeight().Padding(FMargin(2,0))
             [ZoneYawLabel.ToSharedRef()];
-        ZonePitchLabel = SNew(STextBlock)
-            .Text(FText::FromString(TEXT("Pitch: 0.0°")))
-            .Font(FCoreStyle::GetDefaultFontStyle("Regular", 8))
-            .ColorAndOpacity(FLinearColor(0.6f,0.6f,0.6f));
-        ZoneCol->AddSlot().AutoHeight().Padding(FMargin(2,0))
-            [ZonePitchLabel.ToSharedRef()];
 
         // Build zone diagram as colored horizontal strips
         ZoneDragOverlay = SNew(SZoneBoundaryOverlay);
@@ -3521,6 +3571,24 @@ void UFaceParallaxEditorWidget::BuildPanelZoneDiagram(const TSharedRef<SVertical
         RebuildZoneDiagram();
         ZoneCol->AddSlot().AutoHeight().Padding(FMargin(2,1))
             [ZoneDiagramWidget.ToSharedRef()];
+
+        // Phase C: dedicated up/down view slider — a vertical pitch strip
+        // UNDER the 360 deg yaw diagram. Drag up lifts the head toward the
+        // Top view, down toward Bottom; releases snap to the canonical state
+        // center (the pure FPZoneScrubPitchAfterDrag contract, no wrap).
+        PitchDragOverlay = SNew(SFacePitchStrip);
+        PitchDragOverlay->Owner = this;
+        TSharedRef<SHorizontalBox> PitchViewRow = SNew(SHorizontalBox);
+        PitchViewRow->AddSlot().Padding(FMargin(0,2)).AutoWidth().VAlign(VAlign_Center)
+            [MakeLbl(TEXT("Pitch view"), 9, FLinearColor(0.6f,0.8f,1.0f))];
+        PitchViewRow->AddSlot().Padding(FMargin(4,2)).AutoWidth()
+            [SNew(SBox).WidthOverride(18).HeightOverride(108)
+                [PitchDragOverlay.ToSharedRef()]];
+        PitchViewRow->AddSlot().Padding(FMargin(4,2)).FillWidth(1.0f).VAlign(VAlign_Center)
+            [MakeLbl(TEXT("Drag up = Top view, down = Bottom view"),
+                8, FLinearColor(0.5f,0.5f,0.5f))];
+        ZoneCol->AddSlot().AutoHeight().Padding(FMargin(2,1))
+            [PitchViewRow];
 
         Root->AddSlot().AutoHeight()
             [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("NoBorder"))
@@ -3531,61 +3599,60 @@ void UFaceParallaxEditorWidget::BuildPanelZoneDiagram(const TSharedRef<SVertical
 
 }
 
-void UFaceParallaxEditorWidget::BuildPanelRailContainers(const TSharedRef<SVerticalBox>& Root)
+void UFaceParallaxEditorWidget::BuildPanelContextPages(const TSharedRef<SVerticalBox>& Root)
 {
-    // --- Rail containers (created up-front so every section below can target them) ---
-    RailContent.SetNum(5);
-    for (int32 Ri = 0; Ri < 5; ++Ri)
-        RailContent[Ri] = SNew(SVerticalBox);
-    RailSwitcher = SNew(SWidgetSwitcher).WidgetIndex(ActiveRailIndex);
-    // Phase 4b: per-rail section registry + jump chips are rebuilt with the tree.
-    RailSections.SetNum(5);
-    for (auto& R : RailSections) R.Reset();
-    RailChipsRows.SetNum(5);
-    // P17 fit-first: each rail is a fit-packed stack (no vertical scroll bar).
-    // P22: rail content NEVER scrolls left-to-right — rows are trimmed to the
-    // rail width and the stack is clipped at RailWidth, so no element can pan
-    // under the face schematic in the center column. Tall content stays
-    // bounded because the rails are fit-packed, accordion-collapsed, or
-    // carousel-paged (P18).
-    // A pinned jump-chip row sits above the rail so section navigation never
+    // --- Context-panel page containers (W1: created up-front so every section
+    // below can target them). The 5 pages live in one 621px panel switched by
+    // the top CT-TabRow; the old rail switcher + separate 340px props pane are
+    // gone. ---
+    PageContent.SetNum(5);
+    for (int32 Pi = 0; Pi < 5; ++Pi)
+        PageContent[Pi] = SNew(SVerticalBox);
+    PageSwitcher = SNew(SWidgetSwitcher).WidgetIndex(ActivePageIndex);
+    // Phase 4b: per-page section registry + jump chips are rebuilt with the tree.
+    PageSections.SetNum(5);
+    for (auto& P : PageSections) P.Reset();
+    PageChipsRows.SetNum(5);
+    // P17 fit-first: each page is a fit-packed stack (no vertical scroll bar).
+    // P22: page content NEVER scrolls left-to-right — rows are trimmed to the
+    // context panel width and the stack is clipped at ContextPanelWidth, so no
+    // element can pan under the face schematic in the center column. Tall
+    // content stays bounded because the pages are fit-packed,
+    // accordion-collapsed, or carousel-paged (P18).
+    // A pinned jump-chip row sits above the page so section navigation never
     // scrolls away (Phase 4b accessibility); the chips strip scrolls inside
-    // the 180px rail box (it never leaves the rail).
-    for (int32 Ri = 0; Ri < 5; ++Ri)
+    // the 621px context panel (it never leaves the panel).
+    for (int32 Pi = 0; Pi < 5; ++Pi)
     {
-        TSharedRef<SBox> RailClip = SNew(SBox)
-            .WidthOverride(FPLayout::RailWidth)
+        TSharedRef<SBox> PageClip = SNew(SBox)
+            .WidthOverride(FPLayout::ContextPanelWidth)
             .Clipping(EWidgetClipping::ClipToBounds)
-            [RailContent[Ri].ToSharedRef()];
+            [PageContent[Pi].ToSharedRef()];
         TSharedRef<SHorizontalBox> Chips = SNew(SHorizontalBox);
-        RailChipsRows[Ri] = Chips;
+        PageChipsRows[Pi] = Chips;
         TSharedRef<SScrollBox> ChipsScroll = SNew(SScrollBox).Orientation(Orient_Horizontal);
         ChipsScroll->AddSlot()[Chips];
-        TSharedRef<SVerticalBox> RailStack = SNew(SVerticalBox);
-        RailStack->AddSlot().AutoHeight()
+        TSharedRef<SVerticalBox> PageStack = SNew(SVerticalBox);
+        PageStack->AddSlot().AutoHeight()
             [SNew(SBox).HeightOverride(26)[ChipsScroll]];
-        RailStack->AddSlot().FillHeight(1.0f)[RailClip];
-        RailSwitcher->AddSlot()[RailStack];
+        PageStack->AddSlot().FillHeight(1.0f)[PageClip];
+        PageSwitcher->AddSlot()[PageStack];
     }
     SlotPropsBox = SNew(SVerticalBox);
-    PropTabContent.Reset();
-    PropTabContent.Add(SlotPropsBox);        // [0] right pane
-    PropTabContent.Add(RailContent[0]);      // [1] View & Layer
-    PropTabContent.Add(RailContent[1]);      // [2] Art
-    PropTabContent.Add(RailContent[2]);      // [3] Nested & Animated (P6)
-    PropTabContent.Add(RailContent[3]);      // [4] Camera/Preview
-    PropTabContent.Add(RailContent[4]);      // [5] Diagnostics
+    ContextPanelBox = SNew(SVerticalBox);
 
-    ArtAccordion = SNew(SFaceAccordion);
-    NestedAccordion = SNew(SFaceAccordion);
-    DiagnosticsAccordion = SNew(SFaceAccordion);
+    AssignAccordion = SNew(SFaceAccordion);
+    ExpressionAccordion = SNew(SFaceAccordion);
+    DeveloperAccordion = SNew(SFaceAccordion);
+    PreviewAccordion = SNew(SFaceAccordion);
+    TransformAccordion = SNew(SFaceAccordion);
 
 }
 
 void UFaceParallaxEditorWidget::BuildPanelLayers(const TSharedRef<SVerticalBox>& Root)
 {
-    // --- 3a. LAYERS PANEL (rail 0) ---
-    TSharedRef<SVerticalBox> LayerPanel = RailContent[0].ToSharedRef();
+    // --- 3a. LAYERS PANEL (Assign page, Sec-Layers) ---
+    TSharedRef<SVerticalBox> LayerPanel = PageContent[0].ToSharedRef();
     {
         LayerPanel->AddSlot().AutoHeight().Padding(FMargin(4,4,4,2))
             [MakeLbl(TEXT("LAYERS"), 10, FLinearColor(0.7f,0.7f,0.9f))];
@@ -3635,7 +3702,7 @@ void UFaceParallaxEditorWidget::BuildPanelLayers(const TSharedRef<SVerticalBox>&
                     RefreshUI();
                     return FReply::Handled();
                 })];
-        RegisterRailSection(0, TEXT("Layers"), LayerViewport);
+        RegisterPageSection(0, TEXT("Layers"), LayerViewport);
 
         // P7-C: Pins — one row per pinned nested element of the selected
         // layer (name + thumbnail + Select/Delete) plus the whole-layer pin
@@ -3649,7 +3716,7 @@ void UFaceParallaxEditorWidget::BuildPanelLayers(const TSharedRef<SVerticalBox>&
         LayersPinsAccordion->AddSection(TEXT("Pins"), PinListBox.ToSharedRef());
         RebuildPinList();
         LayerPanel->AddSlot().AutoHeight().Padding(FMargin(0, 0, 0, 2))[LayersPinsAccordion.ToSharedRef()];
-        RegisterRailSection(0, TEXT("Pins"), LayersPinsAccordion.ToSharedRef(), LayersPinsAccordion, 0);
+        RegisterPageSection(0, TEXT("Pins"), LayersPinsAccordion.ToSharedRef(), LayersPinsAccordion, 0);
     }
 
 }
@@ -3704,13 +3771,13 @@ void UFaceParallaxEditorWidget::RebuildPinList()
             {
                 SelectedNestedElementIndex = EI;   // -1 = layer pin
                 if (bPin)
-                    SetStatus(FString::Printf(TEXT("Layer pin selected on '%s' - the Nested rail pin sliders edit it"),
+                    SetStatus(FString::Printf(TEXT("Layer pin selected on '%s' - the Expression page pin sliders edit it"),
                         *SelectedLayerName.ToString()), FLinearColor(1.0f, 0.8f, 0.4f));
                 else
-                    SetStatus(FString::Printf(TEXT("Pin selected - the Nested rail pin sliders edit it")),
+                    SetStatus(FString::Printf(TEXT("Pin selected - the Expression page pin sliders edit it")),
                         FLinearColor(0.5f, 1.0f, 0.5f));
                 FlashTab(2);
-                SetActiveRailIndex(2);
+                SetActivePageIndex(2);
                 return FReply::Handled();
             }, FLinearColor(0.45f, 0.6f, 0.85f))];
         Row->AddSlot().AutoWidth().Padding(FMargin(2, 1, 0, 1)).VAlign(VAlign_Center)
@@ -3787,18 +3854,16 @@ void UFaceParallaxEditorWidget::AddLayerPinAtDefault()
     RefreshUI();
 }
 
-void UFaceParallaxEditorWidget::BuildPanelArtRail()
+void UFaceParallaxEditorWidget::BuildPanelAssignSections()
 {
-        // Phase 3: the Art rail's sync/copy tools (the apply-to-views popup
-        // and the Cross-View Transform section) moved into the ONE Copy/Sync
-        // panel on the props Sync + Align page; the rail keeps its per-part
-        // operations (Import / Outline -> Depth / Bulk Assign / Assign Ops).
-        // The canonical pinned actions (Import Art... / Auto-Fit All / Clear
-        // All Overrides, P7-B) live ONLY in the pinned strip above the main
-        // row (P21 PinnedActionsNeverInScroll).
+        // W1: the old Art rail's per-part operations (Import / Outline ->
+        // Depth / Bulk Assign / Assign Ops) are accordion/plain sections on
+        // the Assign page (page 0) of the context panel. The canonical pinned
+        // actions (Import Art... / Auto-Fit All / Clear All Overrides, P7-B)
+        // live ONLY in the pinned strip above the main row (P21).
         {
         // Import + Outline -> Depth: accordion-collapsed sections (P16)
-        // on the Art rail; Import open by default. P4: the folder wizard is
+        // on the Assign page; Import open by default. P4: the folder wizard is
         // the ONE entry point (folder scan + drop zone + per-part preview).
         {
             TSharedRef<SVerticalBox> ImportBox = SNew(SVerticalBox);
@@ -3846,7 +3911,7 @@ void UFaceParallaxEditorWidget::BuildPanelArtRail()
                     }, FLinearColor(0.4f,0.5f,0.6f))]];
             ImpRow->AddSlot().Padding(FMargin(4,2)).FillWidth(1.0f);
             ImportBox->AddSlot().AutoHeight()[ImpRow];
-            ArtAccordion->AddSection(TEXT("Import"), ImportBox);
+            AssignAccordion->AddSection(TEXT("Import"), ImportBox);
 
             // Outline → depth
             {
@@ -3984,11 +4049,11 @@ void UFaceParallaxEditorWidget::BuildPanelArtRail()
                     })];
                 OvAllRow->AddSlot().Padding(FMargin(4,2)).FillWidth(1.0f);
                 OdBox->AddSlot().AutoHeight()[OvAllRow];
-                ArtAccordion->AddSection(TEXT("Outline -> Depth"), OdBox);
+                AssignAccordion->AddSection(TEXT("Outline -> Depth"), OdBox);
             }
-            ArtAccordion->SetExpanded(0, true); // Import section open by default
-            RailContent[1]->AddSlot().AutoHeight()[ArtAccordion.ToSharedRef()];
-            RegisterAccordionSections(1, ArtAccordion);
+            AssignAccordion->SetExpanded(0, true); // Import section open by default
+            PageContent[0]->AddSlot().AutoHeight()[AssignAccordion.ToSharedRef()];
+            RegisterAccordionPageSections(0, AssignAccordion);
         }
         }
 
@@ -4101,8 +4166,8 @@ void UFaceParallaxEditorWidget::BuildPanelArtRail()
         GB->AddSlot().AutoHeight()[CovRow];
 
         TSharedRef<SWidget> GridSection = MakeSectionBox(TEXT("Bulk Assign"), GB);
-        RailContent[1]->AddSlot().AutoHeight().Padding(FMargin(2, 1, 2, 1))[GridSection];
-        RegisterRailSection(1, TEXT("Bulk Assign"), GridSection);
+        PageContent[0]->AddSlot().AutoHeight().Padding(FMargin(2, 1, 2, 1))[GridSection];
+        RegisterPageSection(0, TEXT("Bulk Assign"), GridSection);
         RefreshAssignGrid();
     }
 
@@ -4219,16 +4284,16 @@ void UFaceParallaxEditorWidget::BuildPanelArtRail()
         OB->AddSlot().AutoHeight()[Row2];
 
         TSharedRef<SWidget> OpsSection = MakeSectionBox(TEXT("Assign Ops"), OB);
-        RailContent[1]->AddSlot().AutoHeight().Padding(FMargin(2, 1, 2, 1))[OpsSection];
-        RegisterRailSection(1, TEXT("Assign Ops"), OpsSection);
+        PageContent[0]->AddSlot().AutoHeight().Padding(FMargin(2, 1, 2, 1))[OpsSection];
+        RegisterPageSection(0, TEXT("Assign Ops"), OpsSection);
     }
 }
 
 void UFaceParallaxEditorWidget::BuildPanelAnimatedSections()
 {
-            // P6: Animated Variants folded into the Nested rail's accordion
-            // (tab 2 "Nested & Animated"); these sections register directly
-            // into NestedAccordion, after "Nested Art / Pins".
+            // W1: Viseme Frames + Hull Review are accordion sections on the
+            // Expression/Blink/Viseme page (page 2); these sections register
+            // directly into ExpressionAccordion, after "Nested Art / Pins".
             // Viseme frames grid (Phase E) - fits the disclosure body as-is:
             // no vertical scroll bar (P17 fit-first).
             {
@@ -4241,7 +4306,7 @@ void UFaceParallaxEditorWidget::BuildPanelAnimatedSections()
                 VisemeDisclosure = SNew(SFaceDisclosure);
                 VisemeDisclosure->SetTitle(TEXT("Viseme Frames"));
                 VisemeDisclosure->SetBody(VgBox);
-                NestedAccordion->AddSection(
+                ExpressionAccordion->AddSection(
                     TEXT("Viseme Frames (click filled cell = play)"), VisemeDisclosure.ToSharedRef());
             }
 
@@ -4271,12 +4336,16 @@ void UFaceParallaxEditorWidget::BuildPanelAnimatedSections()
                 RefreshHullThumbnails();
                 HrBox->AddSlot().AutoHeight().Padding(FMargin(0,4,0,0))
                     [HullThumbBox.ToSharedRef()];
-                NestedAccordion->AddSection(TEXT("Hull Review (click thumb = jump)"), HrBox);
+                ExpressionAccordion->AddSection(TEXT("Hull Review (click thumb = jump)"), HrBox);
             }
 }
 
-void UFaceParallaxEditorWidget::BuildPanelCameraRail()
+void UFaceParallaxEditorWidget::BuildPanelPreviewPage()
 {
+            // W1: the Camera Follow section is a plain section on the
+            // Preview & Debug page (page 3); the camera/blend sections below
+            // join it. Edge Analysis + Depth Debug move here from the old
+            // Diagnostics rail (BuildPanelDeveloperPage).
             // Camera follow
             {
                 TSharedRef<SVerticalBox> CfBox = SNew(SVerticalBox);
@@ -4290,8 +4359,6 @@ void UFaceParallaxEditorWidget::BuildPanelCameraRail()
                 CfRow->AddSlot().Padding(FMargin(4,2)).AutoWidth()
                     [MakeLbl(TEXT("Follows"), 9, FLinearColor(0.6f,0.8f,1.0f))];
                 CfRow->AddSlot().Padding(FMargin(4,2)).FillWidth(1.0f);
-                // P22: "Snap Camera" is a compact 72px button (tooltip carries
-                // the full name) so the row fits the 168px rail budget.
                 CfRow->AddSlot().Padding(FMargin(2,2)).AutoWidth()
                     [SNew(SButton)
                         .ButtonColorAndOpacity(FLinearColor(0.15f,0.15f,0.15f))
@@ -4302,14 +4369,14 @@ void UFaceParallaxEditorWidget::BuildPanelCameraRail()
                             [MakeLbl(TEXT("Snap"), 9, FLinearColor(0.8f,0.9f,1.0f))]]];
                 CfBox->AddSlot().AutoHeight()[CfRow];
                 TSharedRef<SWidget> CfSection = MakeSectionBox(TEXT("Camera Follow"), CfBox);
-                RailContent[3]->AddSlot().AutoHeight()
+                PageContent[3]->AddSlot().AutoHeight()
                     [CfSection];
-                RegisterRailSection(3, TEXT("Camera Follow"), CfSection);
+                RegisterPageSection(3, TEXT("Camera Follow"), CfSection);
             }
 
-        // ============ CAMERA/Preview RAIL (rail 3) ============
+        // ============ PREVIEW & DEBUG PAGE (page 3) ============
         {
-            TSharedRef<SVerticalBox> T2 = RailContent[3].ToSharedRef();
+            TSharedRef<SVerticalBox> T2 = PageContent[3].ToSharedRef();
 
             // Camera section
             {
@@ -4412,7 +4479,7 @@ void UFaceParallaxEditorWidget::BuildPanelCameraRail()
                 TSharedRef<SWidget> CamSection = MakeSectionBox(TEXT("Camera"), Cam);
                 T2->AddSlot().AutoHeight()
                     [CamSection];
-                RegisterRailSection(3, TEXT("Camera"), CamSection);
+                RegisterPageSection(3, TEXT("Camera"), CamSection);
             }
 
             // Blend preview section
@@ -4453,21 +4520,21 @@ void UFaceParallaxEditorWidget::BuildPanelCameraRail()
                 TSharedRef<SWidget> BlendSection = MakeSectionBox(TEXT("Blend Preview"), BlendBox);
                 T2->AddSlot().AutoHeight()
                     [BlendSection];
-                RegisterRailSection(3, TEXT("Blend Preview"), BlendSection);
+                RegisterPageSection(3, TEXT("Blend Preview"), BlendSection);
             }
         }
 
 }
 
 
-void UFaceParallaxEditorWidget::BuildPanelNestedRail()
+void UFaceParallaxEditorWidget::BuildPanelExpressionPage()
 {
-        // ============ NESTED & ANIMATED RAIL (rail 2) ============
-        // P6: the old "Nested Elements & Pins" and "Animated Variants" rails
-        // merged into one tab ("Nested & Animated") with a single accordion:
-        // Nested Art / Pins, then Viseme Frames, then Hull Review.
+        // ============ EXPRESSION / BLINK / VISEME PAGE (page 2) ============
+        // The old "Nested Elements & Pins" and "Animated Variants" content
+        // lives in one accordion on this page: Nested Art / Pins, then Viseme
+        // Frames, then Hull Review.
         {
-            TSharedRef<SVerticalBox> T3 = RailContent[2].ToSharedRef();
+            TSharedRef<SVerticalBox> T3 = PageContent[2].ToSharedRef();
 
             // Nested Art / Pin section
             {
@@ -4931,17 +4998,17 @@ void UFaceParallaxEditorWidget::BuildPanelNestedRail()
                 NestedPaneSwitcher->SetActiveWidgetIndex(NestedPaneMode);
                 Pin->AddSlot().AutoHeight().Padding(FMargin(0,2,0,0))
                     [NestedPaneSwitcher.ToSharedRef()];
-                NestedAccordion->AddSection(TEXT("Nested Art / Pins"), Pin);
+                ExpressionAccordion->AddSection(TEXT("Nested Art / Pins"), Pin);
 
                 RefreshPinControls();
             }
 
             // P6: Animated Variants sections (Viseme Frames + Hull Review)
-            // folded into this rail's accordion, after "Nested Art / Pins".
+            // folded into this page's accordion, after "Nested Art / Pins".
             BuildPanelAnimatedSections();
 
-            T3->AddSlot().AutoHeight()[NestedAccordion.ToSharedRef()];
-            RegisterAccordionSections(2, NestedAccordion);
+            T3->AddSlot().AutoHeight()[ExpressionAccordion.ToSharedRef()];
+            RegisterAccordionPageSections(2, ExpressionAccordion);
         }
 }
 
@@ -5017,9 +5084,9 @@ void UFaceParallaxEditorWidget::BuildPanelBottomBar(const TSharedRef<SVerticalBo
         StatusMatrixPageLabel = SDNav->Label;
         SDBox->AddSlot().AutoHeight().Padding(FMargin(4, 0, 4, 2))[SDNav];
         TSharedRef<SWidget> StatusSection = MakeSectionBox(TEXT("Status Detail"), SDBox);
-        RailContent[0]->AddSlot().AutoHeight().Padding(FMargin(2,1))
+        PageContent[4]->AddSlot().AutoHeight().Padding(FMargin(2,1))
             [StatusSection];
-        RegisterRailSection(0, TEXT("Status Detail"), StatusSection);
+        RegisterPageSection(4, TEXT("Status Detail"), StatusSection);
 
         // All Layers (current state): per-layer cross-layer overlay rows flip
         // through carousel pages (P18) inside a fixed page viewport with a
@@ -5053,13 +5120,14 @@ void UFaceParallaxEditorWidget::BuildPanelBottomBar(const TSharedRef<SVerticalBo
         CrossLayerPageLabel = ALNav->Label;
         ALBox->AddSlot().AutoHeight().Padding(FMargin(4, 0, 4, 2))[ALNav];
 TSharedRef<SWidget> AlSection = MakeSectionBox(TEXT("All Layers (current state)"), ALBox);
-RailContent[0]->AddSlot().AutoHeight().Padding(FMargin(2,1))
+PageContent[4]->AddSlot().AutoHeight().Padding(FMargin(2,1))
 [AlSection];
-RegisterRailSection(0, TEXT("All Layers (current state)"), AlSection);
+RegisterPageSection(4, TEXT("All Layers (current state)"), AlSection);
 
 
-        // Tag validator + material cross-referencer live in the Diagnostics rail
-        // (BuildPanelDiagnosticsRail) - the bottom bar holds only workflow actions.
+        // Tag validator + material cross-referencer live in the Developer
+        // drawer (BuildPanelDeveloperPage) - the bottom bar holds only
+        // workflow actions.
 
         TSharedRef<SHorizontalBox> BotBar = SNew(SHorizontalBox);
         BotBar->AddSlot().Padding(FMargin(2)).AutoWidth()
@@ -5123,17 +5191,18 @@ RegisterRailSection(0, TEXT("All Layers (current state)"), AlSection);
 
 }
 
-void UFaceParallaxEditorWidget::BuildPanelDiagnosticsRail()
+void UFaceParallaxEditorWidget::BuildPanelDeveloperPage()
 {
-        // ============ DIAGNOSTICS RAIL (rail 4) ============
-        // P6: the Diagnostics group leads (Tag Validator, Material
-        // Cross-Reference, Param Reference, Edge Analysis); then Config,
-        // Param Bindings, Depth Debug, Problems. Mirrors the manifest
-        // RL-Diagnostics section order (children 0..7).
+        // ============ DEVELOPER DRAWER (page 4, closed by default) ============
+        // W1: the dev tools (Tag Validator, Material Cross-Reference, Param
+        // Reference, Config, Param Bindings, Problems) live in the Developer
+        // drawer with Status Detail + All Layers. Edge Analysis + Depth Debug
+        // move to the Preview & Debug page (BuildPanelPreviewPage). Mirrors
+        // the manifest CP-DevDrawer section order.
         {
-            TSharedRef<SVerticalBox> T5 = RailContent[4].ToSharedRef();
+            TSharedRef<SVerticalBox> T5 = PageContent[4].ToSharedRef();
 
-            // Tag validator (dev tool; Diagnostics group, Diagnostics rail)
+            // Tag validator (dev tool; Developer drawer)
             {
                 TSharedRef<SVerticalBox> TV = SNew(SVerticalBox);
                 TextTagValidator = SNew(STextBlock)
@@ -5142,10 +5211,10 @@ void UFaceParallaxEditorWidget::BuildPanelDiagnosticsRail()
                 TV->AddSlot().AutoHeight().Padding(FMargin(2,1))
                     [TextTagValidator.ToSharedRef()];
                 RebuildTagValidator();
-                DiagnosticsAccordion->AddSection(TEXT("Tag Validator"), TV);
+                DeveloperAccordion->AddSection(TEXT("Tag Validator"), TV);
             }
 
-            // Material cross-referencer (dev tool; Diagnostics group)
+            // Material cross-referencer (dev tool; Developer drawer)
             {
                 TSharedRef<SVerticalBox> MC = SNew(SVerticalBox);
                 TextMaterialCrossRef = SNew(STextBlock)
@@ -5154,7 +5223,7 @@ void UFaceParallaxEditorWidget::BuildPanelDiagnosticsRail()
                 MC->AddSlot().AutoHeight().Padding(FMargin(2,1))
                     [TextMaterialCrossRef.ToSharedRef()];
                 RebuildMaterialCrossRef();
-                DiagnosticsAccordion->AddSection(TEXT("Material Cross-Reference"), MC);
+                DeveloperAccordion->AddSection(TEXT("Material Cross-Reference"), MC);
             }
 
             // Param Reference (dev tool; Diagnostics group - params live with the
@@ -5198,7 +5267,7 @@ void UFaceParallaxEditorWidget::BuildPanelDiagnosticsRail()
                     .AutoWrapText(true);
                 RefBox->AddSlot().AutoHeight().Padding(FMargin(2,2))
                     [TextParamRefResults.ToSharedRef()];
-                DiagnosticsAccordion->AddSection(TEXT("Param Reference"), RefBox);
+                DeveloperAccordion->AddSection(TEXT("Param Reference"), RefBox);
             }
 
             // Edge analysis (edge overlay + luminance histogram)
@@ -5254,7 +5323,8 @@ void UFaceParallaxEditorWidget::BuildPanelDiagnosticsRail()
                                 [HistogramBox.ToSharedRef()]
                             + SVerticalBox::Slot().AutoHeight().Padding(FMargin(0,2,0,0))
                                 [TextHistogramStats.ToSharedRef()]]];
-                DiagnosticsAccordion->AddSection(TEXT("Edge Analysis"), EdBox);
+                // W1: Edge Analysis lives on the Preview & Debug page (page 3).
+                PreviewAccordion->AddSection(TEXT("Edge Analysis"), EdBox);
             }
 
             // Config checks
@@ -5282,8 +5352,6 @@ void UFaceParallaxEditorWidget::BuildPanelDiagnosticsRail()
                 bool bSw = Comp2 ? Comp2->GetSwooshEnabled() : false;
                 bool bNA = Comp2 ? Comp2->GetNestedArtEnabled() : false;
                 bool bPar = Comp2 ? Comp2->GetParamsEnabled() : false;
-                bool bShowTex = bLocalShowTextures, bDepthMesh = bLocalShowDepthMesh;
-                bool bWire = bLocalShowWireframe, bColor = bLocalColorByDepth;
 
                 AddConfigCheck(TEXT("Blinking"), bBlink, CheckBlinking,
                     [this](bool b){ SetBlinkingEnabled(b); });
@@ -5293,21 +5361,13 @@ void UFaceParallaxEditorWidget::BuildPanelDiagnosticsRail()
                     [this](bool b){ SetNestedArtEnabled(b); });
                 AddConfigCheck(TEXT("Params"), bPar, CheckParams,
                     [this](bool b){ SetParamsEnabled(b); });
-                AddConfigCheck(TEXT("Show Textures"), bShowTex, CheckShowTextures,
-                    [this](bool b){ ShowTextures(b); });
-                AddConfigCheck(TEXT("Depth Mesh"), bDepthMesh, CheckDepthMesh,
-                    [this](bool b){ ShowDepthMesh(b); });
-                AddConfigCheck(TEXT("Wireframe"), bWire, CheckWireframe,
-                    [this](bool b){ ShowWireframe(b); });
-                AddConfigCheck(TEXT("Color by Depth"), bColor, CheckColorByDepth,
-                    [this](bool b){ ColorByDepth(b); });
 
                 // Phase 4b: progressive disclosure - the 8 config checks collapse
                 // into a summary line ("K of 8 on") until the header is clicked.
                 ConfigDisclosure = SNew(SFaceDisclosure);
                 ConfigDisclosure->SetTitle(TEXT("Config"));
                 ConfigDisclosure->SetBody(CfgBox.ToSharedRef());
-                DiagnosticsAccordion->AddSection(TEXT("Config"), ConfigDisclosure.ToSharedRef());
+                DeveloperAccordion->AddSection(TEXT("Config"), ConfigDisclosure.ToSharedRef());
                 UpdateDisclosureSummaries();
             }
 
@@ -5343,7 +5403,7 @@ void UFaceParallaxEditorWidget::BuildPanelDiagnosticsRail()
                 RebuildParamTable();
                 PbBox->AddSlot().AutoHeight().Padding(FMargin(0,2,0,0))
                     [ParamTableBox.ToSharedRef()];
-                DiagnosticsAccordion->AddSection(TEXT("Param Bindings (state + layer)"), PbBox);
+                DeveloperAccordion->AddSection(TEXT("Param Bindings (state + layer)"), PbBox);
             }
 
             // Depth debug visualizer knobs
@@ -5464,7 +5524,8 @@ void UFaceParallaxEditorWidget::BuildPanelDiagnosticsRail()
                 DdRow->AddSlot().Padding(FMargin(6,2)).AutoWidth()[ColorDepthBtn];
                 DdRow->AddSlot().FillWidth(1.0f);
                 DdBox->AddSlot().AutoHeight()[DdRow];
-                DiagnosticsAccordion->AddSection(TEXT("Depth Debug"), DdBox);
+                // W1: Depth Debug lives on the Preview & Debug page (page 3).
+                PreviewAccordion->AddSection(TEXT("Depth Debug"), DdBox);
             }
 
             // Problems panel (Phase F) - the issue rows flip through carousel
@@ -5475,12 +5536,18 @@ void UFaceParallaxEditorWidget::BuildPanelDiagnosticsRail()
                 ProblemsPanelBox = SNew(SVerticalBox);
                 RebuildProblemsPanel();
                 PrBox->AddSlot().AutoHeight()[ProblemsPanelBox.ToSharedRef()];
-                DiagnosticsAccordion->AddSection(TEXT("Problems (click row = jump)"), PrBox);
+                DeveloperAccordion->AddSection(TEXT("Problems (click row = jump)"), PrBox);
                 RefreshProblemsSummary();
             }
 
-            T5->AddSlot().AutoHeight()[DiagnosticsAccordion.ToSharedRef()];
-            RegisterAccordionSections(4, DiagnosticsAccordion);
+            T5->AddSlot().AutoHeight()[DeveloperAccordion.ToSharedRef()];
+            RegisterAccordionPageSections(4, DeveloperAccordion);
+
+            // Edge Analysis + Depth Debug (PreviewAccordion) join the Preview
+            // & Debug page after its plain sections.
+            PageContent[3]->AddSlot().AutoHeight().Padding(FMargin(2, 1))
+                [PreviewAccordion.ToSharedRef()];
+            RegisterAccordionPageSections(3, PreviewAccordion);
         }
 }
 
