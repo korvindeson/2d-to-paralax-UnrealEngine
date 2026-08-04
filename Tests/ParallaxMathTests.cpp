@@ -10097,14 +10097,17 @@ void TestPhase2Orientation() {
 
     // Billboard camera-translation parallax along yaw: the flat layers slide
     // toward the FAR EDGE (opposite the camera orbit), closest Z furthest.
-    TEST("orient: Z-5 backdrop never slides on yaw", [&]() {
+    // Phase 5: the Z-5 backdrop's slide RAMP stays zero, but its per-state
+    // SHAPE is now authored — the profile back hair TRAILS behind the skull
+    // (a narrow far-back band) instead of squishing in place under the head.
+    TEST("orient: Z-5 backdrop trails via authored profile (no slide ramp)", [&]() {
         const double C0 = CX(Find("BackHair").Outline);
         const double C90 = CX(FPOrientationOutline("BackHair", Find("BackHair").Outline, FPDepthClass::Back, 90.0, 0.0));
         const double C180 = CX(FPOrientationOutline("BackHair", Find("BackHair").Outline, FPDepthClass::Back, 180.0, 0.0));
         return FPYawSlidePeak(FPZDepth::Farthest) == FPOrientationParams::FarSlide
             && FPYawSlideAt(FPZDepth::Farthest, 90.0) == 0.0
-            && std::abs(C90 - C0) < 1e-9
-            && std::abs(C180 - C0) < 1e-9;
+            && std::abs(C90 - C0) > 0.05    // authored profile trails the head
+            && std::abs(C180 - C0) < 1e-9;  // authored back view re-centers
     }());
     TEST("orient: face content slides toward the far edge", [&]() {
         const double CR = CX(Find("EyeR").Outline);
@@ -10112,12 +10115,13 @@ void TestPhase2Orientation() {
         return CX(FPOrientationOutline("EyeR", Find("EyeR").Outline, FPDepthClass::Front, 45.0, 0.0)) < CR - 0.01
             && CX(FPOrientationOutline("EyeL", Find("EyeL").Outline, FPDepthClass::Front, -45.0, 0.0)) > CL + 0.01;
     }());
-    TEST("orient: Z-depth slides ordered closest-first", [&]() {
+    // Phase 5: the slide ordering now only governs the FORMULA (non-authored)
+    // parts — the authored silhouettes get their exact state shapes instead.
+    TEST("orient: formula parts keep Z-depth slide ordering", [&]() {
         const double NoseD = std::abs(CX(FPOrientationOutline("Nose", Find("Nose").Outline, FPDepthClass::Front, 90.0, 0.0)) - CX(Find("Nose").Outline));
         const double EyeD = std::abs(CX(FPOrientationOutline("EyeR", Find("EyeR").Outline, FPDepthClass::Front, 90.0, 0.0)) - CX(Find("EyeR").Outline));
-        const double HairD = std::abs(CX(FPOrientationOutline("Hair", Find("Hair").Outline, FPDepthClass::Back, 90.0, 0.0)) - CX(Find("Hair").Outline));
-        const double BaseD = std::abs(CX(FPOrientationOutline("Head", Find("Head").Outline, FPDepthClass::Base, 90.0, 0.0)) - CX(Find("Head").Outline));
-        return NoseD > EyeD && EyeD > HairD && HairD > BaseD;
+        const double MouthD = std::abs(CX(FPOrientationOutline("Mouth", Find("Mouth").Outline, FPDepthClass::Front, 90.0, 0.0)) - CX(Find("Mouth").Outline));
+        return NoseD > EyeD && EyeD > MouthD;
     }());
     TEST("orient: slide peaks follow the Z-depth plane (pure)",
         FPYawSlidePeak(FPZDepth::Closest) == FPOrientationParams::NoseSlide
@@ -10243,6 +10247,718 @@ void TestPhase2Orientation() {
         }
         return true;
     }());
+}
+
+// Phase 5: authored per-state key silhouettes. The silhouette parts
+// (Head/Bangs/Hair/BackHair) carry EXACT authored 2D layouts at the state
+// centers (0/45/90/135/180 + Top/Bottom) because a profile silhouette is
+// STRUCTURALLY different from a squished front (forehead-nose-chin vs
+// skull-nape) and no continuous formula can produce it — the old squish made
+// BackHair shrink in place under the head at the profile instead of trailing
+// behind the skull. FPOrientationOutline morphs (smoothstep) between the
+// bracketing authored poses for these parts and keeps the squish/slide
+// formula for every other part. Negative + edge-case coverage included.
+void TestAuthoredOrientation() {
+    printf("\n=== AuthoredOrientation ===\n");
+    using namespace FPSchematic;
+    using P = FPSchematicPoint;
+    const std::vector<FPSchematicPart> Parts = DefaultPartSchematics();
+    auto Find = [&](const char* N) -> const FPSchematicPart& {
+        return *FPSchematicFindPart(Parts, N);
+    };
+    auto CX = [](const std::vector<P>& V) {
+        double S = 0; for (const P& p : V) S += p.X;
+        return V.empty() ? 0.0 : S / (double)V.size();
+    };
+    auto W = [](const std::vector<P>& V) {
+        if (V.empty()) return 0.0;
+        double Mn = 2.0, Mx = -1.0;
+        for (const P& p : V) { Mn = std::min(Mn, p.X); Mx = std::max(Mx, p.X); }
+        return Mx - Mn;
+    };
+    auto SameRing = [](const std::vector<P>& A, const std::vector<P>& B, double Eps) {
+        if (A.size() != B.size()) return false;
+        for (size_t i = 0; i < A.size(); ++i)
+            if (std::abs(A[i].X - B[i].X) > Eps || std::abs(A[i].Y - B[i].Y) > Eps)
+                return false;
+        return true;
+    };
+    const double Eps = 1e-9;
+
+    // Presence / absence: the four silhouette parts are authored; every
+    // anatomical feature and unknown/empty name falls back (nullptr).
+    TEST("authored: four silhouette parts carry authored poses",
+        FPSchematicAuthoredPoses("Head") && FPSchematicAuthoredPoses("Bangs")
+        && FPSchematicAuthoredPoses("Hair") && FPSchematicAuthoredPoses("BackHair"));
+    TEST("authored: anatomical features have NO authored poses (fallback)",
+        !FPSchematicAuthoredPoses("Nose") && !FPSchematicAuthoredPoses("EyeR")
+        && !FPSchematicAuthoredPoses("EyeL") && !FPSchematicAuthoredPoses("BrowL")
+        && !FPSchematicAuthoredPoses("BrowR") && !FPSchematicAuthoredPoses("Mouth")
+        && !FPSchematicAuthoredPoses("Teeth") && !FPSchematicAuthoredPoses("Chin")
+        && !FPSchematicAuthoredPoses("CheekL") && !FPSchematicAuthoredPoses("CheekR")
+        && !FPSchematicAuthoredPoses("EarL") && !FPSchematicAuthoredPoses("EarR")
+        && !FPSchematicAuthoredPoses("Neck"));
+    TEST("authored: empty / null / unknown names are nullptr",
+        FPSchematicAuthoredPoses("") == nullptr
+        && FPSchematicAuthoredPoses(nullptr) == nullptr
+        && FPSchematicAuthoredPoses("Bogus") == nullptr);
+
+    // P0 == the front glyph exactly (the morph identity is the real outline).
+    const char* AuthoredNames[] = { "Head", "Bangs", "Hair", "BackHair" };
+    auto CheckP0 = [&]() -> bool {
+        for (const char* N : AuthoredNames)
+        {
+            const FPSchematicPoseSet* S = FPSchematicAuthoredPoses(N);
+            if (!SameRing(S->P0, Find(N).Outline, Eps)) return false;
+        }
+        return true;
+    };
+    TEST("authored: P0 matches the front glyph exactly", CheckP0());
+    auto CheckCounts = [&]() -> bool {
+        for (const char* N : AuthoredNames)
+        {
+            const FPSchematicPoseSet* S = FPSchematicAuthoredPoses(N);
+            const size_t N0 = S->P0.size();
+            if (N0 != Find(N).Outline.size()) return false;
+            if (S->P45.size() != N0 || S->P90.size() != N0
+                || S->P135.size() != N0 || S->P180.size() != N0
+                || S->PTop.size() != N0 || S->PBottom.size() != N0) return false;
+        }
+        return true;
+    };
+    TEST("authored: every pose keeps the front point count", CheckCounts());
+    auto CheckContained = []() -> bool {
+        const char* Names[] = { "Head", "Bangs", "Hair", "BackHair" };
+        for (const char* N : Names)
+        {
+            const FPSchematicPoseSet* S = FPSchematicAuthoredPoses(N);
+            const std::vector<const std::vector<P>*> Poses = {
+                &S->P0, &S->P45, &S->P90, &S->P135, &S->P180, &S->PTop, &S->PBottom };
+            for (const auto* V : Poses)
+                for (const P& p : *V)
+                    if (p.X < 0.0 || p.X > 1.0 || p.Y < 0.0 || p.Y > 1.0)
+                        return false;
+        }
+        return true;
+    };
+    TEST("authored: every authored pose point stays in [0,1]^2", CheckContained());
+
+    // Exact-state resolution: each yaw key / pitch key resolves to its OWN
+    // authored pose, vertex for vertex.
+    auto CheckYawKeys = [&]() -> bool {
+        const FPSchematicPoseSet* S = FPSchematicAuthoredPoses("Head");
+        const std::vector<std::pair<double, const std::vector<P>*>> Keys = {
+            { 0.0, &S->P0 }, { 45.0, &S->P45 }, { 90.0, &S->P90 },
+            { 135.0, &S->P135 }, { 180.0, &S->P180 } };
+        for (const auto& K : Keys)
+            if (!SameRing(FPOrientationOutline("Head", Find("Head").Outline,
+                    FPDepthClass::Base, K.first, 0.0), *K.second, Eps)) return false;
+        return true;
+    };
+    TEST("authored: exact yaw keys resolve to the authored pose", CheckYawKeys());
+    TEST("authored: exact Top/Bottom pitch resolves at yaw 0", [&]() {
+        const FPSchematicPoseSet* S = FPSchematicAuthoredPoses("Head");
+        return SameRing(FPOrientationOutline("Head", Find("Head").Outline,
+                FPDepthClass::Base, 0.0, 90.0), S->PTop, Eps)
+            && SameRing(FPOrientationOutline("Head", Find("Head").Outline,
+                FPDepthClass::Base, 0.0, -90.0), S->PBottom, Eps);
+    }());
+    TEST("authored: yaw key + pitch key both resolve (count preserved)", [&]() {
+        const FPSchematicPoseSet* S = FPSchematicAuthoredPoses("Head");
+        const std::vector<P> O = FPOrientationOutline("Head", Find("Head").Outline,
+            FPDepthClass::Base, 90.0, 90.0);
+        if (O.size() != S->P0.size()) return false;
+        for (const P& p : O)
+            if (p.X < 0.0 || p.X > 1.0 || p.Y < 0.0 || p.Y > 1.0) return false;
+        return true;
+    }());
+
+    // Mirror: the negative-yaw half is the exact horizontal flip of +yaw.
+    auto CheckMirror = [&]() -> bool {
+        const double Angles[] = { 45.0, 90.0, 135.0 };
+        for (const char* N : AuthoredNames)
+            for (double A : Angles)
+            {
+                const std::vector<P> R = FPOrientationOutline(N, Find(N).Outline,
+                    Find(N).DepthClass, A, 0.0);
+                const std::vector<P> L = FPOrientationOutline(N, Find(N).Outline,
+                    Find(N).DepthClass, -A, 0.0);
+                if (R.size() != L.size()) return false;
+                for (size_t i = 0; i < R.size(); ++i)
+                    if (std::abs(L[i].X - (1.0 - R[i].X)) > Eps
+                        || std::abs(L[i].Y - R[i].Y) > Eps) return false;
+            }
+        return true;
+    };
+    TEST("authored: negative yaw mirrors the positive-yaw output", CheckMirror());
+
+    // The DEFECT FIX: BackHair at the profile no longer squishes in place
+    // under the head — the authored profile shape is a narrow band TRAILING
+    // behind the skull (displaced from the front centroid), and the authored
+    // back view re-centers.
+    TEST("authored: back hair trails behind the profile (defect fix)", [&]() {
+        const double C0 = CX(Find("BackHair").Outline);
+        const std::vector<P> O = FPOrientationOutline("BackHair",
+            Find("BackHair").Outline, FPDepthClass::Back, 90.0, 0.0);
+        return std::abs(C0 - 0.5) < Eps && CX(O) > 0.65 && W(O) < 0.35;
+    }());
+
+    // Pitch blend: exact at yaw 0, faded to zero at the back (the profile
+    // keeps its authored profile shape under pitch).
+    TEST("authored: pitch blend is exact at yaw 0", [&]() {
+        const FPSchematicPoseSet* S = FPSchematicAuthoredPoses("Head");
+        const std::vector<P> O = FPOrientationOutline("Head", Find("Head").Outline,
+            FPDepthClass::Base, 0.0, 45.0);
+        for (size_t i = 0; i < O.size(); ++i)
+        {
+            const double Ex = (S->P0[i].X + S->PTop[i].X) * 0.5;
+            const double Ey = (S->P0[i].Y + S->PTop[i].Y) * 0.5;
+            if (std::abs(O[i].X - Ex) > Eps || std::abs(O[i].Y - Ey) > Eps)
+                return false;
+        }
+        return true;
+    }());
+    TEST("authored: pitch blend fades to zero at the back", [&]() {
+        const FPSchematicPoseSet* S = FPSchematicAuthoredPoses("Head");
+        return SameRing(FPOrientationOutline("Head", Find("Head").Outline,
+            FPDepthClass::Base, 180.0, 90.0), S->P180, Eps);
+    }());
+    TEST("authored: profile shape survives pitch at high yaw (no top-view smear)", [&]() {
+        const std::vector<P> O = FPOrientationOutline("Head", Find("Head").Outline,
+            FPDepthClass::Base, 90.0, 90.0);
+        // still a narrow profile, not the wide squashed top-view oval
+        return W(O) < 0.80 && W(O) > 0.2;
+    }());
+
+    // Smoothstep continuity at the state centers (no jump between segments).
+    TEST("authored: morph is continuous at the 90 key", [&]() {
+        const std::vector<P> Lo = FPOrientationOutline("Head", Find("Head").Outline,
+            FPDepthClass::Base, 89.99, 0.0);
+        const std::vector<P> Hi = FPOrientationOutline("Head", Find("Head").Outline,
+            FPDepthClass::Base, 90.01, 0.0);
+        const std::vector<P> K = FPOrientationOutline("Head", Find("Head").Outline,
+            FPDepthClass::Base, 90.0, 0.0);
+        for (size_t i = 0; i < K.size(); ++i)
+            if (std::abs(Lo[i].X - K[i].X) > 1e-3
+                || std::abs(Hi[i].X - K[i].X) > 1e-3) return false;
+        return true;
+    }());
+
+    // Negative controls: the formula fallback is untouched for non-authored
+    // parts, and an empty front still yields an empty result.
+    TEST("authored: formula fallback unchanged (nose still darts)", [&]() {
+        const double C0 = CX(Find("Nose").Outline);
+        return CX(FPOrientationOutline("Nose", Find("Nose").Outline,
+            FPDepthClass::Front, 90.0, 0.0)) < C0 - 0.05;
+    }());
+    TEST("authored: empty front returns empty even for authored names", [&]() {
+        const std::vector<P> E;
+        return FPOrientationOutline("Head", E, FPDepthClass::Base, 90.0, 0.0).empty();
+    }());
+}
+
+// Phase 1: anchor classification. ANCHOR-critical layers (head + hair
+// silhouettes + ears) are load-bearing for the outline read at EVERY angle —
+// a large silhouette delta between states must force the fast/swoosh path
+// (Phase 4). BRIDGE-safe layers (the interior facial features + the anchored
+// cheeks/chin/neck, hidden by FPFeatureAlphaAt past the back-corner anyway)
+// tolerate a plain crossfade at any delta. Negative + edge-case coverage
+// included (empty/null/unknown resolve to the SAFE default).
+void TestAnchorClass() {
+    printf("\n=== AnchorClass ===\n");
+    using namespace FPSchematic;
+    const std::vector<FPSchematicPart> Parts = DefaultPartSchematics();
+
+    TEST("anchor: silhouette + ear parts are AnchorCritical",
+        FPSchematicAnchorClassForPart("Head") == FPSchematicAnchorClass::AnchorCritical
+        && FPSchematicAnchorClassForPart("Bangs") == FPSchematicAnchorClass::AnchorCritical
+        && FPSchematicAnchorClassForPart("Hair") == FPSchematicAnchorClass::AnchorCritical
+        && FPSchematicAnchorClassForPart("BackHair") == FPSchematicAnchorClass::AnchorCritical
+        && FPSchematicAnchorClassForPart("EarL") == FPSchematicAnchorClass::AnchorCritical
+        && FPSchematicAnchorClassForPart("EarR") == FPSchematicAnchorClass::AnchorCritical);
+    TEST("anchor: facial features are BridgeSafe",
+        FPSchematicAnchorClassForPart("BrowL") == FPSchematicAnchorClass::BridgeSafe
+        && FPSchematicAnchorClassForPart("BrowR") == FPSchematicAnchorClass::BridgeSafe
+        && FPSchematicAnchorClassForPart("EyeL") == FPSchematicAnchorClass::BridgeSafe
+        && FPSchematicAnchorClassForPart("EyeR") == FPSchematicAnchorClass::BridgeSafe
+        && FPSchematicAnchorClassForPart("Nose") == FPSchematicAnchorClass::BridgeSafe
+        && FPSchematicAnchorClassForPart("Mouth") == FPSchematicAnchorClass::BridgeSafe
+        && FPSchematicAnchorClassForPart("Teeth") == FPSchematicAnchorClass::BridgeSafe
+        && FPSchematicAnchorClassForPart("Chin") == FPSchematicAnchorClass::BridgeSafe
+        && FPSchematicAnchorClassForPart("CheekL") == FPSchematicAnchorClass::BridgeSafe
+        && FPSchematicAnchorClassForPart("CheekR") == FPSchematicAnchorClass::BridgeSafe
+        && FPSchematicAnchorClassForPart("Neck") == FPSchematicAnchorClass::BridgeSafe);
+    TEST("anchor: tag mirror uses base-preset layer tags",
+        FPSchematicAnchorClassForTag("Head") == FPSchematicAnchorClass::AnchorCritical
+        && FPSchematicAnchorClassForTag("Bangs") == FPSchematicAnchorClass::AnchorCritical
+        && FPSchematicAnchorClassForTag("Hair") == FPSchematicAnchorClass::AnchorCritical
+        && FPSchematicAnchorClassForTag("BackHair") == FPSchematicAnchorClass::AnchorCritical
+        && FPSchematicAnchorClassForTag("Ears") == FPSchematicAnchorClass::AnchorCritical
+        && FPSchematicAnchorClassForTag("Eyes") == FPSchematicAnchorClass::BridgeSafe
+        && FPSchematicAnchorClassForTag("Brows") == FPSchematicAnchorClass::BridgeSafe
+        && FPSchematicAnchorClassForTag("Mouth") == FPSchematicAnchorClass::BridgeSafe
+        && FPSchematicAnchorClassForTag("Nose") == FPSchematicAnchorClass::BridgeSafe
+        && FPSchematicAnchorClassForTag("Cheeks") == FPSchematicAnchorClass::BridgeSafe);
+    TEST("anchor: every real part resolves to SOME class", [&]() {
+        for (const FPSchematicPart& P : Parts)
+        {
+            const FPSchematicAnchorClass C = FPSchematicAnchorClassForPart(P.Name);
+            if (C != FPSchematicAnchorClass::AnchorCritical
+                && C != FPSchematicAnchorClass::BridgeSafe) return false;
+        }
+        return true;
+    }());
+    const char* BaseTags[] = { "Eyes", "Brows", "Mouth", "Bangs", "Nose",
+        "Cheeks", "Head", "Hair", "BackHair", "Ears" };
+    TEST("anchor: every base-preset tag resolves to SOME class", [&]() {
+        for (const char* T : BaseTags)
+        {
+            const FPSchematicAnchorClass C = FPSchematicAnchorClassForTag(T);
+            if (C != FPSchematicAnchorClass::AnchorCritical
+                && C != FPSchematicAnchorClass::BridgeSafe) return false;
+        }
+        return true;
+    }());
+    TEST("anchor: empty / null / unknown names are BridgeSafe (safe default)",
+        FPSchematicAnchorClassForPart("") == FPSchematicAnchorClass::BridgeSafe
+        && FPSchematicAnchorClassForPart(nullptr) == FPSchematicAnchorClass::BridgeSafe
+        && FPSchematicAnchorClassForPart("Bogus") == FPSchematicAnchorClass::BridgeSafe
+        && FPSchematicAnchorClassForTag("") == FPSchematicAnchorClass::BridgeSafe
+        && FPSchematicAnchorClassForTag(nullptr) == FPSchematicAnchorClass::BridgeSafe
+        && FPSchematicAnchorClassForTag("Bogus") == FPSchematicAnchorClass::BridgeSafe);
+    TEST("anchor: AnchorCritical parts are authored silhouettes or ears", [&]() {
+        for (const FPSchematicPart& P : Parts)
+        {
+            if (FPSchematicAnchorClassForPart(P.Name) != FPSchematicAnchorClass::AnchorCritical)
+                continue;
+            if (!FPSchematicAuthoredPoses(P.Name)
+                && P.Name && std::string(P.Name) != "EarL"
+                && std::string(P.Name) != "EarR") return false;
+        }
+        return true;
+    }());
+    TEST("anchor: BridgeSafe parts never carry authored poses", [&]() {
+        for (const FPSchematicPart& P : Parts)
+        {
+            if (FPSchematicAnchorClassForPart(P.Name) == FPSchematicAnchorClass::BridgeSafe
+                && FPSchematicAuthoredPoses(P.Name)) return false;
+        }
+        return true;
+    }());
+    TEST("anchor: every silhouette part is AnchorCritical (read-carrier invariant)", [&]() {
+        for (const FPSchematicPart& P : Parts)
+            if (FPSchematicIsSilhouette(P.Name)
+                && FPSchematicAnchorClassForPart(P.Name)
+                    != FPSchematicAnchorClass::AnchorCritical) return false;
+        return true;
+    }());
+}
+
+// Phase 3: per-state visibility + Z-order. Real 2D art cards cannot fold to a
+// dot, so the far-side pair must be HIDDEN at the profile and the features
+// must be HIDDEN in walk-behind states — otherwise their last art edge-peeks
+// through the crossfade. Mirrors the FPSchematicLayerVisibleInState /
+// FPSchematicLayerOrderInState pure contracts in FaceParallaxSchematic.h.
+void TestPhase3Visibility() {
+    printf("\n=== Phase3 Visibility ===\n");
+    using namespace FPSchematic;
+
+    const double CenterYaw[10] = { 0.0, 45.0, 90.0, 135.0, 180.0, -135.0,
+        -90.0, -45.0, 0.0, 0.0 };
+    TEST("vis: state center-yaw table matches default zone centers", [&]() {
+        for (int S = 0; S < 10; ++S)
+            if (fabs(FPSchematicStateCenterYaw(S) - CenterYaw[S]) > 1e-9) return false;
+        return true;
+    }());
+    TEST("vis: Top/Bottom park at pitch +-90, all others 0",
+        FPSchematicStateCenterPitch(8) == 90.0
+        && FPSchematicStateCenterPitch(9) == -90.0
+        && FPSchematicStateCenterPitch(0) == 0.0
+        && FPSchematicStateCenterPitch(3) == 0.0);
+    TEST("vis: walk-behind exactly BackRight/Back/BackLeft (|yaw|>=135)",
+        FPSchematicStateIsWalkBehind(3) && FPSchematicStateIsWalkBehind(4)
+        && FPSchematicStateIsWalkBehind(5)
+        && !FPSchematicStateIsWalkBehind(0) && !FPSchematicStateIsWalkBehind(1)
+        && !FPSchematicStateIsWalkBehind(2) && !FPSchematicStateIsWalkBehind(6)
+        && !FPSchematicStateIsWalkBehind(7) && !FPSchematicStateIsWalkBehind(8)
+        && !FPSchematicStateIsWalkBehind(9));
+    const auto SilhouetteAlwaysVisible = [&]() {
+        const char* Sil[4] = { "Head", "Bangs", "Hair", "BackHair" };
+        for (int S = 0; S < 10; ++S)
+            for (const char* L : Sil)
+                if (!FPSchematicLayerVisibleInState(S, L)) return false;
+        return true;
+    };
+    TEST("vis: silhouette mass renders in ALL 10 states", SilhouetteAlwaysVisible());
+    TEST("vis: near eye/brow/cheek/ear visible at its profile, far side folds", [&]() {
+        // RightProfile (state 2, yaw +90): R pair near (visible), L pair folds.
+        if (!FPSchematicLayerVisibleInState(2, "EyeR")) return false;
+        if (!FPSchematicLayerVisibleInState(2, "BrowR")) return false;
+        if (!FPSchematicLayerVisibleInState(2, "CheekR")) return false;
+        if (!FPSchematicLayerVisibleInState(2, "EarR")) return false;
+        if (FPSchematicLayerVisibleInState(2, "EyeL")) return false;
+        if (FPSchematicLayerVisibleInState(2, "BrowL")) return false;
+        if (FPSchematicLayerVisibleInState(2, "CheekL")) return false;
+        if (FPSchematicLayerVisibleInState(2, "EarL")) return false;
+        // LeftProfile (state 6, yaw -90): mirror.
+        if (!FPSchematicLayerVisibleInState(6, "EyeL")) return false;
+        if (!FPSchematicLayerVisibleInState(6, "EarL")) return false;
+        if (FPSchematicLayerVisibleInState(6, "EyeR")) return false;
+        if (FPSchematicLayerVisibleInState(6, "EarR")) return false;
+        return true;
+    }());
+    const auto BothPairsFrontStates = [&]() {
+        const int FrontStates[3] = { 0, 8, 9 };
+        for (int S : FrontStates)
+        {
+            if (!FPSchematicLayerVisibleInState(S, "EyeL")) return false;
+            if (!FPSchematicLayerVisibleInState(S, "EyeR")) return false;
+            if (!FPSchematicLayerVisibleInState(S, "EarL")) return false;
+            if (!FPSchematicLayerVisibleInState(S, "EarR")) return false;
+        }
+        return true;
+    };
+    TEST("vis: both pairs visible at front, Top and Bottom", BothPairsFrontStates());
+    const auto BackHalfPairsVisible = [&]() {
+        // BackRight/Back (states 3,4): right side stays near (the placeholder
+        // folds the far pair through the back), left folds. BackLeft (state 5)
+        // mirrors: left side near, right folds.
+        for (int S : { 3, 4 })
+        {
+            if (FPSchematicLayerVisibleInState(S, "EyeL")) return false;
+            if (FPSchematicLayerVisibleInState(S, "EarL")) return false;
+            if (!FPSchematicLayerVisibleInState(S, "EyeR")) return false;
+            if (!FPSchematicLayerVisibleInState(S, "EarR")) return false;
+        }
+        if (FPSchematicLayerVisibleInState(5, "EyeR")) return false;
+        if (FPSchematicLayerVisibleInState(5, "EarR")) return false;
+        if (!FPSchematicLayerVisibleInState(5, "EyeL")) return false;
+        if (!FPSchematicLayerVisibleInState(5, "EarL")) return false;
+        return true;
+    };
+    TEST("vis: far pair folds the WHOLE back half (states 3,4,5 keep near side)",
+        BackHalfPairsVisible());
+    const auto WalkBehindHidesFeatures = [&]() {
+        const int HiddenStates[3] = { 3, 4, 5 };
+        const int ShownStates[7] = { 0, 1, 2, 6, 7, 8, 9 };
+        const char* Feat[5] = { "Nose", "Mouth", "Teeth", "Chin", "Neck" };
+        for (int S : HiddenStates)
+            for (const char* L : Feat)
+                if (FPSchematicLayerVisibleInState(S, L)) return false;
+        for (int S : ShownStates)
+            for (const char* L : Feat)
+                if (!FPSchematicLayerVisibleInState(S, L)) return false;
+        return true;
+    };
+    TEST("vis: walk-behind hides non-paired features (no art edge-peek)",
+        WalkBehindHidesFeatures());
+    const auto AllLayersResolveOrder = [&]() {
+        const char* All[17] = { "Head", "Bangs", "Hair", "BackHair", "EyeL",
+            "EyeR", "BrowL", "BrowR", "CheekL", "CheekR", "EarL", "EarR",
+            "Nose", "Mouth", "Teeth", "Chin", "Neck" };
+        for (int S = 0; S < 10; ++S)
+            for (const char* L : All)
+            {
+                const int O = FPSchematicLayerOrderInState(S, L);
+                const bool bVis = FPSchematicLayerVisibleInState(S, L);
+                if (bVis && (O < 1 || O > 5)) return false;
+                if (!bVis && O != -1) return false;
+            }
+        return true;
+    };
+    TEST("vis: every RENDERED layer resolves an order in [1,5], hidden = -1",
+        AllLayersResolveOrder());
+    const auto NearSideOrderParity = [&]() {
+        const int TurnStates[4] = { 1, 2, 6, 7 };
+        // The per-state Z-order table only changes WHICH layers render; the
+        // plane ranking of the survivors is the front FPZDepth order.
+        for (int S : TurnStates)
+            if (FPSchematicLayerOrderInState(S, "Nose")
+                > FPSchematicLayerOrderInState(S, "Head")) return false;
+        return true;
+    };
+    TEST("vis: near side at 3/4 turns and profile is order-identical to front",
+        NearSideOrderParity());
+    TEST("vis: silhouette order matches FPZDepth plane hierarchy",
+        FPSchematicLayerOrderInState(0, "Bangs")
+            < FPSchematicLayerOrderInState(0, "Head")
+        && FPSchematicLayerOrderInState(0, "Head")
+            < FPSchematicLayerOrderInState(0, "BackHair")
+        && FPSchematicLayerOrderInState(4, "Hair")
+            < FPSchematicLayerOrderInState(4, "BackHair"));
+    TEST("vis: null / empty names default to hidden",
+        !FPSchematicLayerVisibleInState(0, nullptr)
+        && !FPSchematicLayerVisibleInState(0, "")
+        && FPSchematicLayerOrderInState(0, nullptr) == -1
+        && !FPSchematicLayerVisibleInTag(0, nullptr)
+        && !FPSchematicLayerVisibleInTag(0, ""));
+    const auto UnknownIsGenericBridgeLayer = [&]() {
+        // An unrecognized name is a non-paired BridgeSafe layer: rendered in
+        // the front/3-4/profile states, hidden only walk-behind.
+        const int Shown[7] = { 0, 1, 2, 6, 7, 8, 9 };
+        const int Hidden[3] = { 3, 4, 5 };
+        for (int S : Shown)
+            if (!FPSchematicLayerVisibleInState(S, "Bogus")) return false;
+        for (int S : Hidden)
+            if (FPSchematicLayerVisibleInState(S, "Bogus")) return false;
+        return true;
+    };
+    TEST("vis: unknown names behave as a generic bridge layer",
+        UnknownIsGenericBridgeLayer());
+    const auto TagAnchorAlwaysVisible = [&]() {
+        const char* Anchor[5] = { "Head", "Bangs", "Hair", "BackHair", "Ears" };
+        for (int S = 0; S < 10; ++S)
+            for (const char* T : Anchor)
+                if (!FPSchematicLayerVisibleInTag(S, T)) return false;
+        return true;
+    };
+    TEST("vis: tag anchor (silhouette + Ears) renders in ALL 10 states",
+        TagAnchorAlwaysVisible());
+    const auto TagFeaturesHideWalkBehind = [&]() {
+        const char* Feat[5] = { "Eyes", "Brows", "Mouth", "Nose", "Cheeks" };
+        const int Hidden[3] = { 3, 4, 5 };
+        const int Shown[7] = { 0, 1, 2, 6, 7, 8, 9 };
+        for (int S : Hidden)
+            for (const char* T : Feat)
+                if (FPSchematicLayerVisibleInTag(S, T)) return false;
+        for (int S : Shown)
+            for (const char* T : Feat)
+                if (!FPSchematicLayerVisibleInTag(S, T)) return false;
+        return true;
+    };
+    TEST("vis: tag feature cards hide only walk-behind (no edge-peek)",
+        TagFeaturesHideWalkBehind());
+    const auto TagOrderRanks = [&]() {
+        const char* Tags[10] = { "Eyes", "Brows", "Mouth", "Bangs", "Nose",
+            "Cheeks", "Head", "Hair", "BackHair", "Ears" };
+        for (int S = 0; S < 10; ++S)
+            for (const char* T : Tags)
+            {
+                const int O = FPSchematicLayerOrderInTag(S, T);
+                const bool bVis = FPSchematicLayerVisibleInTag(S, T);
+                if (bVis && (O < 1 || O > 5)) return false;
+                if (!bVis && O != -1) return false;
+            }
+        return FPSchematicLayerOrderInTag(0, "Bangs")
+                < FPSchematicLayerOrderInTag(0, "Head")
+            && FPSchematicLayerOrderInTag(0, "Head")
+                < FPSchematicLayerOrderInTag(0, "BackHair")
+            && FPSchematicLayerOrderInTag(0, "Hair")
+                == FPSchematicLayerOrderInTag(0, "Ears");
+    };
+    TEST("vis: tag order — visible in [1,5], hidden = -1, planes rank",
+        TagOrderRanks());
+    const auto TagHiddenOrderWalkBehind = [&]() {
+        const int Back[3] = { 3, 4, 5 };
+        for (int S : Back)
+            if (FPSchematicLayerOrderInTag(S, "Eyes") != -1) return false;
+        return true;
+    };
+    TEST("vis: hidden tag also hides its order in walk-behind states",
+        TagHiddenOrderWalkBehind());
+}
+
+// Phase 4: silhouette-delta crossfade / swoosh. A slow crossfade is fine when
+// From/To are the same structural shape, but a structural gap (Front -> Back
+// hides the features, Top -> Back reverses the read) must blend fast or sweep.
+// Mirrors FPSilhouetteDelta / FPSchematicTransitionBlendRate /
+// FPSchematicShouldSwoosh in FaceParallaxSchematic.h.
+void TestPhase4SilhouetteDelta() {
+    printf("\n=== Phase4 SilhouetteDelta ===\n");
+    using namespace FPSchematic;
+
+    TEST("delta: same state is 0", FPSilhouetteDelta(0, 0) == 0.0
+        && FPSilhouetteDelta(4, 4) == 0.0);
+    TEST("delta: Front->3/4R small (same structural shape)",
+        fabs(FPSilhouetteDelta(0, 1) - 0.05) < 1e-9);
+    TEST("delta: Front->RightProfile small",
+        fabs(FPSilhouetteDelta(0, 2) - 0.1) < 1e-9);
+    TEST("delta: Front->Top/Bottom small (squash keeps the read)",
+        fabs(FPSilhouetteDelta(0, 8) - 0.1) < 1e-9
+        && fabs(FPSilhouetteDelta(0, 9) - 0.1) < 1e-9);
+    TEST("delta: Front->BackRight/BackLeft = 0.45 (walk-behind shape flip)",
+        fabs(FPSilhouetteDelta(0, 3) - 0.45) < 1e-9
+        && fabs(FPSilhouetteDelta(0, 5) - 0.45) < 1e-9);
+    TEST("delta: Front->Back = 0.5 (biggest plain-yaw structural gap)",
+        fabs(FPSilhouetteDelta(0, 4) - 0.5) < 1e-9);
+    TEST("delta: Top->Back = 0.6 (yaw + pitch gap on a shape flip)",
+        fabs(FPSilhouetteDelta(8, 4) - 0.6) < 1e-9);
+    TEST("delta: adjacent back states are small (same visible set)",
+        fabs(FPSilhouetteDelta(3, 4) - 0.05) < 1e-9
+        && fabs(FPSilhouetteDelta(3, 5) - 0.1) < 1e-9);
+    TEST("delta: Top->Bottom moderate (no shape flip, 180 pitch)",
+        fabs(FPSilhouetteDelta(8, 9) - 0.2) < 1e-9);
+    TEST("delta: LeftProfile->RightProfile uses wrap distance 180",
+        fabs(FPSilhouetteDelta(2, 6) - 0.2) < 1e-9);
+    TEST("delta: shape term dominates — Front->Back > Front->RightProfile",
+        FPSilhouetteDelta(0, 4) > FPSilhouetteDelta(0, 2));
+    TEST("delta: symmetric for all state pairs", [&]() {
+        for (int A = 0; A < 10; ++A)
+            for (int B = 0; B < 10; ++B)
+                if (fabs(FPSilhouetteDelta(A, B) - FPSilhouetteDelta(B, A)) > 1e-9)
+                    return false;
+        return true;
+    }());
+    TEST("delta: bounded in [0,1] for all pairs incl. out-of-range indices", [&]() {
+        for (int A = -1; A <= 10; ++A)
+            for (int B = -1; B <= 10; ++B)
+            {
+                const double D = FPSilhouetteDelta(A, B);
+                if (D < 0.0 || D > 1.0 || !(D == D)) return false;   // NaN check
+            }
+        return true;
+    }());
+    TEST("blendRate: 1.0 at zero delta, scales with delta, capped", [&]() {
+        if (fabs(FPSchematicTransitionBlendRate(0, 0) - 1.0) > 1e-9) return false;
+        if (FPSchematicTransitionBlendRate(0, 0) > 2.5) return false;
+        for (int A = 0; A < 10; ++A)
+            for (int B = 0; B < 10; ++B)
+            {
+                const double R = FPSchematicTransitionBlendRate(A, B);
+                if (R < 1.0 || R > 2.5) return false;
+            }
+        return true;
+    }());
+    TEST("blendRate: structural gap blends faster than an adjacent turn",
+        FPSchematicTransitionBlendRate(0, 4) > FPSchematicTransitionBlendRate(0, 1));
+    TEST("swoosh: triggers for structural gaps", [&]() {
+        if (!FPSchematicShouldSwoosh(0, 3)) return false;   // Front->BackRight
+        if (!FPSchematicShouldSwoosh(0, 4)) return false;   // Front->Back
+        if (!FPSchematicShouldSwoosh(0, 5)) return false;   // Front->BackLeft
+        if (!FPSchematicShouldSwoosh(8, 4)) return false;   // Top->Back
+        if (!FPSchematicShouldSwoosh(9, 4)) return false;   // Bottom->Back
+        return true;
+    }());
+    TEST("swoosh: does NOT trigger for same-shape turns", [&]() {
+        if (FPSchematicShouldSwoosh(0, 1)) return false;   // Front->3/4R
+        if (FPSchematicShouldSwoosh(0, 2)) return false;   // Front->profile
+        if (FPSchematicShouldSwoosh(0, 8)) return false;   // Front->Top
+        if (FPSchematicShouldSwoosh(2, 6)) return false;   // profile->profile
+        if (FPSchematicShouldSwoosh(3, 4)) return false;   // BackRight->Back
+        if (FPSchematicShouldSwoosh(8, 9)) return false;   // Top->Bottom
+        if (FPSchematicShouldSwoosh(0, 0)) return false;   // same state
+        return true;
+    }());
+    TEST("swoosh: symmetric", FPSchematicShouldSwoosh(4, 0)
+        == FPSchematicShouldSwoosh(0, 4));
+}
+
+// Phase 6: authored-pose validation. Every authored ring must be a valid
+// closed silhouette with a stable point count, and the aggregate back pose
+// must differ from the front by >= the measured 41% gate (fraction of ring
+// points displaced > 10% of canvas) — a back pose that is a near-copy of the
+// front is a data error. Mirrors FPOutlineIsValidClosedRing /
+// FPSchematicValidatePoseSet / FPSchematicValidateAllAuthoredPoses.
+void TestPhase6PoseValidation() {
+    printf("\n=== Phase6 PoseValidation ===\n");
+    using namespace FPSchematic;
+
+    const char* AuthoredNames[4] = { "Head", "Bangs", "Hair", "BackHair" };
+    const auto EveryP0RingValid = [&]() {
+        for (const char* N : AuthoredNames)
+            if (!FPOutlineIsValidClosedRing(FPSchematicAuthoredPoses(N)->P0))
+                return false;
+        return true;
+    };
+    TEST("ring: every authored P0 ring is a valid closed ring", EveryP0RingValid());
+    const std::vector<FPSchematicPoint> RingSingle{ SPT(0.5, 0.5) };
+    const std::vector<FPSchematicPoint> RingTwo{ SPT(0.5, 0.5), SPT(0.6, 0.6) };
+    const std::vector<FPSchematicPoint> RingNaN{ SPT(std::nan(""), 0.5),
+        SPT(0.5, 0.4), SPT(0.6, 0.6) };
+    const std::vector<FPSchematicPoint> RingOut{ SPT(1.5, 0.5),
+        SPT(0.5, 0.4), SPT(0.6, 0.6) };
+    const std::vector<FPSchematicPoint> RingBound{ SPT(0.0, 0.0),
+        SPT(1.0, 0.0), SPT(0.5, 1.0) };
+    TEST("ring: empty / 1-point / 2-point rings are invalid",
+        !FPOutlineIsValidClosedRing({})
+        && !FPOutlineIsValidClosedRing(RingSingle)
+        && !FPOutlineIsValidClosedRing(RingTwo));
+    TEST("ring: NaN point invalidates a ring", !FPOutlineIsValidClosedRing(RingNaN));
+    TEST("ring: out-of-[0,1] point invalidates a ring", !FPOutlineIsValidClosedRing(RingOut));
+    TEST("ring: boundary points at 0/1 are allowed", FPOutlineIsValidClosedRing(RingBound));
+
+    const auto EveryPartPassesValidator = [&]() {
+        for (const char* N : AuthoredNames)
+        {
+            const FPSchematicPoseValidation V =
+                FPSchematicValidatePoseSet(*FPSchematicAuthoredPoses(N));
+            if (!V.bAllRingsValid) return false;
+            if (V.InvalidRingCount != 0) return false;
+            if (V.RingPointCount < 3) return false;
+        }
+        return true;
+    };
+    TEST("pose: every authored part passes the full validator",
+        EveryPartPassesValidator());
+    const auto EveryPartBackDisplacementSane = [&]() {
+        for (const char* N : AuthoredNames)
+        {
+            const FPSchematicPoseValidation V =
+                FPSchematicValidatePoseSet(*FPSchematicAuthoredPoses(N));
+            if (V.RingPointCount == 0) return false;
+            if (V.BackMovedPoints < 0) return false;
+            if (V.BackMovedPoints > V.RingPointCount) return false;
+        }
+        return true;
+    };
+    TEST("pose: each authored part keeps a nonzero back displacement",
+        EveryPartBackDisplacementSane());
+
+    const FPSchematicPoseValidationSummary Sum =
+        FPSchematicValidateAllAuthoredPoses();
+    TEST("summary: table has the 4 silhouette parts, all valid", [&]() {
+        return Sum.TotalPoseSets == 4 && Sum.ValidPoseSets == 4
+            && Sum.TotalRings == 28 && Sum.InvalidRings == 0
+            && Sum.bAllAuthoredPosesValid();
+    }());
+    TEST("summary: aggregate back change clears the measured 41% gate", [&]() {
+        // Measured live: 62/91 ring points (68.1%) displace > 10% of canvas.
+        if (Sum.AggregateBackChange() < 0.41) return false;
+        return Sum.bBackDiffersFromFront();
+    }());
+
+    const auto DegenerateBackIsRejected = [&]() {
+        // Negative control: a pose set whose back ring is a copy of the front
+        // must NOT clear the 41% back-change gate.
+        const FPSchematicPoseSet& Real = *FPSchematicAuthoredPoses("Hair");
+        FPSchematicPoseSet Deg;
+        Deg.P0 = Real.P0;
+        Deg.P45 = Real.P45;
+        Deg.P90 = Real.P90;
+        Deg.P135 = Real.P135;
+        Deg.P180 = Real.P0;      // the defect: back is a copy of front
+        Deg.PTop = Real.PTop;
+        Deg.PBottom = Real.PBottom;
+        const FPSchematicPoseValidation V = FPSchematicValidatePoseSet(Deg);
+        if (V.bAllRingsValid == false) return false;
+        if (V.BackMovedPoints != 0) return false;
+        const double Change = (double)V.BackMovedPoints / (double)V.RingPointCount;
+        if (Change >= 0.41) return false;
+        return true;
+    };
+    TEST("summary: negative control — back-copy-of-front fails the 41% gate",
+        DegenerateBackIsRejected());
+
+    const auto CountMismatchIsInvalid = [&]() {
+        // Negative control: a pose ring with a different point count than the
+        // front must invalidate the pose set (the morph degrades otherwise).
+        const FPSchematicPoseSet& Real = *FPSchematicAuthoredPoses("Head");
+        FPSchematicPoseSet Mism;
+        Mism.P0 = Real.P0;
+        Mism.P45 = Real.P0;
+        Mism.P45.pop_back();     // now 11 points vs the front's 12
+        Mism.P90 = Real.P90;
+        Mism.P135 = Real.P135;
+        Mism.P180 = Real.P180;
+        Mism.PTop = Real.PTop;
+        Mism.PBottom = Real.PBottom;
+        const FPSchematicPoseValidation V = FPSchematicValidatePoseSet(Mism);
+        if (V.bAllRingsValid) return false;
+        if (V.InvalidRingCount < 1) return false;
+        return true;
+    };
+    TEST("summary: negative control — count mismatch invalidates the pose set",
+        CountMismatchIsInvalid());
 }
 
 // Phase C: up/down view scrub (the vertical mirror of the yaw scrub). The
@@ -10397,6 +11113,11 @@ int main() {
     TestPhase1ZoneScrub();
     TestPhaseCUpDownScrub();
     TestPhase2Orientation();
+    TestAuthoredOrientation();
+    TestAnchorClass();
+    TestPhase3Visibility();
+    TestPhase4SilhouetteDelta();
+    TestPhase6PoseValidation();
 
     printf("\n===== Results: %d/%d passed (%d failed) =====\n",
         g_passed, g_total, g_total - g_passed);

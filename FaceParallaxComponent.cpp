@@ -755,8 +755,13 @@ void UFaceParallaxComponent::UpdateStateMachine(float Yaw, float Pitch, float De
                 SetPreviousStateTextures();
             }
 
-            // Swoosh trigger: fast camera movement overrides smooth transition
-            if (bSwooshEnabled && AngularVelocity >= SwooshSpeedThreshold)
+            // Swoosh trigger: fast camera movement overrides smooth transition;
+            // Phase 4 also sweeps when the old and new silhouettes are
+            // structurally different (Front -> Back hides the features, etc.)
+            // so the blend never lingers on a shape that does not exist.
+            if (bSwooshEnabled && (AngularVelocity >= SwooshSpeedThreshold
+                || FPSchematic::FPSchematicShouldSwoosh(
+                    (int32)PreviousState, (int32)CurrentState)))
             {
                 BlendAlpha = 0.0f;
                 bIsInTransition = true;
@@ -807,6 +812,10 @@ void UFaceParallaxComponent::UpdateStateMachine(float Yaw, float Pitch, float De
     // Normal transition blending (only used when swoosh is not active)
     if (bIsInTransition && SwooshPhase == ESwooshPhase::Inactive)
     {
+        // Phase 4: a structurally-different transition (Front -> Back, etc.)
+        // blends faster so the crossfade never lingers on an in-between shape.
+        const float RateBias = (float)FPSchematic::FPSchematicTransitionBlendRate(
+            (int32)PreviousState, (int32)CurrentState);
         if (bUseContinuousBlending)
         {
             float TargetAlpha = 1.0f;
@@ -822,7 +831,7 @@ void UFaceParallaxComponent::UpdateStateMachine(float Yaw, float Pitch, float De
                 TargetAlpha = 1.0f - FMath::Clamp(DistToEdge / BlendWindowWidth, 0.0f, 1.0f);
             }
 
-            BlendAlpha = FMath::FInterpTo(BlendAlpha, TargetAlpha, DeltaTime, CrossfadeSpeed);
+            BlendAlpha = FMath::FInterpTo(BlendAlpha, TargetAlpha, DeltaTime, CrossfadeSpeed * RateBias);
 
             if (TargetAlpha >= 1.0f && BlendAlpha >= 0.995f)
             {
@@ -832,7 +841,7 @@ void UFaceParallaxComponent::UpdateStateMachine(float Yaw, float Pitch, float De
         }
         else
         {
-            BlendAlpha = FMath::FInterpTo(BlendAlpha, 1.0f, DeltaTime, CrossfadeSpeed);
+            BlendAlpha = FMath::FInterpTo(BlendAlpha, 1.0f, DeltaTime, CrossfadeSpeed * RateBias);
             if (BlendAlpha >= 1.0f)
             {
                 BlendAlpha = 1.0f;
@@ -1403,6 +1412,30 @@ void UFaceParallaxComponent::SetStateTextures(EFaceAngleState State)
 void UFaceParallaxComponent::ApplyCurrentStateTextures()
 {
     SetStateTextures(CurrentState);
+    RefreshLayerVisibilityForState();
+}
+
+void UFaceParallaxComponent::RefreshLayerVisibilityForState()
+{
+    // Phase 3: hide per base-preset tag in the current view state. Feature
+    // cards (Eyes/Brows/Mouth/Nose/Cheeks) hide in the walk-behind states so
+    // their front art cannot edge-peek around the skull; the silhouette + ear
+    // cards stay in the read. Root layer quads carry the plain layer tag;
+    // nested art quads carry "Tag_Element" tags and are skipped.
+    const int32 StateIdx = (int32)CurrentState;
+    for (const TObjectPtr<UStaticMeshComponent>& Quad : SpawnedLayerQuads)
+    {
+        if (!Quad) continue;
+        for (const FName& Tag : Quad->ComponentTags)
+        {
+            const FString TagStr = Tag.ToString();
+            if (TagStr.Contains(TEXT("_"))) continue;
+            Quad->SetVisibility(
+                FPSchematic::FPSchematicLayerVisibleInTag(
+                    StateIdx, TCHAR_TO_UTF8(*TagStr)));
+            break;
+        }
+    }
 }
 
 void UFaceParallaxComponent::CaptureCurrentTextures()

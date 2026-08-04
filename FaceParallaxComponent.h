@@ -1153,6 +1153,7 @@ private:
 
     void InitializeMaterials();
     void UpdateMaterialParameters();
+    void RefreshLayerVisibilityForState();
 public:
     void ApplyCurrentStateTextures();
     void CaptureCurrentTextures();

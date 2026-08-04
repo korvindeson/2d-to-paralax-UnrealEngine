@@ -52,6 +52,8 @@
 #include <vector>
 #include <string>
 #include <algorithm>
+#include <cmath>
+#include <cstdlib>
 
 namespace FPSchematic {
 
@@ -873,6 +875,193 @@ inline bool FPSchematicIsSilhouette(const char* Name)
         || FPSchematicIsHairLayer(Name));
 }
 
+// ============================================================================
+// Phase 1: anchor classification. Is a layer LOAD-BEARING for the outline read
+// at every angle? ANCHOR-critical layers (the head + hair silhouettes and the
+// ears) define the silhouette itself — when they pop, lag or blur the whole
+// read looks wrong, so a large silhouette delta between states must force the
+// fast-crossfade / Swoosh path (Phase 4). BRIDGE-safe layers (the interior
+// facial features — brows/eyes/nose/mouth/teeth + the anchored cheeks/chin/
+// neck) are either hidden by FPFeatureAlphaAt past the back-corner or stay
+// face-relative, so a plain crossfade at any delta reads fine. The tag mirror
+// uses the base-preset layer tags (deploy.py LAYERS).
+// ============================================================================
+enum class FPSchematicAnchorClass : unsigned char
+{
+    AnchorCritical,
+    BridgeSafe,
+    MAX
+};
+
+inline FPSchematicAnchorClass FPSchematicAnchorClassForPart(const char* Name)
+{
+    if (!Name || !Name[0]) return FPSchematicAnchorClass::BridgeSafe;
+    const std::string N(Name);
+    if (N == "Head" || N == "Bangs" || N == "Hair" || N == "BackHair"
+        || N == "EarL" || N == "EarR")
+        return FPSchematicAnchorClass::AnchorCritical;
+    return FPSchematicAnchorClass::BridgeSafe;
+}
+
+inline FPSchematicAnchorClass FPSchematicAnchorClassForTag(const char* Tag)
+{
+    if (!Tag || !Tag[0]) return FPSchematicAnchorClass::BridgeSafe;
+    const std::string T(Tag);
+    if (T == "Head" || T == "Bangs" || T == "Hair" || T == "BackHair"
+        || T == "Ears")
+        return FPSchematicAnchorClass::AnchorCritical;
+    return FPSchematicAnchorClass::BridgeSafe;
+}
+
+// ============================================================================
+// Phase 3: per-state visibility + Z-order (hide, not just occlude). Real 2D
+// art cards cannot fold to a dot the way the placeholder formula does, so at
+// the profile the FAR-side pair and in walk-behind states the FEATURES would
+// otherwise keep rendering their last art and EDGE-PEEK through the crossfade.
+// The billboard-correct answer is to HIDE those layers per state. State
+// indices mirror EFaceAngleState's order in FaceParallaxTypes.h:
+//   0 Front, 1 3/4R, 2 RightProfile, 3 BackRight, 4 Back, 5 BackLeft,
+//   6 LeftProfile, 7 3/4L, 8 Top, 9 Bottom
+// Zone centers use the default multipliers (1/3/5/7 x HalfZoneWidth 22.5):
+// 0/45/90/135/180/-135/-90/-45; Top/Bottom park at yaw 0 with pitch ±90.
+// ============================================================================
+inline double FPSchematicStateCenterYaw(int StateIdx)
+{
+    switch (StateIdx)
+    {
+    case 1:  return 45.0;
+    case 2:  return 90.0;
+    case 3:  return 135.0;
+    case 4:  return 180.0;
+    case 5:  return -135.0;
+    case 6:  return -90.0;
+    case 7:  return -45.0;
+    default: return 0.0;   // Front + Top/Bottom
+    }
+}
+
+inline double FPSchematicStateCenterPitch(int StateIdx)
+{
+    return StateIdx == 8 ? 90.0 : (StateIdx == 9 ? -90.0 : 0.0);
+}
+
+// Walk-behind states (BackRight / Back / BackLeft): |center yaw| >= 135°, the
+// states where features fade out (the placeholder's FPFeatureAlphaAt is 0).
+inline bool FPSchematicStateIsWalkBehind(int StateIdx)
+{
+    return std::abs(FPSchematicStateCenterYaw(StateIdx)) >= 135.0;
+}
+
+// Is the layer RENDERED in this state? The silhouette mass (Head + the hair
+// layers) is present in every state; the far-side member of a paired layer
+// (eyes/brows/cheeks/ears) is HIDDEN (it folds); walk-behind states hide every
+// non-paired feature (Nose/Mouth/Teeth/Chin/Neck). Unknown/null names default
+// to hidden (a layer not in the canonical set is not part of the read).
+inline bool FPSchematicLayerVisibleInState(int StateIdx, const char* LayerName)
+{
+    if (!LayerName || !LayerName[0]) return false;
+    if (FPSchematicIsSilhouette(LayerName)) return true;
+    if (FPSchematicIsPairedPart(LayerName))
+        return !FPSchematicIsFarSide(LayerName, FPSchematicStateCenterYaw(StateIdx));
+    if (FPSchematicAnchorClassForPart(LayerName) == FPSchematicAnchorClass::BridgeSafe)
+        return !FPSchematicStateIsWalkBehind(StateIdx);
+    return false;
+}
+
+// Per-state Z-order of the RENDERED layers: smaller = rendered on top (closer
+// to the camera). The order is the FPZDepth plane hierarchy (1 Nose/Front
+// Bangs .. 5 Neck/Back Hair) applied to the state's visible set; the far-side
+// pair is hidden rather than occluded, so the only per-state difference is
+// WHICH layers render. Hidden layers return -1 (not rendered).
+inline int FPSchematicLayerOrderInState(int StateIdx, const char* LayerName)
+{
+    if (!FPSchematicLayerVisibleInState(StateIdx, LayerName)) return -1;
+    return (int)FPZDepthForPart(LayerName);
+}
+
+// TAG-level variant for the RUNTIME: the component spawns ONE quad per
+// base-preset tag (Eyes/Brows/Mouth/Bangs/Nose/Cheeks/Head/Hair/BackHair/
+// Ears), so it cannot hide a single member of a pair — the whole card hides
+// or shows. The paired fold is already handled by the placeholder slide; what
+// this table adds is the WALK-BEHIND FADE: the feature cards (BridgeSafe
+// tags) hide in the walk-behind states so their front art cannot edge-peek
+// around the skull (the placeholder's FPFeatureAlphaAt is 0 there), while the
+// silhouette + ear cards (AnchorCritical tags) stay in the read.
+inline bool FPSchematicLayerVisibleInTag(int StateIdx, const char* Tag)
+{
+    if (!Tag || !Tag[0]) return false;
+    if (FPSchematicAnchorClassForTag(Tag) == FPSchematicAnchorClass::AnchorCritical)
+        return true;
+    return !FPSchematicStateIsWalkBehind(StateIdx);
+}
+
+// Tag-level per-state Z-order: representative FPZDepth plane per base-preset
+// tag (the tag's primary part). Hidden tags return -1 (not rendered).
+inline int FPSchematicLayerOrderInTag(int StateIdx, const char* Tag)
+{
+    if (!FPSchematicLayerVisibleInTag(StateIdx, Tag)) return -1;
+    const std::string T(Tag ? Tag : "");
+    if (T == "Nose" || T == "Bangs") return (int)FPZDepth::Closest;
+    if (T == "Eyes" || T == "Brows" || T == "Mouth" || T == "Cheeks")
+        return (int)FPZDepth::NearFeatures;
+    if (T == "Head") return (int)FPZDepth::FaceBase;
+    if (T == "Ears" || T == "Hair") return (int)FPZDepth::EarSideHair;
+    return (int)FPZDepth::Farthest;   // BackHair / default
+}
+
+// ============================================================================
+// Phase 4: silhouette-delta crossfade / swoosh. A slow crossfade is fine when
+// From and To are the same structural shape (Front -> 3/4R); it looks broken
+// when the silhouettes are structurally DIFFERENT (Front -> Back hides the
+// features, Top -> Back reverses the whole read) because the in-between frames
+// linger on a shape that never exists. FPSilhouetteDelta scores that gap
+// (0..1): 60% of the SHAPE term (fraction of base-preset tags whose per-state
+// visibility flips between the two states) + 40% of the ANGLE term (wrap-aware
+// yaw distance + pitch distance, / 360). FPSchematicShouldSwoosh is the
+// trigger extension: a transition whose delta clears the threshold wants a
+// fast sweep rather than a slow blend.
+// ============================================================================
+inline double FPSchematicYawDistance(int FromState, int ToState)
+{
+    double D = fabs(FPSchematicStateCenterYaw(FromState)
+        - FPSchematicStateCenterYaw(ToState));
+    if (D > 180.0) D = 360.0 - D;
+    return D;   // [0, 180]
+}
+
+inline double FPSilhouetteDelta(int FromState, int ToState)
+{
+    if (FromState == ToState) return 0.0;
+    static const char* const BasePresetTags[10] = { "Eyes", "Brows", "Mouth",
+        "Bangs", "Nose", "Cheeks", "Head", "Hair", "BackHair", "Ears" };
+    int Changed = 0;
+    for (const char* T : BasePresetTags)
+        if (FPSchematicLayerVisibleInTag(FromState, T)
+            != FPSchematicLayerVisibleInTag(ToState, T))
+            ++Changed;
+    const double ShapeTerm = (double)Changed / 10.0;
+    const double AngleTerm = (FPSchematicYawDistance(FromState, ToState)
+        + fabs(FPSchematicStateCenterPitch(FromState)
+            - FPSchematicStateCenterPitch(ToState))) / 360.0;
+    double Result = 0.6 * ShapeTerm + 0.4 * AngleTerm;
+    if (Result > 1.0) Result = 1.0;
+    return Result;
+}
+
+// Transition crossfade-speed bias: 1.0 (no bias) at delta 0 up to 2.5x faster
+// at delta 1 — a structural gap blends quicker so the in-between never lingers.
+inline double FPSchematicTransitionBlendRate(int FromState, int ToState)
+{
+    return 1.0 + 1.5 * FPSilhouetteDelta(FromState, ToState);
+}
+
+// Swoosh trigger extension: a structurally-different transition sweeps fast.
+inline bool FPSchematicShouldSwoosh(int FromState, int ToState)
+{
+    static const double DeltaThreshold = 0.4;
+    return FPSilhouetteDelta(FromState, ToState) >= DeltaThreshold;
+}
+
 // ----------------------------------------------------------------------------
 // The authored 2D layout ramps (right half of the turn; the left half mirrors
 // by sign). Control points sit on the exact state centers 0 (Front), 45
@@ -917,6 +1106,420 @@ inline double FPFeatureAlphaAt(double YawAbs)
     return FPRampEval(K, 4, YawAbs);
 }
 
+// ============================================================================
+// Phase 5: authored per-state key silhouettes. The squish/slide formula below
+// derives every angle from the FRONT glyph — that is structurally wrong for
+// the silhouette parts: a profile silhouette is a real forehead-nose-chin
+// contour (vs a skull-nape contour for the back), NOT a squished front, and
+// no continuous formula can produce it (the old squish made BackHair shrink
+// in place under the head at the profile instead of trailing behind it).
+// Head / Bangs / Hair / BackHair therefore carry EXACT authored 2D layouts at
+// each state center (0/45/90/135/180 for yaw, plus dedicated Top/Bottom pitch
+// poses), each a closed ring with the SAME point count and vertex order as
+// the front glyph (P0 == the front outline exactly), all inside [0,1]^2. The
+// positive-yaw half is authored; negative yaw is the exact horizontal mirror
+// (X -> 1-X). FPOrientationOutline morphs (smoothstep) between the bracketing
+// authored poses for these parts and keeps the squish/slide formula for every
+// other part (the per-part fallback is the P1..P24-safe default).
+// ============================================================================
+
+struct FPSchematicPoseSet
+{
+    std::vector<FPSchematicPoint> P0;       // Front (== the front glyph exactly)
+    std::vector<FPSchematicPoint> P45;      // 3/4
+    std::vector<FPSchematicPoint> P90;      // Profile
+    std::vector<FPSchematicPoint> P135;     // Back-corner
+    std::vector<FPSchematicPoint> P180;     // Back
+    std::vector<FPSchematicPoint> PTop;     // Top view (pitch +90, yaw 0)
+    std::vector<FPSchematicPoint> PBottom;  // Bottom view (pitch -90, yaw 0)
+};
+
+struct FPSchematicPoseEntry { const char* Name; FPSchematicPoseSet Pose; };
+
+// The authored silhouette pose table (sentinel-terminated: Name == nullptr).
+// Head/Bangs/Hair/BackHair carry authored key poses; every anatomical feature
+// stays out of the table and falls back to the squish/slide formula. The table
+// is the single source of truth for both FPSchematicAuthoredPoses and the
+// Phase 6 pose validator.
+inline const FPSchematicPoseEntry* FPSchematicAuthoredPoseTable()
+{
+    static const FPSchematicPoseEntry Table[] = {
+        // Head: front-wide sphere -> profile forehead-nose-chin -> full back.
+        { "Head", {
+            { SPT(0.50, 0.02), SPT(0.29, 0.076), SPT(0.136, 0.23), SPT(0.08, 0.44),
+              SPT(0.19, 0.61), SPT(0.32, 0.74), SPT(0.50, 0.86), SPT(0.68, 0.74),
+              SPT(0.81, 0.61), SPT(0.92, 0.44), SPT(0.864, 0.23), SPT(0.71, 0.076) },
+            { SPT(0.52, 0.02), SPT(0.33, 0.09), SPT(0.20, 0.23), SPT(0.13, 0.42),
+              SPT(0.17, 0.58), SPT(0.27, 0.70), SPT(0.44, 0.83), SPT(0.62, 0.76),
+              SPT(0.75, 0.63), SPT(0.87, 0.46), SPT(0.86, 0.24), SPT(0.70, 0.08) },
+            { SPT(0.52, 0.02), SPT(0.36, 0.10), SPT(0.25, 0.22), SPT(0.17, 0.36),
+              SPT(0.10, 0.47), SPT(0.17, 0.56), SPT(0.14, 0.63), SPT(0.28, 0.71),
+              SPT(0.46, 0.75), SPT(0.62, 0.70), SPT(0.70, 0.42), SPT(0.68, 0.14) },
+            { SPT(0.50, 0.02), SPT(0.38, 0.08), SPT(0.26, 0.18), SPT(0.20, 0.34),
+              SPT(0.17, 0.50), SPT(0.22, 0.63), SPT(0.34, 0.74), SPT(0.52, 0.75),
+              SPT(0.66, 0.66), SPT(0.76, 0.50), SPT(0.78, 0.26), SPT(0.66, 0.08) },
+            { SPT(0.50, 0.02), SPT(0.29, 0.076), SPT(0.14, 0.23), SPT(0.09, 0.44),
+              SPT(0.20, 0.62), SPT(0.33, 0.75), SPT(0.50, 0.86), SPT(0.67, 0.75),
+              SPT(0.80, 0.62), SPT(0.91, 0.44), SPT(0.86, 0.23), SPT(0.71, 0.076) },
+            { SPT(0.50, 0.20), SPT(0.31, 0.24), SPT(0.17, 0.32), SPT(0.11, 0.46),
+              SPT(0.18, 0.58), SPT(0.32, 0.66), SPT(0.50, 0.70), SPT(0.68, 0.66),
+              SPT(0.82, 0.58), SPT(0.89, 0.46), SPT(0.83, 0.32), SPT(0.69, 0.24) },
+            { SPT(0.50, 0.16), SPT(0.31, 0.20), SPT(0.18, 0.28), SPT(0.12, 0.42),
+              SPT(0.19, 0.55), SPT(0.33, 0.64), SPT(0.50, 0.68), SPT(0.67, 0.64),
+              SPT(0.81, 0.55), SPT(0.88, 0.42), SPT(0.82, 0.28), SPT(0.69, 0.20) }
+        } },
+        // Bangs: forehead fringe -> compact profile wedge over the brow -> back hairline.
+        { "Bangs", {
+            { SPT(0.22, 0.34), SPT(0.19, 0.12), SPT(0.24, 0.04), SPT(0.28, 0.03),
+              SPT(0.33, 0.02), SPT(0.37, 0.11), SPT(0.40, 0.03), SPT(0.45, 0.02),
+              SPT(0.50, 0.02), SPT(0.55, 0.02), SPT(0.60, 0.03), SPT(0.63, 0.11),
+              SPT(0.67, 0.02), SPT(0.72, 0.03), SPT(0.76, 0.04), SPT(0.81, 0.12),
+              SPT(0.78, 0.34), SPT(0.72, 0.28), SPT(0.65, 0.32), SPT(0.58, 0.30),
+              SPT(0.50, 0.35), SPT(0.42, 0.30), SPT(0.35, 0.32), SPT(0.28, 0.28) },
+            { SPT(0.23, 0.32), SPT(0.23, 0.16), SPT(0.27, 0.07), SPT(0.31, 0.04),
+              SPT(0.36, 0.03), SPT(0.41, 0.04), SPT(0.45, 0.03), SPT(0.50, 0.03),
+              SPT(0.55, 0.03), SPT(0.59, 0.05), SPT(0.63, 0.08), SPT(0.65, 0.13),
+              SPT(0.67, 0.18), SPT(0.68, 0.24), SPT(0.67, 0.30), SPT(0.65, 0.35),
+              SPT(0.58, 0.33), SPT(0.52, 0.29), SPT(0.46, 0.27), SPT(0.40, 0.26),
+              SPT(0.34, 0.27), SPT(0.30, 0.28), SPT(0.26, 0.30), SPT(0.24, 0.31) },
+            { SPT(0.24, 0.30), SPT(0.26, 0.20), SPT(0.30, 0.12), SPT(0.35, 0.07),
+              SPT(0.40, 0.04), SPT(0.45, 0.03), SPT(0.50, 0.03), SPT(0.55, 0.04),
+              SPT(0.59, 0.06), SPT(0.63, 0.09), SPT(0.66, 0.13), SPT(0.68, 0.18),
+              SPT(0.69, 0.23), SPT(0.69, 0.28), SPT(0.68, 0.33), SPT(0.66, 0.38),
+              SPT(0.58, 0.34), SPT(0.52, 0.30), SPT(0.46, 0.27), SPT(0.41, 0.25),
+              SPT(0.36, 0.25), SPT(0.31, 0.26), SPT(0.27, 0.28), SPT(0.25, 0.30) },
+            { SPT(0.25, 0.30), SPT(0.25, 0.18), SPT(0.28, 0.08), SPT(0.33, 0.04),
+              SPT(0.38, 0.03), SPT(0.43, 0.03), SPT(0.50, 0.03), SPT(0.56, 0.03),
+              SPT(0.61, 0.03), SPT(0.66, 0.05), SPT(0.70, 0.09), SPT(0.73, 0.15),
+              SPT(0.73, 0.22), SPT(0.71, 0.29), SPT(0.68, 0.33), SPT(0.64, 0.36),
+              SPT(0.57, 0.32), SPT(0.51, 0.29), SPT(0.45, 0.28), SPT(0.39, 0.28),
+              SPT(0.33, 0.29), SPT(0.29, 0.31), SPT(0.27, 0.32), SPT(0.26, 0.31) },
+            { SPT(0.26, 0.30), SPT(0.24, 0.16), SPT(0.28, 0.06), SPT(0.33, 0.03),
+              SPT(0.38, 0.02), SPT(0.43, 0.02), SPT(0.50, 0.02), SPT(0.57, 0.02),
+              SPT(0.62, 0.02), SPT(0.67, 0.03), SPT(0.72, 0.06), SPT(0.76, 0.16),
+              SPT(0.74, 0.30), SPT(0.68, 0.26), SPT(0.62, 0.28), SPT(0.55, 0.27),
+              SPT(0.50, 0.30), SPT(0.44, 0.27), SPT(0.38, 0.28), SPT(0.33, 0.26),
+              SPT(0.30, 0.30), SPT(0.28, 0.32), SPT(0.27, 0.33), SPT(0.26, 0.31) },
+            { SPT(0.20, 0.34), SPT(0.20, 0.24), SPT(0.24, 0.16), SPT(0.30, 0.12),
+              SPT(0.36, 0.10), SPT(0.42, 0.10), SPT(0.48, 0.10), SPT(0.55, 0.10),
+              SPT(0.61, 0.10), SPT(0.67, 0.12), SPT(0.72, 0.16), SPT(0.76, 0.24),
+              SPT(0.76, 0.34), SPT(0.70, 0.32), SPT(0.64, 0.33), SPT(0.57, 0.34),
+              SPT(0.50, 0.35), SPT(0.43, 0.34), SPT(0.36, 0.33), SPT(0.30, 0.32),
+              SPT(0.26, 0.34), SPT(0.23, 0.35), SPT(0.21, 0.36), SPT(0.20, 0.35) },
+            { SPT(0.22, 0.36), SPT(0.21, 0.26), SPT(0.25, 0.18), SPT(0.31, 0.14),
+              SPT(0.37, 0.12), SPT(0.43, 0.12), SPT(0.50, 0.12), SPT(0.57, 0.12),
+              SPT(0.63, 0.12), SPT(0.69, 0.14), SPT(0.74, 0.18), SPT(0.78, 0.26),
+              SPT(0.78, 0.36), SPT(0.71, 0.34), SPT(0.65, 0.35), SPT(0.58, 0.36),
+              SPT(0.50, 0.37), SPT(0.42, 0.36), SPT(0.35, 0.35), SPT(0.29, 0.34),
+              SPT(0.26, 0.36), SPT(0.24, 0.37), SPT(0.23, 0.38), SPT(0.22, 0.37) }
+        } },
+        // Hair: full annulus (outer mass + face cutout) -> big mass trailing the profile -> solid back mass.
+        { "Hair", {
+            { SPT(0.03, 0.52), SPT(0.045, 0.28), SPT(0.05, 0.18), SPT(0.06, 0.13),
+              SPT(0.09, 0.09), SPT(0.13, 0.05), SPT(0.18, 0.03), SPT(0.24, 0.012),
+              SPT(0.28, 0.008), SPT(0.31, 0.005), SPT(0.36, 0.012), SPT(0.42, 0.010),
+              SPT(0.44, 0.004), SPT(0.47, 0.012), SPT(0.50, 0.010), SPT(0.53, 0.012),
+              SPT(0.56, 0.004), SPT(0.58, 0.010), SPT(0.64, 0.012), SPT(0.69, 0.005),
+              SPT(0.72, 0.008), SPT(0.76, 0.012), SPT(0.82, 0.03), SPT(0.87, 0.05),
+              SPT(0.91, 0.09), SPT(0.94, 0.13), SPT(0.95, 0.18), SPT(0.955, 0.28),
+              SPT(0.97, 0.52), SPT(0.90, 0.36), SPT(0.87, 0.30), SPT(0.84, 0.20),
+              SPT(0.80, 0.12), SPT(0.72, 0.07), SPT(0.64, 0.05), SPT(0.58, 0.09),
+              SPT(0.54, 0.06), SPT(0.50, 0.05), SPT(0.46, 0.06), SPT(0.42, 0.09),
+              SPT(0.36, 0.05), SPT(0.28, 0.07), SPT(0.20, 0.12), SPT(0.16, 0.20),
+              SPT(0.13, 0.30), SPT(0.10, 0.36), SPT(0.05, 0.55) },
+            { SPT(0.14, 0.50), SPT(0.13, 0.30), SPT(0.14, 0.20), SPT(0.16, 0.14),
+              SPT(0.19, 0.10), SPT(0.24, 0.06), SPT(0.30, 0.04), SPT(0.37, 0.03),
+              SPT(0.43, 0.03), SPT(0.48, 0.03), SPT(0.54, 0.03), SPT(0.60, 0.03),
+              SPT(0.65, 0.04), SPT(0.69, 0.06), SPT(0.73, 0.08), SPT(0.77, 0.11),
+              SPT(0.81, 0.16), SPT(0.84, 0.22), SPT(0.87, 0.30), SPT(0.90, 0.40),
+              SPT(0.93, 0.50), SPT(0.95, 0.62), SPT(0.94, 0.74), SPT(0.90, 0.85),
+              SPT(0.84, 0.93), SPT(0.76, 0.97), SPT(0.66, 0.98), SPT(0.56, 0.97),
+              SPT(0.48, 0.94), SPT(0.42, 0.86), SPT(0.36, 0.78), SPT(0.31, 0.68),
+              SPT(0.27, 0.58), SPT(0.24, 0.50), SPT(0.24, 0.42), SPT(0.26, 0.35),
+              SPT(0.30, 0.29), SPT(0.34, 0.25), SPT(0.38, 0.23), SPT(0.40, 0.23),
+              SPT(0.40, 0.28), SPT(0.37, 0.34), SPT(0.33, 0.42), SPT(0.30, 0.52),
+              SPT(0.32, 0.62), SPT(0.36, 0.72), SPT(0.42, 0.82) },
+            { SPT(0.72, 0.40), SPT(0.74, 0.28), SPT(0.74, 0.20), SPT(0.75, 0.14),
+              SPT(0.77, 0.10), SPT(0.80, 0.07), SPT(0.84, 0.05), SPT(0.88, 0.045),
+              SPT(0.92, 0.05), SPT(0.94, 0.06), SPT(0.95, 0.07), SPT(0.96, 0.10),
+              SPT(0.965, 0.14), SPT(0.97, 0.18), SPT(0.975, 0.24), SPT(0.98, 0.30),
+              SPT(0.985, 0.38), SPT(0.985, 0.46), SPT(0.98, 0.55), SPT(0.975, 0.64),
+              SPT(0.97, 0.72), SPT(0.96, 0.80), SPT(0.94, 0.88), SPT(0.91, 0.94),
+              SPT(0.86, 0.97), SPT(0.80, 0.97), SPT(0.72, 0.96), SPT(0.66, 0.92),
+              SPT(0.62, 0.86), SPT(0.30, 0.78), SPT(0.26, 0.70), SPT(0.22, 0.62),
+              SPT(0.20, 0.54), SPT(0.18, 0.47), SPT(0.20, 0.40), SPT(0.24, 0.33),
+              SPT(0.29, 0.27), SPT(0.34, 0.23), SPT(0.38, 0.21), SPT(0.40, 0.21),
+              SPT(0.40, 0.26), SPT(0.38, 0.33), SPT(0.34, 0.42), SPT(0.32, 0.52),
+              SPT(0.34, 0.62), SPT(0.38, 0.72), SPT(0.42, 0.80) },
+            { SPT(0.20, 0.42), SPT(0.19, 0.24), SPT(0.20, 0.15), SPT(0.23, 0.09),
+              SPT(0.27, 0.05), SPT(0.33, 0.03), SPT(0.40, 0.03), SPT(0.46, 0.03),
+              SPT(0.52, 0.03), SPT(0.57, 0.03), SPT(0.62, 0.04), SPT(0.67, 0.05),
+              SPT(0.72, 0.07), SPT(0.76, 0.10), SPT(0.80, 0.13), SPT(0.84, 0.18),
+              SPT(0.87, 0.24), SPT(0.90, 0.32), SPT(0.92, 0.40), SPT(0.94, 0.50),
+              SPT(0.95, 0.60), SPT(0.95, 0.71), SPT(0.93, 0.81), SPT(0.88, 0.90),
+              SPT(0.81, 0.96), SPT(0.72, 0.98), SPT(0.62, 0.98), SPT(0.52, 0.96),
+              SPT(0.44, 0.92), SPT(0.38, 0.84), SPT(0.33, 0.76), SPT(0.29, 0.66),
+              SPT(0.26, 0.56), SPT(0.24, 0.47), SPT(0.24, 0.39), SPT(0.26, 0.32),
+              SPT(0.29, 0.27), SPT(0.33, 0.23), SPT(0.37, 0.22), SPT(0.40, 0.22),
+              SPT(0.39, 0.27), SPT(0.36, 0.33), SPT(0.32, 0.40), SPT(0.30, 0.49),
+              SPT(0.32, 0.59), SPT(0.35, 0.69), SPT(0.40, 0.79) },
+            { SPT(0.10, 0.42), SPT(0.09, 0.24), SPT(0.10, 0.15), SPT(0.13, 0.09),
+              SPT(0.17, 0.05), SPT(0.24, 0.03), SPT(0.30, 0.03), SPT(0.36, 0.03),
+              SPT(0.42, 0.03), SPT(0.48, 0.03), SPT(0.54, 0.03), SPT(0.60, 0.03),
+              SPT(0.65, 0.04), SPT(0.70, 0.05), SPT(0.75, 0.08), SPT(0.80, 0.11),
+              SPT(0.85, 0.16), SPT(0.89, 0.22), SPT(0.92, 0.30), SPT(0.94, 0.38),
+              SPT(0.95, 0.48), SPT(0.95, 0.58), SPT(0.94, 0.70), SPT(0.90, 0.82),
+              SPT(0.84, 0.92), SPT(0.74, 0.97), SPT(0.64, 0.98), SPT(0.54, 0.98),
+              SPT(0.46, 0.96), SPT(0.40, 0.06), SPT(0.36, 0.07), SPT(0.32, 0.08),
+              SPT(0.30, 0.10), SPT(0.32, 0.13), SPT(0.36, 0.15), SPT(0.40, 0.15),
+              SPT(0.43, 0.15), SPT(0.46, 0.14), SPT(0.48, 0.12), SPT(0.47, 0.10),
+              SPT(0.45, 0.08), SPT(0.42, 0.06), SPT(0.40, 0.05), SPT(0.38, 0.05),
+              SPT(0.37, 0.06), SPT(0.38, 0.07), SPT(0.40, 0.07) },
+            { SPT(0.10, 0.46), SPT(0.09, 0.28), SPT(0.11, 0.18), SPT(0.15, 0.12),
+              SPT(0.20, 0.08), SPT(0.28, 0.05), SPT(0.35, 0.04), SPT(0.42, 0.04),
+              SPT(0.48, 0.04), SPT(0.54, 0.04), SPT(0.61, 0.04), SPT(0.67, 0.05),
+              SPT(0.72, 0.06), SPT(0.77, 0.09), SPT(0.82, 0.12), SPT(0.86, 0.18),
+              SPT(0.89, 0.28), SPT(0.91, 0.46), SPT(0.92, 0.54), SPT(0.91, 0.62),
+              SPT(0.88, 0.70), SPT(0.84, 0.78), SPT(0.78, 0.85), SPT(0.70, 0.90),
+              SPT(0.60, 0.93), SPT(0.50, 0.94), SPT(0.40, 0.93), SPT(0.30, 0.90),
+              SPT(0.22, 0.85), SPT(0.16, 0.78), SPT(0.22, 0.72), SPT(0.30, 0.68),
+              SPT(0.38, 0.66), SPT(0.44, 0.66), SPT(0.50, 0.66), SPT(0.56, 0.66),
+              SPT(0.62, 0.68), SPT(0.66, 0.70), SPT(0.68, 0.73), SPT(0.66, 0.77),
+              SPT(0.60, 0.79), SPT(0.52, 0.80), SPT(0.44, 0.80), SPT(0.36, 0.78),
+              SPT(0.28, 0.76), SPT(0.21, 0.75), SPT(0.16, 0.76) },
+            { SPT(0.10, 0.48), SPT(0.10, 0.30), SPT(0.12, 0.20), SPT(0.16, 0.13),
+              SPT(0.22, 0.09), SPT(0.29, 0.06), SPT(0.36, 0.05), SPT(0.43, 0.05),
+              SPT(0.50, 0.05), SPT(0.57, 0.05), SPT(0.63, 0.06), SPT(0.69, 0.08),
+              SPT(0.74, 0.11), SPT(0.79, 0.15), SPT(0.83, 0.20), SPT(0.87, 0.30),
+              SPT(0.89, 0.48), SPT(0.90, 0.56), SPT(0.89, 0.64), SPT(0.86, 0.71),
+              SPT(0.82, 0.78), SPT(0.76, 0.84), SPT(0.68, 0.89), SPT(0.58, 0.92),
+              SPT(0.48, 0.93), SPT(0.38, 0.92), SPT(0.28, 0.89), SPT(0.20, 0.84),
+              SPT(0.14, 0.78), SPT(0.18, 0.70), SPT(0.24, 0.64), SPT(0.32, 0.61),
+              SPT(0.40, 0.60), SPT(0.46, 0.60), SPT(0.52, 0.60), SPT(0.58, 0.60),
+              SPT(0.63, 0.62), SPT(0.66, 0.65), SPT(0.66, 0.68), SPT(0.63, 0.71),
+              SPT(0.56, 0.73), SPT(0.48, 0.74), SPT(0.40, 0.74), SPT(0.32, 0.72),
+              SPT(0.25, 0.70), SPT(0.20, 0.69), SPT(0.18, 0.69) }
+        } },
+        // BackHair: bottom cascade -> narrow band TRAILING the profile skull -> full back mass.
+        { "BackHair", {
+            { SPT(0.18, 0.90), SPT(0.30, 0.82), SPT(0.44, 0.80), SPT(0.56, 0.80),
+              SPT(0.70, 0.82), SPT(0.82, 0.90), SPT(0.74, 0.96), SPT(0.26, 0.96) },
+            { SPT(0.36, 0.74), SPT(0.46, 0.66), SPT(0.58, 0.63), SPT(0.67, 0.64),
+              SPT(0.75, 0.70), SPT(0.80, 0.84), SPT(0.66, 0.95), SPT(0.38, 0.95) },
+            { SPT(0.72, 0.30), SPT(0.80, 0.40), SPT(0.85, 0.55), SPT(0.87, 0.70),
+              SPT(0.87, 0.84), SPT(0.84, 0.94), SPT(0.72, 0.96), SPT(0.66, 0.70) },
+            { SPT(0.34, 0.62), SPT(0.46, 0.56), SPT(0.60, 0.55), SPT(0.70, 0.58),
+              SPT(0.78, 0.64), SPT(0.80, 0.84), SPT(0.66, 0.95), SPT(0.36, 0.95) },
+            { SPT(0.14, 0.72), SPT(0.28, 0.64), SPT(0.42, 0.62), SPT(0.58, 0.62),
+              SPT(0.72, 0.64), SPT(0.86, 0.72), SPT(0.80, 0.94), SPT(0.20, 0.94) },
+            { SPT(0.30, 0.72), SPT(0.44, 0.66), SPT(0.56, 0.66), SPT(0.68, 0.68),
+              SPT(0.78, 0.74), SPT(0.80, 0.86), SPT(0.60, 0.94), SPT(0.34, 0.94) },
+            { SPT(0.34, 0.74), SPT(0.46, 0.68), SPT(0.58, 0.68), SPT(0.68, 0.70),
+              SPT(0.78, 0.76), SPT(0.80, 0.88), SPT(0.62, 0.94), SPT(0.36, 0.94) }
+        } },
+        { nullptr, {} }   // table sentinel
+    };
+    return Table;
+}
+
+// nullptr (fall back to the squish/slide formula) for any part not in the
+// table — including every anatomical feature.
+inline const FPSchematicPoseSet* FPSchematicAuthoredPoses(const char* Name)
+{
+    if (!Name || !Name[0]) return nullptr;
+    for (const FPSchematicPoseEntry* E = FPSchematicAuthoredPoseTable(); E->Name; ++E)
+        if (std::string(E->Name) == Name) return &E->Pose;
+    return nullptr;
+}
+
+// ============================================================================
+// Phase 6: authored-pose validation. Every ring must be a valid closed
+// silhouette (>= 3 finite points inside [0,1]^2; the ring is implicitly closed
+// last->first) and every pose must keep the front point count so the morph
+// never degenerates. The back pose must differ from the front by the measured
+// 41% gate (fraction of ring points displaced by > 10% of the canvas): real 2D
+// art has structurally different back silhouettes, so a back pose that is
+// nearly a copy of the front is a data error the validator must catch.
+// ============================================================================
+inline bool FPOutlineIsValidClosedRing(const std::vector<FPSchematicPoint>& Ring)
+{
+    if (Ring.size() < 3) return false;
+    for (const FPSchematicPoint& P : Ring)
+    {
+        if (!(P.X == P.X) || !(P.Y == P.Y)) return false;            // NaN guard
+        if (P.X < 0.0 || P.X > 1.0 || P.Y < 0.0 || P.Y > 1.0) return false;
+    }
+    return true;
+}
+
+struct FPSchematicPoseValidation
+{
+    bool bAllRingsValid = false;       // all 7 rings valid AND count-matched
+    int InvalidRingCount = 0;
+    int RingPointCount = 0;            // the front ring's point count
+    int BackMovedPoints = 0;           // front->back points displaced > threshold
+    static constexpr double BackChangeThreshold = 0.41;   // measured 41% gate
+    static constexpr double PointDisplacementThreshold = 0.10;   // 10% of canvas
+};
+
+inline FPSchematicPoseValidation FPSchematicValidatePoseSet(const FPSchematicPoseSet& S)
+{
+    FPSchematicPoseValidation V;
+    const std::vector<FPSchematicPoint>* Rings[7] = {
+        &S.P0, &S.P45, &S.P90, &S.P135, &S.P180, &S.PTop, &S.PBottom };
+    for (const std::vector<FPSchematicPoint>* R : Rings)
+        if (!FPOutlineIsValidClosedRing(*R)) ++V.InvalidRingCount;
+    V.RingPointCount = (int)S.P0.size();
+    for (const std::vector<FPSchematicPoint>* R : Rings)
+        if ((int)R->size() != V.RingPointCount) ++V.InvalidRingCount;
+    V.bAllRingsValid = (V.InvalidRingCount == 0);
+    if (V.RingPointCount >= 2 && (int)S.P180.size() == V.RingPointCount)
+    {
+        for (int i = 0; i < V.RingPointCount; ++i)
+        {
+            const double dx = S.P0[i].X - S.P180[i].X;
+            const double dy = S.P0[i].Y - S.P180[i].Y;
+            if (std::sqrt(dx * dx + dy * dy)
+                > FPSchematicPoseValidation::PointDisplacementThreshold)
+                ++V.BackMovedPoints;
+        }
+    }
+    return V;
+}
+
+struct FPSchematicPoseValidationSummary
+{
+    int TotalPoseSets = 0;
+    int ValidPoseSets = 0;
+    int TotalRings = 0;
+    int InvalidRings = 0;
+    int TotalBackPoints = 0;
+    int TotalBackMoved = 0;
+
+    bool bAllAuthoredPosesValid() const { return TotalPoseSets > 0 && InvalidRings == 0; }
+    double AggregateBackChange() const
+    {
+        return TotalBackPoints > 0 ? (double)TotalBackMoved / (double)TotalBackPoints : 0.0;
+    }
+    bool bBackDiffersFromFront() const
+    {
+        return AggregateBackChange() >= FPSchematicPoseValidation::BackChangeThreshold;
+    }
+};
+
+inline FPSchematicPoseValidationSummary FPSchematicValidateAllAuthoredPoses()
+{
+    FPSchematicPoseValidationSummary S;
+    for (const FPSchematicPoseEntry* E = FPSchematicAuthoredPoseTable(); E->Name; ++E)
+    {
+        const FPSchematicPoseValidation V = FPSchematicValidatePoseSet(E->Pose);
+        ++S.TotalPoseSets;
+        S.TotalRings += 7;
+        S.InvalidRings += V.InvalidRingCount;
+        if (V.bAllRingsValid) ++S.ValidPoseSets;
+        S.TotalBackPoints += V.RingPointCount;
+        S.TotalBackMoved += V.BackMovedPoints;
+    }
+    return S;
+}
+
+// Clamped smoothstep in [0,1] (the turn-ease used for the morph weights).
+inline double FPSmoothstep01(double T)
+{
+    T = T < 0.0 ? 0.0 : (T > 1.0 ? 1.0 : T);
+    return T * T * (3.0 - 2.0 * T);
+}
+
+// Per-vertex smoothstep morph between the two authored yaw poses bracketing
+// |yaw| (exact at the 0/45/90/135/180 state centers). Output keeps the front
+// point count; a size mismatch in the table degrades to the smaller ring.
+inline void FPSchematicYawMorph(const FPSchematicPoseSet& S, double YawAbs,
+    std::vector<FPSchematicPoint>& Out)
+{
+    const size_t N = S.P0.size();
+    Out.resize(N);
+    const std::vector<FPSchematicPoint>* A = &S.P0;
+    const std::vector<FPSchematicPoint>* B = &S.P0;
+    double T = 0.0;
+    if (YawAbs <= 0.0)
+    {
+        A = &S.P0; B = &S.P0;
+    }
+    else if (YawAbs >= 180.0)
+    {
+        A = &S.P180; B = &S.P180;
+    }
+    else if (YawAbs <= 45.0)
+    {
+        A = &S.P0;  B = &S.P45;  T = FPSmoothstep01(YawAbs / 45.0);
+    }
+    else if (YawAbs <= 90.0)
+    {
+        A = &S.P45; B = &S.P90;  T = FPSmoothstep01((YawAbs - 45.0) / 45.0);
+    }
+    else if (YawAbs <= 135.0)
+    {
+        A = &S.P90; B = &S.P135; T = FPSmoothstep01((YawAbs - 90.0) / 45.0);
+    }
+    else
+    {
+        A = &S.P135; B = &S.P180; T = FPSmoothstep01((YawAbs - 135.0) / 45.0);
+    }
+    const size_t NA = std::min(A->size(), B->size());
+    const size_t NM = std::min(N, NA);
+    for (size_t i = 0; i < NM; ++i)
+    {
+        const FPSchematicPoint& Pa = (*A)[i];
+        const FPSchematicPoint& Pb = (*B)[i];
+        Out[i] = { Pa.X + (Pb.X - Pa.X) * T, Pa.Y + (Pb.Y - Pa.Y) * T };
+    }
+    if (NM > 0)
+        for (size_t i = NM; i < Out.size(); ++i) Out[i] = Out[NM - 1];
+}
+
+// Full authored silhouette orientation: yaw morph (with exact horizontal mirror
+// for negative yaw) then a pitch blend toward the authored Top/Bottom pose
+// whose weight is smoothstep(|pitch|/90) and FADES with |yaw| (the profile
+// keeps its authored profile shape at high yaw; the Top/Bottom poses are exact
+// only at yaw 0 — "blended at yaw > 0"). Always clamped into [0,1]^2.
+inline std::vector<FPSchematicPoint> FPOrientationAuthoredMorph(
+    const FPSchematicPoseSet& S, double YawDeg, double PitchDeg)
+{
+    const double A = YawDeg < 0.0 ? -YawDeg : YawDeg;
+    const bool bMirror = YawDeg < 0.0;
+
+    std::vector<FPSchematicPoint> M;
+    FPSchematicYawMorph(S, A, M);
+
+    const double P = PitchDeg < -90.0 ? -90.0 : (PitchDeg > 90.0 ? 90.0 : PitchDeg);
+    double PW = FPSmoothstep01(P < 0.0 ? -P / 90.0 : P / 90.0);
+    PW *= (1.0 - (A > 180.0 ? 180.0 : A) / 180.0);
+
+    std::vector<FPSchematicPoint> Out = M;
+    if (PW > 0.0)
+    {
+        const std::vector<FPSchematicPoint>& Tgt =
+            (P >= 0.0) ? S.PTop : S.PBottom;
+        const size_t NB = std::min(M.size(), Tgt.size());
+        for (size_t i = 0; i < Out.size(); ++i)
+        {
+            if (i >= NB) continue;
+            const FPSchematicPoint& Pb = Tgt[i];
+            Out[i].X += (Pb.X - Out[i].X) * PW;
+            Out[i].Y += (Pb.Y - Out[i].Y) * PW;
+        }
+    }
+
+    if (bMirror)
+        for (FPSchematicPoint& p : Out) p.X = 1.0 - p.X;
+    for (FPSchematicPoint& p : Out)
+    {
+        p.X = p.X < 0.0 ? 0.0 : (p.X > 1.0 ? 1.0 : p.X);
+        p.Y = p.Y < 0.0 ? 0.0 : (p.Y > 1.0 ? 1.0 : p.Y);
+    }
+    return Out;
+}
+
 // Flip the FRONT-facing glyph to the given orientation: a smooth parallax
 // blend between the per-view 2D state layouts, with a flip at each exact
 // state center. Every part is BILLBOARDED (a flat card always facing the
@@ -933,6 +1536,14 @@ inline std::vector<FPSchematicPoint> FPOrientationOutline(
 {
     std::vector<FPSchematicPoint> Out;
     if (Front.size() < 3) return Out;
+
+    // Phase 5: silhouette parts with authored per-state key poses morph
+    // between EXACT state shapes (a profile is structurally different from a
+    // squished front — forehead-nose-chin vs skull-nape); everything else
+    // falls back to the billboard squish/slide formula below.
+    if (const FPSchematicPoseSet* Authored = FPSchematicAuthoredPoses(Name))
+        return FPOrientationAuthoredMorph(*Authored, YawDeg, PitchDeg);
+
     const double A = YawDeg < 0.0 ? -YawDeg : YawDeg;   // |yaw| for the ramps
     const double Sign = YawDeg >= 0.0 ? 1.0 : -1.0;     // left half = mirror
     const bool bSil = FPSchematicIsSilhouette(Name);
