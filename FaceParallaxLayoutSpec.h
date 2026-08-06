@@ -455,27 +455,6 @@ inline std::vector<FPLayoutNode> BuildSpec()
     P(StateStrip, 2, 3, 2, 3);
     b.N[(size_t)StateStrip].FixedH = StateStripHeight;
 
-    // ========================== 2b. ZONE DIAGRAM ==========================
-    const int ZoneDiagram = VF(b, "ZoneDiagram",
-        LF(b, "ZD-YawLabel", 120, 12),
-        LF(b, "ZD-PitchLabel", 120, 12),
-        HF(b, "ZD-Strips",
-            LF(b, "ZD-Strip0", 40, 20), LF(b, "ZD-Strip1", 40, 20),
-            LF(b, "ZD-Strip2", 40, 20), LF(b, "ZD-Strip3", 40, 20),
-            LF(b, "ZD-Strip4", 40, 20), LF(b, "ZD-Strip5", 40, 20),
-            LF(b, "ZD-Strip6", 40, 20), LF(b, "ZD-Strip7", 40, 20),
-            LF(b, "ZD-Strip8", 40, 20), LF(b, "ZD-Strip9", 40, 20)));
-    S(ZoneDiagram, 1);
-    P(ZoneDiagram, 4, 2, 4, 2);
-    M(b.N[(size_t)ZoneDiagram].Children[0], 2, 0, 2, 0);
-    M(b.N[(size_t)ZoneDiagram].Children[1], 2, 0, 2, 0);
-    {
-        const int Strips = b.N[(size_t)ZoneDiagram].Children[2];
-        S(Strips, 2);
-        b.N[(size_t)Strips].FixedH = ZoneDiagramHeight;
-        M(Strips, 2, 1, 2, 1);
-    }
-
     // ========================== 3. MAIN AREA ==========================
     const int MainRow = HF(b, "MainRow",
         // --- 3a. CENTER COLUMN ---
@@ -493,6 +472,17 @@ inline std::vector<FPLayoutNode> BuildSpec()
                     LF(b, "CN-OptsLbl", 44, 10)),
                 LF(b, "CN-Spacer", 0, 0)),
             LF(b, "CN-FilterRow", 420, 28),
+            // 2b. ZONE DIAGRAM (Req 4: the 360 rotation bar lives ABOVE the
+            // schematic canvas in the center column, not at the widget top).
+            VF(b, "CN-ZoneDiagram",
+                LF(b, "ZD-YawLabel", 120, 12),
+                LF(b, "ZD-PitchLabel", 120, 12),
+                HF(b, "ZD-Strips",
+                    LF(b, "ZD-Strip0", 40, 20), LF(b, "ZD-Strip1", 40, 20),
+                    LF(b, "ZD-Strip2", 40, 20), LF(b, "ZD-Strip3", 40, 20),
+                    LF(b, "ZD-Strip4", 40, 20), LF(b, "ZD-Strip5", 40, 20),
+                    LF(b, "ZD-Strip6", 40, 20), LF(b, "ZD-Strip7", 40, 20),
+                    LF(b, "ZD-Strip8", 40, 20), LF(b, "ZD-Strip9", 40, 20))),
             OV(b, "CN-Preview",
                 LF(b, "PV-Image", 0, 0),
                 LF(b, "PV-Outline", 0, 0),
@@ -701,7 +691,8 @@ inline std::vector<FPLayoutNode> BuildSpec()
                                 LF(b, "HT-0", 28, 48), LF(b, "HT-1", 28, 48), LF(b, "HT-2", 28, 48),
                                 LF(b, "HT-3", 28, 48), LF(b, "HT-4", 28, 48), LF(b, "HT-5", 28, 48),
                                 LF(b, "HT-6", 28, 48), LF(b, "HT-7", 28, 48), LF(b, "HT-8", 28, 48),
-                                LF(b, "HT-9", 28, 48))))),
+                                LF(b, "HT-9", 28, 48), LF(b, "HT-10", 28, 48), LF(b, "HT-11", 28, 48),
+                                LF(b, "HT-12", 28, 48), LF(b, "HT-13", 28, 48))))),
                 // ---- Page 3 "Preview & Debug": camera follow + camera +
                 // blend preview + edge analysis + depth debug.
                 VF(b, "CP-P3-Preview",
@@ -1026,7 +1017,8 @@ inline std::vector<FPLayoutNode> BuildSpec()
                     M(b.N[(size_t)Orb].Children[4], 4, 0, 0, 0);
                     const int Th = b.N[(size_t)Bod(HR)].Children[1];
                     S(Th, 2);
-                    b.N[(size_t)Th].FixedH = 98;
+                    // 14 states, 5 per row -> 3 rows (5/5/4): 3x48 + 2x2.
+                    b.N[(size_t)Th].FixedH = 148;
                     for (int c = 0; c < (int)b.N[(size_t)Th].Children.size(); ++c)
                         GP(b.N[(size_t)Th].Children[(size_t)c], c % 5, c / 5);
                 }
@@ -1209,8 +1201,23 @@ inline std::vector<FPLayoutNode> BuildSpec()
             }
             Sp(b.N[(size_t)Mode].Children[6]);
         }
+        // Req 4: the zone diagram sits between the filter row and the canvas
+        // (mirrors BuildPanelCanvas: slot padding (2,0,2,0) + border padding
+        // (4,2)); its label + 20px strip row feed the 360-rotation scrub.
         {
-            const int Prev = b.N[(size_t)Center].Children[2];
+            const int ZoneDiagram = b.N[(size_t)Center].Children[2];
+            S(ZoneDiagram, 1);
+            P(ZoneDiagram, 4, 2, 4, 2);
+            M(ZoneDiagram, 2, 0, 2, 0);
+            M(b.N[(size_t)ZoneDiagram].Children[0], 2, 0, 2, 0);
+            M(b.N[(size_t)ZoneDiagram].Children[1], 2, 0, 2, 0);
+            const int Strips = b.N[(size_t)ZoneDiagram].Children[2];
+            S(Strips, 2);
+            b.N[(size_t)Strips].FixedH = ZoneDiagramHeight;
+            M(Strips, 2, 1, 2, 1);
+        }
+        {
+            const int Prev = b.N[(size_t)Center].Children[3];
             b.N[(size_t)Prev].FixedH = PreviewCanvasHeight;
             b.N[(size_t)Prev].FixedW = FaceCanvasWidth;
             b.N[(size_t)Prev].bAspectRatio = true;   // P23: square canvas - the face is never stretched
@@ -1225,11 +1232,10 @@ inline std::vector<FPLayoutNode> BuildSpec()
         // nothing can overlap the timeline / terminal output window below
         // (the mirror rows make that overlap detectable - a taller canvas or
         // a wrapping parts strip fires).
-        M(b.N[(size_t)Center].Children[2], 4, 2, 4, 0);   // CN-FilterRow
-        M(b.N[(size_t)Center].Children[3], 4, 2, 4, 0);   // CN-Legend
-        M(b.N[(size_t)Center].Children[4], 2, 2, 2, 0);   // CN-PartsStrip
-        M(b.N[(size_t)Center].Children[5], 4, 2, 4, 0);   // CN-EdgeLegend
-        M(b.N[(size_t)Center].Children[6], 4, 2, 4, 0);   // CN-LayerLabel
+        M(b.N[(size_t)Center].Children[4], 4, 2, 4, 0);   // CN-Legend
+        M(b.N[(size_t)Center].Children[5], 2, 2, 2, 0);   // CN-EdgeLegend
+        M(b.N[(size_t)Center].Children[6], 4, 2, 4, 0);   // CN-PartsStrip
+        M(b.N[(size_t)Center].Children[7], 4, 2, 4, 0);   // CN-LayerLabel
     }
 
 
@@ -1315,7 +1321,7 @@ inline std::vector<FPLayoutNode> BuildSpec()
 
     // =========================== ROOT ===========================
     const int Root = VF(b, "Root",
-        Toolbar, StateStrip, ZoneDiagram, PinnedStrip, CTTabRow, MainRow, Timeline, FrameCounts, BotArea, DiagLog);
+        Toolbar, StateStrip, PinnedStrip, CTTabRow, MainRow, Timeline, FrameCounts, BotArea, DiagLog);
     (void)Root;
 
     return b.N;
@@ -2220,6 +2226,26 @@ inline double FPZoneScrubYawAfterDrag(double StartYaw, double DeltaPx, double Wi
     return Yaw;
 }
 
+// Req 5: the 360 rotation strip reads in camera-orbit order starting at the
+// LEFT profile - Left -> 3/4L -> Front -> 3/4R -> Right -> BackR -> Back ->
+// BackL - with the right edge wrapping back to the left edge, so the strip is
+// a continuous turn with no jump. The strip's left edge is the Left profile
+// zone START (-135 deg: the BkL far end), so pixel x for a yaw is
+// (yaw - (-135)) mod 360 / 360 * width. FPZoneStripPixelForYaw is the pure
+// contract the drag overlay uses for its boundary lines + yaw cursor; the
+// scrub math (FPZoneScrubYawAfterDrag) stays relative, so it is order-
+// independent and unchanged.
+inline constexpr double FPZoneStripRebaseDeg = 135.0;
+
+inline double FPZoneStripPixelForYaw(double Yaw, double WidthPx)
+{
+    if (WidthPx <= 0.0) return 0.0;                          // degenerate width
+    double Y = Yaw + FPZoneStripRebaseDeg;                   // left edge = -135
+    while (Y >= 360.0) Y -= 360.0;                           // wrap to [0, 360)
+    while (Y < 0.0) Y += 360.0;
+    return Y / 360.0 * WidthPx;
+}
+
 // Phase C up/down view scrub (the vertical mirror of the yaw scrub). The full
 // strip height maps to the 180° pitch span and the result CLAMPS to
 // [-90, 90] — up/down has no wrap (a head can't tilt past straight-down then
@@ -2263,14 +2289,14 @@ inline std::string FPTransformReadout(float PosX, float PosY, float ScaleX,
 inline std::vector<FPHotspotRegion> DefaultHotspotRegions()
 {
     return {
-        { "BrowL", { HP(0.22, 0.335), HP(0.27, 0.295), HP(0.34, 0.29), HP(0.42, 0.325),
-                     HP(0.39, 0.345), HP(0.34, 0.315), HP(0.27, 0.325), HP(0.24, 0.35) } },
-        { "BrowR", { HP(0.78, 0.335), HP(0.73, 0.295), HP(0.66, 0.29), HP(0.58, 0.325),
-                     HP(0.61, 0.345), HP(0.66, 0.315), HP(0.73, 0.325), HP(0.76, 0.35) } },
-        { "EyeL", { HP(0.26, 0.355), HP(0.37, 0.355), HP(0.40, 0.43), HP(0.37, 0.52),
-                    HP(0.26, 0.52), HP(0.245, 0.43) } },
-        { "EyeR", { HP(0.63, 0.355), HP(0.74, 0.355), HP(0.755, 0.43), HP(0.74, 0.52),
-                    HP(0.63, 0.52), HP(0.60, 0.43) } },
+        { "BrowL", { HP(0.262, 0.268), HP(0.462, 0.278), HP(0.462, 0.298),
+                     HP(0.262, 0.296) } },
+        { "BrowR", { HP(0.738, 0.268), HP(0.538, 0.278), HP(0.538, 0.298),
+                     HP(0.738, 0.296) } },
+        { "EyeL", { HP(0.2942, 0.388), HP(0.4314, 0.388), HP(0.4314, 0.492),
+                    HP(0.2942, 0.492) } },
+        { "EyeR", { HP(0.5686, 0.388), HP(0.7058, 0.388), HP(0.7058, 0.492),
+                    HP(0.5686, 0.492) } },
         { "Nose", // minuscule triangle hint: bridge between the eyes, tiny tip
             { HP(0.43, 0.61), HP(0.57, 0.61), HP(0.54, 0.67), HP(0.50, 0.69),
               HP(0.46, 0.67) } },
@@ -2282,12 +2308,12 @@ inline std::vector<FPHotspotRegion> DefaultHotspotRegions()
             { HP(0.41, 0.75), HP(0.50, 0.74), HP(0.59, 0.75), HP(0.61, 0.78),
               HP(0.55, 0.82), HP(0.45, 0.82), HP(0.39, 0.78) },
             { { HP(0.46, 0.775), HP(0.54, 0.775), HP(0.56, 0.79), HP(0.50, 0.80), HP(0.44, 0.79) } } },
-        { "Teeth", { HP(0.46, 0.775), HP(0.54, 0.775), HP(0.56, 0.79), HP(0.50, 0.80), HP(0.44, 0.79) } },
+        { "Teeth", { HP(0.44, 0.775), HP(0.56, 0.775), HP(0.58, 0.792), HP(0.42, 0.792) } },
         { "Chin", { HP(0.43, 0.81), HP(0.57, 0.81), HP(0.53, 0.85), HP(0.50, 0.86), HP(0.47, 0.85) } },
-        { "EarL", { HP(0.02, 0.42), HP(0.06, 0.36), HP(0.11, 0.42), HP(0.105, 0.60),
-                    HP(0.06, 0.68), HP(0.03, 0.60) } },
-        { "EarR", { HP(0.98, 0.42), HP(0.94, 0.36), HP(0.89, 0.42), HP(0.895, 0.60),
-                    HP(0.94, 0.68), HP(0.97, 0.60) } },
+        { "EarL", { HP(0.02, 0.42), HP(0.06, 0.385), HP(0.11, 0.42), HP(0.105, 0.60),
+                    HP(0.06, 0.685), HP(0.03, 0.60) } },
+        { "EarR", { HP(0.98, 0.42), HP(0.94, 0.385), HP(0.89, 0.42), HP(0.895, 0.60),
+                    HP(0.94, 0.685), HP(0.97, 0.60) } },
         { "Neck", { HP(0.43, 0.86), HP(0.57, 0.86), HP(0.68, 0.98), HP(0.32, 0.98) } }
     };
 }
@@ -2801,7 +2827,7 @@ inline const std::vector<std::string>& CameraSourceLabels()
 inline double ZoneBoundaryAfterDrag(double Multiplier, double DeltaDegrees, double HalfZoneWidth)
 {
     if (Multiplier != Multiplier) return Multiplier;  // NaN guard
-    const double HZW = (HalfZoneWidth > 1e-6) ? HalfZoneWidth : 22.5;
+    const double HZW = (HalfZoneWidth > 1e-6) ? HalfZoneWidth : 45.0;
     double Deg = Multiplier * HZW + (DeltaDegrees != DeltaDegrees ? 0.0 : DeltaDegrees);
     double M = Deg / HZW;
     if (M < 0.5) M = 0.5;

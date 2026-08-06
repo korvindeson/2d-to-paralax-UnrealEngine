@@ -22,14 +22,23 @@ enum class ECameraSource : uint8
 UENUM(BlueprintType)
 enum class EFaceAngleState : uint8
 {
+    // 14-state view set (art_guide gap closure WI1): the 22.5/67.5 sub-
+    // threshold zones (Narrow/Sliver) are inserted between Front, 3/4 and the
+    // profile so the turn reads in 22.5-degree camera steps. The index order
+    // is the camera-orbit order on the right side, then the mirrored left
+    // side, then the pitch extremes — indices 0-13.
     Front               UMETA(DisplayName = "Front View"),
+    NarrowRight         UMETA(DisplayName = "Narrow Right"),
     ThreeQuarterRight   UMETA(DisplayName = "3/4 Right"),
+    SliverRight         UMETA(DisplayName = "Sliver Right"),
     RightProfile        UMETA(DisplayName = "Right Profile"),
     BackRight           UMETA(DisplayName = "Back Right"),
     Back                UMETA(DisplayName = "Back View"),
     BackLeft            UMETA(DisplayName = "Back Left"),
     LeftProfile         UMETA(DisplayName = "Left Profile"),
+    SliverLeft          UMETA(DisplayName = "Sliver Left"),
     ThreeQuarterLeft    UMETA(DisplayName = "3/4 Left"),
+    NarrowLeft          UMETA(DisplayName = "Narrow Left"),
     Top                 UMETA(DisplayName = "Top View"),
     Bottom              UMETA(DisplayName = "Bottom View")
 };

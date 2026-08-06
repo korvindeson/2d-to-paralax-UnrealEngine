@@ -652,7 +652,7 @@ FLinearColor UFaceParallaxEditorWidget::GetStateDotColor(EFaceAngleState State) 
 
 void UFaceParallaxEditorWidget::RefreshViewStripDots()
 {
-    for (int32 i = 0; i < ViewTabDots.Num() && i < 10; ++i)
+    for (int32 i = 0; i < ViewTabDots.Num() && i < 14; ++i)
     {
         if (ViewTabDots[i].IsValid())
             ViewTabDots[i]->SetColorAndOpacity(GetStateDotColor((EFaceAngleState)i));
@@ -726,7 +726,7 @@ void UFaceParallaxEditorWidget::RefreshStatusBadge()
     TotalLayers = AllTags.Num();
     if (ActivePreset)
     {
-        for (int32 S = 0; S < 10; ++S)
+        for (int32 S = 0; S < 14; ++S)
         {
             bool bAllArt = AllTags.Num() > 0;
             for (const FName& Tag : AllTags)
@@ -757,7 +757,7 @@ int32 UFaceParallaxEditorWidget::FillMissingViewsFromActiveSlot()
     }
     int32 Filled = 0;
     FWidgetUndoScope UndoScope(this, TEXT("Fill Missing Views"));
-    for (int32 i = 0; i < 10; ++i)
+    for (int32 i = 0; i < 14; ++i)
     {
         const EFaceAngleState S = (EFaceAngleState)i;
         if (S == ActiveViewState) continue;
@@ -855,7 +855,7 @@ TArray<EFaceAngleState> UFaceParallaxEditorWidget::GetLinkTargets(EFaceAngleStat
 TArray<bool> UFaceParallaxEditorWidget::GetPickedSyncViews() const
 {
     TArray<bool> Out;
-    for (int32 i = 0; i < SyncViewCheckBoxes.Num() && i < 10; ++i)
+    for (int32 i = 0; i < SyncViewCheckBoxes.Num() && i < 14; ++i)
         Out.Add(SyncViewCheckBoxes[i].IsValid() && SyncViewCheckBoxes[i]->IsChecked());
     return Out;
 }
@@ -1774,13 +1774,14 @@ void UFaceParallaxEditorWidget::RefreshHullThumbnails()
 {
     if (!HullThumbBox.IsValid()) return;
     HullThumbBox->ClearChildren();
-    HullThumbBrushes.SetNum(10);
+    HullThumbBrushes.SetNum((int32)EFaceAngleState::Bottom + 1);
     // P22: five 28px-wide thumbs per row (28x21, 4:3) + 2px gaps keep the
-    // grid at 160px inside the 168px rail budget.
+    // grid at 160px inside the 168px rail budget. 14 states -> 3 rows
+    // (5/5/4) so every EFaceAngleState index gets a thumb.
     TSharedRef<SGridPanel> Grid = SNew(SGridPanel);
     static const TCHAR* HullShort[] = {
-        TEXT("F"), TEXT("3R"), TEXT("PR"), TEXT("BR"), TEXT("B"),
-        TEXT("BL"), TEXT("PL"), TEXT("3L"), TEXT("TP"), TEXT("BT"),
+        TEXT("F"), TEXT("NR"), TEXT("3R"), TEXT("SR"), TEXT("PR"), TEXT("BR"), TEXT("B"),
+        TEXT("BL"), TEXT("PL"), TEXT("SL"), TEXT("3L"), TEXT("NL"), TEXT("TP"), TEXT("BT"),
     };
     for (int32 i = 0; i <= (int32)EFaceAngleState::Bottom; ++i)
     {
@@ -2853,13 +2854,17 @@ void UFaceParallaxEditorWidget::RebuildProblemsPanel()
         switch (S)
         {
             case EFaceAngleState::Front:            return TEXT("Front");
+            case EFaceAngleState::NarrowRight:      return TEXT("Narrow R");
             case EFaceAngleState::ThreeQuarterRight:return TEXT("3/4 R");
+            case EFaceAngleState::SliverRight:      return TEXT("Sliver R");
             case EFaceAngleState::RightProfile:     return TEXT("Profile R");
             case EFaceAngleState::BackRight:        return TEXT("Back R");
             case EFaceAngleState::Back:             return TEXT("Back");
             case EFaceAngleState::BackLeft:         return TEXT("Back L");
             case EFaceAngleState::LeftProfile:      return TEXT("Profile L");
+            case EFaceAngleState::SliverLeft:       return TEXT("Sliver L");
             case EFaceAngleState::ThreeQuarterLeft: return TEXT("3/4 L");
+            case EFaceAngleState::NarrowLeft:       return TEXT("Narrow L");
             case EFaceAngleState::Top:              return TEXT("Top");
             case EFaceAngleState::Bottom:           return TEXT("Bottom");
         }

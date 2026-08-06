@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 #include "Engine/DataAsset.h"
 #include "FaceParallaxTypes.h"
+#include "FaceParallaxVectorArt.h"
 #include "FaceParallaxPreset.generated.h"
 
 UCLASS(BlueprintType, AutoExpandCategories = ("View Assignments|Canvas"))
@@ -32,6 +33,67 @@ public:
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "View Assignments",
         meta = (DisplayName = "Hotspot Region → Layer Map"))
     TMap<FString, FName> HotspotLayerMap;
+
+    // --- VECTOR ART ---
+    // Deploy-managed per-feature vector library assets (17 features, cells
+    // keyed by full guide token). Read-only at authoring time; user art lands
+    // in VectorArtOverrides.
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vector Art",
+        meta = (DisplayName = "Vector Art Library (feature → asset)"))
+    TMap<FName, TSoftObjectPtr<UFaceVectorArt>> LibraryVectorArt;
+
+    // Per-token override assets: cell key -> asset holding that token's art.
+    // Resolution is override-wins-else-library. Empty the map entry to
+    // restore the library default (the asset itself is never deleted).
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vector Art",
+        meta = (DisplayName = "Per-Token Vector Art Overrides"))
+    TMap<FString, TSoftObjectPtr<UFaceVectorArt>> VectorArtOverrides;
+
+    // Master switch for the editor's vector-art viewer mode.
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vector Art")
+    bool bUseVectorArtViewer = true;
+
+    // Master switch for the RUNTIME albedo bakes: when on, the 3D preview
+    // quads render the per-tag composite of the vector-art cells for the
+    // current view state (baked at runtime through FPSvg::RasterizeDocument)
+    // instead of the raster slot textures. The 2D canvas viewer stays
+    // independent (bUseVectorArtViewer).
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Vector Art")
+    bool bUseVectorArtAlbedo = false;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Preset|Vector Art")
+    bool HasVectorArtForFeature(FName Feature) const;
+
+    // Deploy-facing library wiring: set/replace one feature's library asset
+    // (null removes the entry). Authoring-time override edits are untouched.
+    UFUNCTION(BlueprintCallable, Category = "Face Preset|Vector Art")
+    void SetLibraryVectorArt(FName FeatureToken, UFaceVectorArt* Asset);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Preset|Vector Art")
+    void ClearLibraryVectorArt();
+
+    UFUNCTION(BlueprintCallable, Category = "Face Preset|Vector Art")
+    bool HasVectorOverride(const FString& CellKey) const;
+
+    UFUNCTION(BlueprintCallable, Category = "Face Preset|Vector Art")
+    void SetVectorOverride(const FString& CellKey, UFaceVectorArt* Asset);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Preset|Vector Art")
+    void ClearVectorOverride(const FString& CellKey);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Preset|Vector Art")
+    void ClearFeatureOverrides(FName Feature);
+
+    UFUNCTION(BlueprintCallable, Category = "Face Preset|Vector Art")
+    void ClearAllVectorOverrides();
+
+    // Resolve the art for a full cell key (override wins, else library).
+    UFUNCTION(BlueprintCallable, Category = "Face Preset|Vector Art")
+    FFaceVectorArtPaths ResolveVectorCell(const FString& CellKey) const;
+
+    // Resolve by feature + state index + pitch band (P00/P45/Pn45).
+    UFUNCTION(BlueprintCallable, Category = "Face Preset|Vector Art")
+    FFaceVectorArtPaths ResolveVectorArtForCell(FName Feature, int32 StateIndex, int32 PitchBand) const;
 
     // --- SLOT ACCESS ---
     UFUNCTION(BlueprintCallable, Category = "Face Preset")

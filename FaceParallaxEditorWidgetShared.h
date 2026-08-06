@@ -6,12 +6,14 @@
 #include "FaceParallaxComponent.h"
 #include "FaceParallaxLayoutSpec.h"
 #include "FaceParallaxSchematic.h"
+#include "FaceParallaxVectorArt.h"
 #include <functional>
 
 #if WITH_EDITOR
 #include "Styling/CoreStyle.h"
 #include "Widgets/SLeafWidget.h"
 #include "Rendering/DrawElements.h"
+#include "Rendering/SlateRenderer.h"
 #include "Rendering/SlateLayoutTransform.h"
 #include "Framework/Application/SlateApplication.h"
 #include "Editor.h"
@@ -62,23 +64,27 @@ namespace
 
     // Parses the view-state suffix from a file base name (channel suffix already removed).
     // Full names are matched before short codes so "_front" wins over "_f".
-    // Returns the state index (0-9) or -1, and the matched suffix text.
+    // Returns the state index (0-13) or -1, and the matched suffix text.
     int32 MatchStateSuffix(const FString& BaseName, FString& OutSuffix)
     {
         const FString Lower = BaseName.ToLower();
         struct FStateSuffix { const TCHAR* Suffix; int32 State; };
         static const FStateSuffix Map[] = {
-            {TEXT("_threequarterright"), 1}, {TEXT("_threequarterleft"), 7},
-            {TEXT("_3quarterright"), 1},    {TEXT("_3quarterleft"), 7},
-            {TEXT("_rightprofile"), 2},     {TEXT("_leftprofile"), 6},
-            {TEXT("_backright"), 3},        {TEXT("_backleft"), 5},
-            {TEXT("_front"), 0},            {TEXT("_back"), 4},
-            {TEXT("_top"), 8},              {TEXT("_bottom"), 9},
-            {TEXT("_3r"), 1},               {TEXT("_3l"), 7},
-            {TEXT("_pr"), 2},               {TEXT("_pl"), 6},
-            {TEXT("_br"), 3},               {TEXT("_bl"), 5},
-            {TEXT("_f"), 0},                {TEXT("_b"), 4},
-            {TEXT("_t"), 8},                {TEXT("_bot"), 9},
+            {TEXT("_narrowright"), 1},      {TEXT("_narrowleft"), 11},
+            {TEXT("_threequarterright"), 2},{TEXT("_threequarterleft"), 10},
+            {TEXT("_3quarterright"), 2},    {TEXT("_3quarterleft"), 10},
+            {TEXT("_sliverright"), 3},      {TEXT("_sliverleft"), 9},
+            {TEXT("_rightprofile"), 4},     {TEXT("_leftprofile"), 8},
+            {TEXT("_backright"), 5},        {TEXT("_backleft"), 7},
+            {TEXT("_front"), 0},            {TEXT("_back"), 6},
+            {TEXT("_top"), 12},             {TEXT("_bottom"), 13},
+            {TEXT("_nr"), 1},               {TEXT("_nl"), 11},
+            {TEXT("_3r"), 2},               {TEXT("_3l"), 10},
+            {TEXT("_sr"), 3},               {TEXT("_sl"), 9},
+            {TEXT("_pr"), 4},               {TEXT("_pl"), 8},
+            {TEXT("_br"), 5},               {TEXT("_bl"), 7},
+            {TEXT("_f"), 0},                {TEXT("_b"), 6},
+            {TEXT("_t"), 12},               {TEXT("_bot"), 13},
         };
         for (const FStateSuffix& M : Map)
         {
@@ -1077,9 +1083,11 @@ private:
 
 // SFaceSchematicLayer - the central-canvas DEFAULT VIEW (redesign): paints the
 // part schematic glyphs (FaceParallaxSchematic.h) for every part — P1 one-map:
-// the glyph layer is the SINGLE map (artful parts render solid instead of
-// dashed — the live preview art replaces the outline visually, but the map
-// stays clickable). Glyph color encodes the Phase I EDGE MAP by default:
+// the glyph layer is the SINGLE map (Review Req 2: every glyph paints per-edge
+// — exposed edges solid, edges hidden behind a front layer dashed — so the
+// map reads the same occlusion as the live composition; no artless "dashed
+// part" state, the placeholder glyphs ARE the character). Glyph color encodes
+// the Phase I EDGE MAP by default:
 // every part edge paints in its FPEdgeGroup color (eyes green, mouth red,
 // hair violet, surface grey-blue) scaled by depth-class luminance (front
 // lighter than back) so the group structure reads at a glance; the Canvas
@@ -1120,12 +1128,58 @@ public:
     }
 
     // P1 one-map: parallel per-part art flags (1 = the mapped layer carries
-    // Front albedo). Artful glyphs render SOLID (art replaces the outline on
-    // the live preview) while artless ones stay dashed — one map, two states.
+    // Front albedo). Feeds the Req 2 per-edge occlusion pass (and the P2
+    // status chips); there is no "artless stays dashed" glyph state — the
+    // placeholder glyphs ARE the character, so every part reads per-edge.
     void SetPartStatus(const std::vector<char>& InStatus)
     {
         PartStatus = InStatus;
     }
+
+    // Phase 7: per-part art-availability alpha (parallel to Parts; 1 = the
+    // runtime renders the layer in the resolved view, 0 = the runtime hides
+    // it — walk-behind rule or the view's slot has no art). Glyphs multiply
+    // their outline alpha by this so the preview shows the same swap/back-half
+    // logic as the component, while staying fully clickable (the P1 map is
+    // never removed).
+    void SetPartAlpha(const std::vector<float>& InAlpha)
+    {
+        PartAlpha = InAlpha;
+        Invalidate(EInvalidateWidgetReason::Paint);
+    }
+
+    // Vector-art viewer: per-part resolved SVG cell pair (Cur at BlendAlpha,
+    // Prev at 1 - BlendAlpha) pushed by RefreshSchematic from the pure
+    // FPSvg::ResolveViewCellPair contract (Phase 2 parity: the pair mirrors
+    // the runtime's at-rest committed state, the dominant card is the albedo
+    // the runtime bakes, and the two-card fade lives in the runtime's own
+    // parameter-space window). Empty paths = no vector art for
+    // the part's resolved cells (or the viewer is off) — the paint falls
+    // back to the ring glyph. PartAlpha still dims the pair (the runtime's
+    // art-availability read applies to both cells).
+    void SetVectorCells(const std::vector<FFaceVectorArtPaths>& InCur,
+        const std::vector<FFaceVectorArtPaths>& InPrev,
+        const std::vector<float>& InBlend)
+    {
+        VectorCur = InCur;
+        VectorPrev = InPrev;
+        VectorBlend = InBlend;
+        Invalidate(EInvalidateWidgetReason::Paint);
+    }
+
+    // Review Req 2 (occluded-edge dashes): the resolved view state the
+    // runtime picked for the current angles (FPSchematicStateAtAngles mirror,
+    // set by RefreshSchematic). The paint uses it with
+    // FPSchematicLayerOrderInState to decide which parts render in front of
+    // each other, so every glyph's edges hidden behind a front layer draw
+    // dashed — per-edge occlusion, not a per-part solid/dashed switch.
+    void SetCurrentState(int32 InState)
+    {
+        CurrentState = InState;
+        Invalidate(EInvalidateWidgetReason::Paint);
+    }
+
+    int32 GetCurrentState() const { return CurrentState; }
 
     // Phase 3: the canvas filter row mirror (layer chips + depth radio).
     void SetFilters(const std::vector<std::string>& InLayerFilter, int32 InDepthFilter)
@@ -1319,22 +1373,89 @@ public:
             if (bEdgeMap && !FPSchematic::FPEdgeMapShows(
                     FPSchematic::FPEdgeGroupForPartName(P.Name), bEdgeMapHairEdges))
                 continue;
+            // Vector-art viewer: when the part's resolved SVG cell pair is
+            // present, paint the imported art INSTEAD of the ring glyph —
+            // Prev at (1 - Blend), Cur at Blend, exactly the pure
+            // FPSvg::ResolveViewCellPair committed-state alpha (the runtime's
+            // Schmitt-window two-card crossfade; at a static pose inside a
+            // state the dominant card shows at full, inside a swap window
+            // the pair crossfades over the same 1.5-deg sweep as the runtime).
+            // Selection/hover emphasis thickens the art's strokes; art
+            // availability dims it like the glyph path. Empty cells fall
+            // through to the ring glyph below (no art loaded / viewer off).
+            if ((size_t)i < VectorCur.size() && (size_t)i < VectorPrev.size()
+                && (VectorCur[i].IsValid() || VectorPrev[i].IsValid()))
+            {
+                const bool bVecSel = !SelTag.IsEmpty()
+                    && (size_t)i < PartLayerTags.size()
+                    && PartLayerTags[i] == TCHAR_TO_UTF8(*SelTag);
+                const float Blend = (size_t)i < VectorBlend.size() ? VectorBlend[i] : 0.0f;
+                const float AvailV = (size_t)i < PartAlpha.size() ? PartAlpha[i] : 1.0f;
+                // Art availability: the runtime hides the quad ENTIRELY (the
+                // master material is opaque — alpha 0 renders hidden). Vector
+                // mode mirrors that: a card the runtime hides (walk-behind
+                // features, the profile merge dropping Nose/Mouth/Teeth) is
+                // NOT drawn — the FaceBase profile cell carries the merged
+                // read. The glyph map stays clickable via the hotspot layer.
+                if (AvailV <= 0.0f) continue;
+                const float Dim = AvailV < 1.0f ? AvailV : 1.0f;
+                const float ThickMul = bVecSel ? 1.6f
+                    : ((int32)i == HoveredIndex ? 1.25f : 1.0f);
+                if (VectorPrev[i].IsValid())
+                {
+                    DrawVectorCell(AllottedGeometry, OutDrawElements, LayerId,
+                        VectorPrev[i], Size, (1.0f - Blend) * Dim, ThickMul);
+                }
+                if (VectorCur[i].IsValid())
+                {
+                    DrawVectorCell(AllottedGeometry, OutDrawElements, LayerId,
+                        VectorCur[i], Size, Blend * Dim, ThickMul);
+                }
+                continue;
+            }
             const bool bHovered = (int32)i == HoveredIndex;
             const bool bSelected = !SelTag.IsEmpty()
                 && (size_t)i < PartLayerTags.size() && PartLayerTags[i] == TCHAR_TO_UTF8(*SelTag);
-            // P1 one-map: artful parts draw SOLID (their art replaced the
-            // outline on the live preview); artless parts stay dashed.
-            const bool bArt = (size_t)i < PartStatus.size() && PartStatus[i] != 0;
             FLinearColor Color = bEdgeMap
                 ? EdgeMapColor(P) : DepthClassColor(P.DepthClass);
+            // Review Req 2: per-edge occlusion for EVERY part (the placeholder
+            // glyphs ARE the character — they always exist, so an artless
+            // part's exposed edges draw solid too). Edges hidden behind a part
+            // rendered IN FRONT of it (per-state Z-order — smaller
+            // FPSchematicLayerOrderInState = closer to the camera) draw
+            // dashed, so the glyph communicates the same occlusion the live
+            // composition shows; exposed edges stay solid. Computed once and
+            // shared by the halo fill below so every stroke of a part agrees.
+            std::vector<uint8> EdgeSolid;
+            const bool bPerEdge = ComputeOccludedEdges((int32)i, EdgeSolid);
+            // SVG-style art face for the resolved ring: the same smooth-curve
+            // chains the Art/<Part>/*.svg library was generated from (fills
+            // behind strokes), always derived from P.Outline so interactions
+            // keep hit-testing / filtering / focusing the ring.
+            const FPSchematic::FPSchematicArtFace Face =
+                FPSchematic::FPSchematicArtFaceForRing(P.Name, P.Outline);
+            const bool bArt = !Face.Chains.empty();
+            const FPSchematic::FPSchematicArtChain* Contour =
+                bArt ? &Face.Chains[0] : nullptr;
             if (bSelected)
             {
                 Color.A = 1.0f;
                 // Soft fill pass: a thick low-alpha halo behind the crisp
-                // outline makes the selected layer read as "filled".
-                DrawDashedLoop(AllottedGeometry, OutDrawElements, LayerId,
-                    P.Outline, Size, FLinearColor(Color.R, Color.G, Color.B, 0.08f), 14.0f,
-                    bArt);
+                // outline makes the selected layer read as "filled" (the
+                // occluded edges of the halo stay dashed, matching the
+                // outline's occlusion read).
+                if (Contour)
+                {
+                    DrawSmoothChain(AllottedGeometry, OutDrawElements, LayerId,
+                        *Contour, Size, FLinearColor(Color.R, Color.G, Color.B, 0.08f),
+                        14.0f, bPerEdge ? &EdgeSolid : nullptr);
+                }
+                else
+                {
+                    DrawDashedLoop(AllottedGeometry, OutDrawElements, LayerId,
+                        P.Outline, Size, FLinearColor(Color.R, Color.G, Color.B, 0.08f), 14.0f,
+                        true, bPerEdge ? &EdgeSolid : nullptr);
+                }
             }
             else
             {
@@ -1343,18 +1464,69 @@ public:
                 // subdued look.
                 Color.A = bHovered ? 1.0f : (bEdgeMap ? 0.9f : 0.25f);
             }
+            // Phase 7 art-availability: glyphs the runtime HIDES in the
+            // resolved view (walk-behind rule, or the view's slot has no art)
+            // render dimmed — never removed — so the preview mirrors the
+            // component's swap/back-half logic while the P1 map stays intact.
+            const float Avail = (size_t)i < PartAlpha.size() ? PartAlpha[i] : 1.0f;
+            if (Avail < 1.0f)
+                Color.A *= (Avail <= 0.0f) ? 0.15f : Avail;
             const float Thickness = bSelected ? 3.0f
                 : (bHovered ? 2.5f : (bEdgeMap ? 2.0f : 1.5f));
-            DrawDashedLoop(AllottedGeometry, OutDrawElements, LayerId,
-                P.Outline, Size, Color, Thickness, bArt);
+            // Review Req 2: per-edge occlusion. Every part's edges hidden
+            // behind a layer rendered IN FRONT of it (per-state Z-order —
+            // smaller FPSchematicLayerOrderInState = closer to the camera)
+            // draw dashed, so the glyph communicates the same occlusion the
+            // live composition shows (hidden edges read as "behind"), while
+            // exposed edges draw solid. There is no separate "artless stays
+            // dashed" state: the placeholder glyph IS the character, so the
+            // per-edge read applies to every part regardless of art.
+            if (bArt)
+            {
+                // Fills paint behind the strokes: iris uses the stroke-colored
+                // dark #16181d, highlight/gloss patches the canonical art light
+                // grey #d0d4da, both dimmed with the part (selection, hover,
+                // edge map and art-availability all feed Color.A).
+                const float FillA = bEdgeMap ? 1.0f : FMath::Max(Color.A, 0.5f);
+                for (size_t ci = 0; ci < Face.Chains.size(); ++ci)
+                {
+                    const FPSchematic::FPSchematicArtChain& C = Face.Chains[ci];
+                    if (C.Order != 0 || !C.bFill) continue;
+                    const FLinearColor FCol = (C.Tint == 2)
+                        ? FLinearColor(0.086f, 0.094f, 0.114f, C.Opacity * FillA) // iris #16181d
+                        : FLinearColor(0.816f, 0.831f, 0.855f, C.Opacity * FillA); // #d0d4da
+                    DrawFillChain(AllottedGeometry, OutDrawElements, LayerId, C, Size, FCol);
+                }
+                for (size_t ci = 0; ci < Face.Chains.size(); ++ci)
+                {
+                    const FPSchematic::FPSchematicArtChain& C = Face.Chains[ci];
+                    if (C.Order != 1) continue;
+                    DrawSmoothChain(AllottedGeometry, OutDrawElements, LayerId, C, Size,
+                        Color, Thickness, bPerEdge ? &EdgeSolid : nullptr);
+                }
+            }
+            else
+            {
+                DrawDashedLoop(AllottedGeometry, OutDrawElements, LayerId,
+                    P.Outline, Size, Color, Thickness, true,
+                    bPerEdge ? &EdgeSolid : nullptr);
+            }
             // P1 click pulse: bright fading ring on the part just picked
             // (0.5s) — inline feedback at the point of action.
             if (FlashAge >= 0.0 && FlashAge < 0.5
                 && Owner && Owner->GetSchematicFlashPart() == UTF8_TO_TCHAR(P.Name))
             {
                 const float Alpha = 1.0f - (float)(FlashAge / 0.5);
-                DrawDashedLoop(AllottedGeometry, OutDrawElements, LayerId + 1,
-                    P.Outline, Size, FLinearColor(1.0f, 1.0f, 0.7f, Alpha), 4.0f, true);
+                if (Contour)
+                {
+                    DrawSmoothChain(AllottedGeometry, OutDrawElements, LayerId + 1,
+                        *Contour, Size, FLinearColor(1.0f, 1.0f, 0.7f, Alpha), 4.0f);
+                }
+                else
+                {
+                    DrawDashedLoop(AllottedGeometry, OutDrawElements, LayerId + 1,
+                        P.Outline, Size, FLinearColor(1.0f, 1.0f, 0.7f, Alpha), 4.0f, true);
+                }
             }
         }
         // P2 per-part status chip: a small dot at each glyph's centroid
@@ -1477,6 +1649,51 @@ private:
         return FPSchematic::FPSchematicFilterAllows(P.DepthClass, LayerTagName, LayerFilter, DepthFilter);
     }
 
+    // Review Req 2: per-edge occlusion flags for ANY part (the placeholder
+    // glyphs ARE the character, so artless parts get the same read). OutSolid[e]
+    // = 1 when the part's edge e is EXPOSED (nothing rendered in front of it
+    // covers the edge midpoint), 0 when a part in FRONT of it per the
+    // per-state Z-order (FPSchematicLayerOrderInState: smaller = closer)
+    // contains the midpoint — those edges draw dashed. Returns false (no
+    // occluders at all) when every edge stays exposed (so callers keep the
+    // flat solid read). Occluders must be painted themselves: filter-allowed,
+    // edge-map-shown, rendered by the runtime (PartAlpha >= 0.5 — a
+    // walk-behind-dimmed glyph never occludes), and visible in the state.
+    bool ComputeOccludedEdges(int32 Index, std::vector<uint8>& OutSolid) const
+    {
+        OutSolid.clear();
+        if (Index < 0 || (size_t)Index >= Parts.size()) return false;
+        const FPSchematic::FPSchematicPart& P = Parts[(size_t)Index];
+        if (!P.Name || P.Outline.size() < 2) return false;
+        const int PO = FPSchematic::FPSchematicLayerOrderInState(CurrentState, P.Name);
+        OutSolid.assign(P.Outline.size(), 1);
+        bool bAnyOccluder = false;
+        for (size_t k = 0; k < Parts.size(); ++k)
+        {
+            if (k == (size_t)Index) continue;
+            const FPSchematic::FPSchematicPart& Q = Parts[k];
+            if (!Q.Name || Q.Outline.size() < 3) continue;
+            if (!FilterAllows((int32)k)) continue;
+            if (bEdgeMap && !FPSchematic::FPEdgeMapShows(
+                    FPSchematic::FPEdgeGroupForPartName(Q.Name), bEdgeMapHairEdges))
+                continue;
+            if ((size_t)k >= PartAlpha.size() || PartAlpha[k] < 0.5f) continue;
+            const int QO = FPSchematic::FPSchematicLayerOrderInState(CurrentState, Q.Name);
+            if (QO < 0) continue;                       // hidden in this state
+            if (PO >= 0 && QO >= PO) continue;          // Q not strictly in front
+            bAnyOccluder = true;
+            for (size_t e = 0; e < P.Outline.size(); ++e)
+            {
+                if (OutSolid[e] == 0) continue;
+                const FPSchematic::FPSchematicPoint& A = P.Outline[e];
+                const FPSchematic::FPSchematicPoint& B = P.Outline[(e + 1) % P.Outline.size()];
+                if (FPSchematic::FPPartInOutline((A.X + B.X) * 0.5, (A.Y + B.Y) * 0.5, Q.Outline))
+                    OutSolid[e] = 0;
+            }
+        }
+        return bAnyOccluder;
+    }
+
     static FLinearColor DepthClassColor(FPSchematic::FPDepthClass C)
     {
         switch (C)
@@ -1515,14 +1732,18 @@ private:
     }
 
     // Dashed outline: each edge is split into ~8px dashes, every other one
-    // drawn (closed loop — first point repeated at the end). P1: artful parts
-    // pass bSolid=true to draw full edges instead (one map, solid = has art).
-    // The focus lens is applied to every point here so hover/hit and paint
-    // stay in sync.
+    // drawn (closed loop — first point repeated at the end). Callers pass
+    // bSolid=true for the no-flags fallback (fully solid outline).
+    // Review Req 2: EdgeSolid (optional, parallel to the loop edges) is
+    // AUTHORITATIVE when provided — an edge draws solid when its flag is
+    // nonzero, dashed when zero (bSolid only applies as the no-flags
+    // fallback), so an occluded edge (flag 0) stays dashed while exposed
+    // edges render solid. The focus lens is applied to every point here so
+    // hover/hit and paint stay in sync.
     void DrawDashedLoop(const FGeometry& G, FSlateWindowElementList& L, int32 Id,
         const std::vector<FPSchematic::FPSchematicPoint>& Loop,
         const FVector2D& Size, const FLinearColor& Color, float Thickness,
-        bool bSolid = false) const
+        bool bSolid = false, const std::vector<uint8>* EdgeSolid = nullptr) const
     {
         constexpr float DashLen = 8.0f;
         TArray<FVector2D> Segs;
@@ -1540,6 +1761,11 @@ private:
             const FVector2D B((float)(P1.X * Size.X), (float)(P1.Y * Size.Y));
             const float Len = (B - A).Size();
             if (Len <= 0.0f) continue;
+            if (EdgeSolid && i < EdgeSolid->size() && (*EdgeSolid)[i] != 0)
+            {
+                PushSegment(A, B);
+                continue;
+            }
             if (bSolid)
             {
                 PushSegment(A, B);
@@ -1561,9 +1787,376 @@ private:
         }
     }
 
+    // SVG-style smooth stroke: tessellates an FPSchematicArtChain's curve
+    // commands (sharp L chained, cubics sampled at fixed steps — the same
+    // Catmull-Rom drivers as the Art/*.svg library) and paints them as one
+    // MakeLines batch. Occlusion reuses the per-edge read at COMMAND
+    // granularity: a command draws solid when it covers no ring edges
+    // (decorative accent) or every covered edge is exposed; dashed when any
+    // covered (CovEdgeA/B, WrapCov for the Z close) edge is occluded. The
+    // dash toggle flows through the whole chain exactly like DrawDashedLoop
+    // so solid runs do not disturb the pattern. The focus lens + Size scale
+    // are applied per vertex so paint and hit stay in sync.
+    void DrawSmoothChain(const FGeometry& G, FSlateWindowElementList& L, int32 Id,
+        const FPSchematic::FPSchematicArtChain& Ch, const FVector2D& Size,
+        const FLinearColor& Color, float Thickness,
+        const std::vector<uint8>* EdgeSolid = nullptr) const
+    {
+        constexpr float DashLen = 8.0f;
+        TArray<FVector2D> Segs;
+        auto PushSegment = [&Segs](const FVector2D& A, const FVector2D& B)
+        {
+            Segs.Add(A);
+            Segs.Add(B);
+        };
+        auto ToPix = [&](const FPSchematic::FPSchematicPoint& P) -> FVector2D
+        {
+            const FPSchematic::FPSchematicPoint F = FocusPoint(P);
+            return FVector2D((float)(F.X * Size.X), (float)(F.Y * Size.Y));
+        };
+        auto CoveredSolid = [&](int32 e) -> bool
+        {
+            if (!EdgeSolid) return true;
+            if (e < 0 || (size_t)e >= EdgeSolid->size()) return true;
+            return (*EdgeSolid)[e] != 0;
+        };
+        bool bDrawNext = true;
+        FVector2D CurrPix = ToPix(Ch.Start);
+        auto DrawSpan = [&](const FVector2D& A, const FVector2D& B, bool bSolid)
+        {
+            const float Len = (B - A).Size();
+            if (Len <= 0.0f) return;
+            if (bSolid)
+            {
+                PushSegment(A, B);
+                return;
+            }
+            const int32 NumDashes = FMath::Max(1, FMath::CeilToInt(Len / DashLen));
+            for (int32 D = 0; D < NumDashes; ++D)
+            {
+                const FVector2D S = A + (B - A) * ((float)D / (float)NumDashes);
+                const FVector2D E = A + (B - A) * ((float)(D + 1) / (float)NumDashes);
+                if (bDrawNext) PushSegment(S, E);
+                bDrawNext = !bDrawNext;
+            }
+        };
+        for (const FPSchematic::FPSchematicCurveCmd& C : Ch.Cmds)
+        {
+            // A command is solid when it has no covered edges (decorative)
+            // or every covered edge stays exposed.
+            const bool bSolid = (C.CovEdgeA < 0 && C.CovEdgeB < 0)
+                || (CoveredSolid(C.CovEdgeA) && CoveredSolid(C.CovEdgeB));
+            if (C.Type == 0)
+            {
+                const FVector2D End = ToPix(C.End);
+                DrawSpan(CurrPix, End, bSolid);
+                CurrPix = End;
+            }
+            else
+            {
+                const FVector2D P0 = CurrPix;
+                const FVector2D P1 = ToPix(C.C1);
+                const FVector2D P2 = ToPix(C.C2);
+                const FVector2D P3 = ToPix(C.End);
+                const int32 Steps = 16;
+                for (int32 S = 1; S <= Steps; ++S)
+                {
+                    const float T = (float)S / (float)Steps;
+                    const float U = 1.0f - T;
+                    const FVector2D P = P0 * (U * U * U)
+                        + P1 * (3.0f * U * U * T)
+                        + P2 * (3.0f * U * T * T)
+                        + P3 * (T * T * T);
+                    DrawSpan(CurrPix, P, bSolid);
+                    CurrPix = P;
+                }
+            }
+        }
+        if (Ch.bClosed && Ch.WrapCov < 0)
+        {
+            DrawSpan(CurrPix, ToPix(Ch.Start), true);
+        }
+        else if (Ch.bClosed)
+        {
+            DrawSpan(CurrPix, ToPix(Ch.Start), CoveredSolid(Ch.WrapCov));
+        }
+        if (Segs.Num() > 0)
+        {
+            FSlateDrawElement::MakeLines(L, Id, G.ToPaintGeometry(), Segs,
+                ESlateDrawEffect::None, Color, true, Thickness);
+        }
+    }
+
+    // Closed flat fill: the chain's boundary (closed ellipse outlines for the
+    // iris / highlights / gloss patches) is tessellated and painted as a
+    // triangle fan via a custom-verts batch, so the patch reads as solid art
+    // rather than an outline. Fans only apply to bClosed fill chains; open
+    // chain bodies never reach this call.
+    void DrawFillChain(const FGeometry& G, FSlateWindowElementList& L, int32 Id,
+        const FPSchematic::FPSchematicArtChain& Ch, const FVector2D& Size,
+        const FLinearColor& Color) const
+    {
+        TArray<FVector2D> Bnd;
+        auto ToPix = [&](const FPSchematic::FPSchematicPoint& P) -> FVector2D
+        {
+            const FPSchematic::FPSchematicPoint F = FocusPoint(P);
+            return FVector2D((float)(F.X * Size.X), (float)(F.Y * Size.Y));
+        };
+        FVector2D Cur = ToPix(Ch.Start);
+        Bnd.Add(Cur);
+        for (const FPSchematic::FPSchematicCurveCmd& C : Ch.Cmds)
+        {
+            if (C.Type == 0)
+            {
+                Cur = ToPix(C.End);
+                Bnd.Add(Cur);
+            }
+            else
+            {
+                const FVector2D P0 = Cur;
+                const FVector2D P1 = ToPix(C.C1);
+                const FVector2D P2 = ToPix(C.C2);
+                const FVector2D P3 = ToPix(C.End);
+                const int32 Steps = 12;
+                for (int32 S = 1; S <= Steps; ++S)
+                {
+                    const float T = (float)S / (float)Steps;
+                    const float U = 1.0f - T;
+                    Cur = P0 * (U * U * U)
+                        + P1 * (3.0f * U * U * T)
+                        + P2 * (3.0f * U * T * T)
+                        + P3 * (T * T * T);
+                    Bnd.Add(Cur);
+                }
+            }
+        }
+        if (!Ch.bClosed || Bnd.Num() < 3) return;
+        // Re-seal the loop so the fan's last triangle wraps back to Start.
+        const FVector2D FirstPt = Bnd[0];
+        Bnd.Add(FirstPt);
+        double SX = 0.0, SY = 0.0;
+        for (const FVector2D& P : Bnd) { SX += P.X; SY += P.Y; }
+        const FVector2D Cent((float)(SX / (double)Bnd.Num()),
+            (float)(SY / (double)Bnd.Num()));
+        const FSlateBrush* White = FCoreStyle::Get().GetBrush("WhiteBrush");
+        const FSlateResourceHandle& Handle =
+            FSlateApplication::Get().GetRenderer()->GetResourceHandle(*White);
+        const FSlateRenderTransform& RT = G.GetAccumulatedRenderTransform();
+        TArray<FSlateVertex> Verts;
+        TArray<SlateIndex> Indices;
+        const FColor Col = Color.ToFColor(true);
+        Verts.Add(FSlateVertex::Make<ESlateVertexRounding::Disabled>(RT,
+            FVector2f(Cent.X, Cent.Y), FVector2f(0.0f, 0.0f), Col));
+        for (const FVector2D& P : Bnd)
+        {
+            Verts.Add(FSlateVertex::Make<ESlateVertexRounding::Disabled>(RT,
+                FVector2f(P.X, P.Y), FVector2f(0.0f, 0.0f), Col));
+        }
+        Indices.Reserve((Bnd.Num() - 1) * 3);
+        for (int32 K = 1; K < Bnd.Num() - 1; ++K)
+        {
+            Indices.Add(0);
+            Indices.Add((SlateIndex)K);
+            Indices.Add((SlateIndex)(K + 1));
+        }
+        FSlateDrawElement::MakeCustomVerts(L, Id, Handle, Verts, Indices,
+            nullptr, 0, 0, ESlateDrawEffect::None);
+    }
+
+    // Vector-art viewer cell paint: the imported SVG art (FFaceVectorArtPaths)
+    // for one resolved cell — fills first (closed fill paths as triangle
+    // fans, like DrawFillChain), then strokes (lines/quads/cubics tessellated
+    // into MakeLines, like DrawSmoothChain). Paths live in the same 0..1
+    // viewBox space as the rings, so the focus lens + Size scale apply per
+    // vertex; the parsed per-path fill/stroke colors carry the art's own
+    // alpha, multiplied by AlphaMul (bracket crossfade + art availability).
+    // The SVG stroke widths are 1000-viewBox user units, scaled to pixels
+    // via Size.X / 1000, then ThickMul (selection/hover emphasis).
+    void DrawVectorCell(const FGeometry& G, FSlateWindowElementList& L, int32 Id,
+        const FFaceVectorArtPaths& Cell, const FVector2D& Size,
+        float AlphaMul, float ThickMul) const
+    {
+        if (AlphaMul <= 0.0f || !Cell.IsValid()) return;
+        auto ToPix = [&](const FVector2D& P) -> FVector2D
+        {
+            const FPSchematic::FPSchematicPoint F = FocusPoint(
+                FPSchematic::FPSchematicPoint{ P.X, P.Y });
+            return FVector2D((float)(F.X * Size.X), (float)(F.Y * Size.Y));
+        };
+        const float ThickScale = Size.X / 1000.0f;
+        for (const FFaceVectorPath& Path : Cell.Paths)
+        {
+            if (Path.Cmds.Num() < 1) continue;
+            if (Path.bHasFill && Path.bClosed)
+            {
+                TArray<FVector2D> Bnd;
+                FVector2D Cur = ToPix(Path.Cmds[0].P);
+                Bnd.Add(Cur);
+                for (int32 c = 0; c < Path.Cmds.Num(); ++c)
+                {
+                    const FFaceVectorCmdPt& C = Path.Cmds[c];
+                    if (C.Cmd == EFaceVectorCmd::LineTo
+                        || C.Cmd == EFaceVectorCmd::Close
+                        || C.Cmd == EFaceVectorCmd::MoveTo)
+                    {
+                        Cur = ToPix(C.P);
+                        Bnd.Add(Cur);
+                    }
+                    else if (C.Cmd == EFaceVectorCmd::QuadTo)
+                    {
+                        // Pts[i] = control, Pts[i+1] = target (pure-parser layout).
+                        if (c + 1 >= Path.Cmds.Num()) break;
+                        const FVector2D P0 = Cur;
+                        const FVector2D P1 = ToPix(C.P);
+                        const FVector2D P2 = ToPix(Path.Cmds[c + 1].P);
+                        const int32 Steps = 12;
+                        for (int32 S = 1; S <= Steps; ++S)
+                        {
+                            const float T = (float)S / (float)Steps;
+                            const float U = 1.0f - T;
+                            Cur = P0 * (U * U) + P1 * (2.0f * U * T) + P2 * (T * T);
+                            Bnd.Add(Cur);
+                        }
+                        ++c;
+                    }
+                    else if (C.Cmd == EFaceVectorCmd::CubicTo)
+                    {
+                        // Pts[i] = control1, Pts[i+1] = control2, Pts[i+2] = target.
+                        if (c + 2 >= Path.Cmds.Num()) break;
+                        const FVector2D P0 = Cur;
+                        const FVector2D P1 = ToPix(C.P);
+                        const FVector2D P2 = ToPix(Path.Cmds[c + 1].P);
+                        const FVector2D P3 = ToPix(Path.Cmds[c + 2].P);
+                        const int32 Steps = 12;
+                        for (int32 S = 1; S <= Steps; ++S)
+                        {
+                            const float T = (float)S / (float)Steps;
+                            const float U = 1.0f - T;
+                            Cur = P0 * (U * U * U)
+                                + P1 * (3.0f * U * U * T)
+                                + P2 * (3.0f * U * T * T)
+                                + P3 * (T * T * T);
+                            Bnd.Add(Cur);
+                        }
+                        c += 2;
+                    }
+                }
+                if (Bnd.Num() >= 3)
+                {
+                    const FVector2D FirstPt = Bnd[0];
+                    Bnd.Add(FirstPt);
+                    double SX = 0.0, SY = 0.0;
+                    for (const FVector2D& P : Bnd) { SX += P.X; SY += P.Y; }
+                    const FVector2D Cent((float)(SX / (double)Bnd.Num()),
+                        (float)(SY / (double)Bnd.Num()));
+                    const FSlateBrush* White = FCoreStyle::Get().GetBrush("WhiteBrush");
+                    const FSlateResourceHandle& Handle =
+                        FSlateApplication::Get().GetRenderer()->GetResourceHandle(*White);
+                    const FSlateRenderTransform& RT = G.GetAccumulatedRenderTransform();
+                    TArray<FSlateVertex> Verts;
+                    TArray<SlateIndex> Indices;
+                    FLinearColor FCol = Path.Fill;
+                    FCol.A *= AlphaMul;
+                    const FColor Col = FCol.ToFColor(true);
+                    Verts.Add(FSlateVertex::Make<ESlateVertexRounding::Disabled>(RT,
+                        FVector2f(Cent.X, Cent.Y), FVector2f(0.0f, 0.0f), Col));
+                    for (const FVector2D& P : Bnd)
+                    {
+                        Verts.Add(FSlateVertex::Make<ESlateVertexRounding::Disabled>(RT,
+                            FVector2f(P.X, P.Y), FVector2f(0.0f, 0.0f), Col));
+                    }
+                    Indices.Reserve((Bnd.Num() - 1) * 3);
+                    for (int32 K = 1; K < Bnd.Num() - 1; ++K)
+                    {
+                        Indices.Add(0);
+                        Indices.Add((SlateIndex)K);
+                        Indices.Add((SlateIndex)(K + 1));
+                    }
+                    FSlateDrawElement::MakeCustomVerts(L, Id, Handle, Verts, Indices,
+                        nullptr, 0, 0, ESlateDrawEffect::None);
+                }
+            }
+            if (Path.bHasStroke)
+            {
+                TArray<FVector2D> Segs;
+                FVector2D Cur = ToPix(Path.Cmds[0].P);
+                auto PushLine = [&Segs](const FVector2D& A, const FVector2D& B)
+                {
+                    Segs.Add(A);
+                    Segs.Add(B);
+                };
+                for (int32 c = 0; c < Path.Cmds.Num(); ++c)
+                {
+                    const FFaceVectorCmdPt& C = Path.Cmds[c];
+                    if (C.Cmd == EFaceVectorCmd::LineTo
+                        || C.Cmd == EFaceVectorCmd::Close
+                        || C.Cmd == EFaceVectorCmd::MoveTo)
+                    {
+                        const FVector2D End = ToPix(C.P);
+                        PushLine(Cur, End);
+                        Cur = End;
+                    }
+                    else if (C.Cmd == EFaceVectorCmd::QuadTo)
+                    {
+                        if (c + 1 >= Path.Cmds.Num()) break;
+                        const FVector2D P0 = Cur;
+                        const FVector2D P1 = ToPix(C.P);
+                        const FVector2D P2 = ToPix(Path.Cmds[c + 1].P);
+                        const int32 Steps = 12;
+                        for (int32 S = 1; S <= Steps; ++S)
+                        {
+                            const float T = (float)S / (float)Steps;
+                            const float U = 1.0f - T;
+                            const FVector2D P = P0 * (U * U)
+                                + P1 * (2.0f * U * T) + P2 * (T * T);
+                            PushLine(Cur, P);
+                            Cur = P;
+                        }
+                        ++c;
+                    }
+                    else if (C.Cmd == EFaceVectorCmd::CubicTo)
+                    {
+                        if (c + 2 >= Path.Cmds.Num()) break;
+                        const FVector2D P0 = Cur;
+                        const FVector2D P1 = ToPix(C.P);
+                        const FVector2D P2 = ToPix(Path.Cmds[c + 1].P);
+                        const FVector2D P3 = ToPix(Path.Cmds[c + 2].P);
+                        const int32 Steps = 16;
+                        for (int32 S = 1; S <= Steps; ++S)
+                        {
+                            const float T = (float)S / (float)Steps;
+                            const float U = 1.0f - T;
+                            const FVector2D P = P0 * (U * U * U)
+                                + P1 * (3.0f * U * U * T)
+                                + P2 * (3.0f * U * T * T)
+                                + P3 * (T * T * T);
+                            PushLine(Cur, P);
+                            Cur = P;
+                        }
+                        c += 2;
+                    }
+                }
+                FLinearColor SCol = Path.Stroke;
+                SCol.A *= AlphaMul;
+                const float Thickness = FMath::Max(0.5f,
+                    Path.StrokeWidth * ThickScale * ThickMul);
+                if (Segs.Num() > 0)
+                {
+                    FSlateDrawElement::MakeLines(L, Id, G.ToPaintGeometry(), Segs,
+                        ESlateDrawEffect::None, SCol, true, Thickness);
+                }
+            }
+        }
+    }
+
     std::vector<FPSchematic::FPSchematicPart> Parts;
     std::vector<std::string> PartLayerTags;      // Phase 0/3: resolved tag per part (parallel)
     std::vector<char> PartStatus;                // P2: per-part slot completeness in the ACTIVE view (0 none, 1 partial, 2 full)
+    std::vector<float> PartAlpha;                // Phase 7: per-part art-availability alpha (1 = runtime shows, 0 = runtime hides)
+    std::vector<FFaceVectorArtPaths> VectorCur;  // vector viewer: resolved Cur cells (parallel; empty = ring fallback)
+    std::vector<FFaceVectorArtPaths> VectorPrev; // vector viewer: resolved Prev cells
+    std::vector<float> VectorBlend;              // vector viewer: bracket blend (Cur alpha)
+    int32 CurrentState = 0;                      // Review Req 2: resolved view state for per-edge occlusion
     std::vector<std::string> LayerFilter;        // Phase 3: selected layer chips (empty = all)
     int32 DepthFilter = 0;                       // Phase 3: 0 all, 1 Front, 2 Base, 3 Back
     bool bFocus = false;                         // Phase 3: zoom-to-fit lens
@@ -1965,15 +2558,55 @@ public:
         return FVector2D(400.0f, 20.0f);
     }
 
-    // Boundary sides: -4..-1 mirror indices 0..3 on the negative angle side,
-    // +1..+4 on the positive side; 0 means no hit.
+    // Boundary sides: -6..-1 mirror indices 0..5 on the negative angle side,
+    // +1..+6 on the positive side; 0 means no hit. The six boundary angles
+    // are the WI1 14-state swap set — {BM0*HZW/2, BM0*HZW, 1.5*BM0*HZW,
+    // BM1*HZW, BM2*HZW, BM3*HZW} = 22.5/45/67.5/90/135/180 at defaults. The
+    // Narrow (index 0) and Sliver (index 2) lines derive from BM0; the other
+    // four are the primary multiplier handles.
+    // Req 5: pixels come from FPLayout::FPZoneStripPixelForYaw, so the strip
+    // is rebased to start at the Left profile (left edge = -135, camera-orbit
+    // order Left -> 3/4L -> Front -> 3/4R -> Right -> BackR -> Back -> BackL,
+    // right edge wrapping back to the left).
+    static float BoundaryAngle(int32 Index, const TArray<float>& Mults, float HZW)
+    {
+        const float BM0 = UFaceParallaxComponent::GetBoundaryOrDefault(Mults, 0);
+        const float BM1 = UFaceParallaxComponent::GetBoundaryOrDefault(Mults, 1);
+        const float BM2 = UFaceParallaxComponent::GetBoundaryOrDefault(Mults, 2);
+        const float BM3 = UFaceParallaxComponent::GetBoundaryOrDefault(Mults, 3);
+        switch (Index)
+        {
+            case 0: return BM0 * HZW * 0.5f;
+            case 1: return BM0 * HZW;
+            case 2: return BM0 * HZW * 1.5f;
+            case 3: return BM1 * HZW;
+            case 4: return BM2 * HZW;
+            default: return BM3 * HZW;
+        }
+    }
     static float BoundaryPixel(int32 Side, const TArray<float>& Mults,
         float HalfZoneWidth, float DiagramWidth)
     {
-        const float Ang = UFaceParallaxComponent::GetBoundaryOrDefault(Mults, FMath::Abs(Side) - 1)
-            * HalfZoneWidth;
+        const float Ang = BoundaryAngle(FMath::Abs(Side) - 1, Mults, HalfZoneWidth);
         const float Signed = Side < 0 ? -Ang : Ang;
-        return (Signed + 180.0f) / 360.0f * DiagramWidth;
+        return (float)FPLayout::FPZoneStripPixelForYaw((double)Signed, (double)DiagramWidth);
+    }
+
+    // Side 1..6 -> ZoneBoundaryMultipliers index (Narrow/Sliver share BM0).
+    static int32 BoundarySideToMultiplierIndex(int32 Side)
+    {
+        static const int32 SideToMult[6] = {0, 0, 0, 1, 2, 3};
+        const int32 I = FMath::Abs(Side) - 1;
+        return (I >= 0 && I < 6) ? SideToMult[I] : -1;
+    }
+
+    // Degrees of boundary travel per unit multiplier change for each side
+    // (Narrow moves half as fast as BM0, Sliver 1.5x — both still drive BM0).
+    static float BoundarySideDegPerMultiplier(int32 Side)
+    {
+        static const float DegPerMult[6] = {0.5f, 1.0f, 1.5f, 1.0f, 1.0f, 1.0f};
+        const int32 I = FMath::Abs(Side) - 1;
+        return (I >= 0 && I < 6) ? DegPerMult[I] : 1.0f;
     }
 
     int32 HitTest(const FGeometry& Geo, const FVector2D& Local) const
@@ -1982,10 +2615,10 @@ public:
         if (W <= 1.0f) return 0;
         UFaceParallaxComponent* Comp = Owner ? Owner->GetParallaxComponent() : nullptr;
         const TArray<float>& Mults = Comp ? Comp->ZoneBoundaryMultipliers : TArray<float>();
-        const float HZW = Comp ? Comp->HalfZoneWidth : 22.5f;
+        const float HZW = Comp ? Comp->HalfZoneWidth : 45.0f;
         int32 BestSide = 0;
         float BestDist = 12.0f;
-        for (int32 Side = -4; Side <= 4; ++Side)
+        for (int32 Side = -6; Side <= 6; ++Side)
         {
             if (Side == 0) continue;
             const float Dist = FMath::Abs(BoundaryPixel(Side, Mults, HZW, W) - Local.X);
@@ -2004,8 +2637,8 @@ public:
         if (Sz.X <= 1.0f) return LayerId;
         UFaceParallaxComponent* Comp = Owner ? Owner->GetParallaxComponent() : nullptr;
         const TArray<float>& Mults = Comp ? Comp->ZoneBoundaryMultipliers : TArray<float>();
-        const float HZW = Comp ? Comp->HalfZoneWidth : 22.5f;
-        for (int32 Side = -4; Side <= 4; ++Side)
+        const float HZW = Comp ? Comp->HalfZoneWidth : 45.0f;
+        for (int32 Side = -6; Side <= 6; ++Side)
         {
             if (Side == 0) continue;
             const float Px = BoundaryPixel(Side, Mults, HZW, Sz.X);
@@ -2024,12 +2657,10 @@ public:
             : (Owner ? Owner->GetOrbitYaw() : (Comp ? Comp->CurrentYaw : 0.0f));
         if (CursorYaw == CursorYaw)   // NaN guard
         {
-            // Normalize 0..360 orbit storage back into the strip's [-180,180)
-            // span so the cursor always stays on the diagram.
-            float Yaw = CursorYaw;
-            while (Yaw >= 180.0f) Yaw -= 360.0f;
-            while (Yaw < -180.0f) Yaw += 360.0f;
-            const float YPx = (Yaw + 180.0f) / 360.0f * Sz.X;
+            // Req 5: rebase the cursor onto the camera-orbit strip (left edge
+            // = Left profile, -135) so it always sits on the diagram; the pure
+            // FPZoneStripPixelForYaw contract wraps the back for us.
+            const float YPx = (float)FPLayout::FPZoneStripPixelForYaw((double)CursorYaw, (double)Sz.X);
             if (YPx >= 0.0f && YPx <= Sz.X)
                 FSlateDrawElement::MakeBox(OutDrawElements, LayerId + 1,
                     AllottedGeometry.ToPaintGeometry(FVector2D(3.0f, Sz.Y),
@@ -2059,7 +2690,8 @@ public:
         DragStartPx = Local.X;
         UFaceParallaxComponent* Comp = Owner ? Owner->GetParallaxComponent() : nullptr;
         const TArray<float>& Mults = Comp ? Comp->ZoneBoundaryMultipliers : TArray<float>();
-        DragStartMultiplier = UFaceParallaxComponent::GetBoundaryOrDefault(Mults, FMath::Abs(Side) - 1);
+        const int32 MIdx = BoundarySideToMultiplierIndex(Side);
+        DragStartMultiplier = UFaceParallaxComponent::GetBoundaryOrDefault(Mults, MIdx < 0 ? 0 : MIdx);
         return FReply::Handled().CaptureMouse(SharedThis(this));
     }
 
@@ -2077,10 +2709,16 @@ public:
         const float DeltaPx = Geo.AbsoluteToLocal(Ev.GetScreenSpacePosition()).X - DragStartPx;
         const double DeltaDeg = (DragSide < 0 ? -1.0 : 1.0) * (double)DeltaPx * 360.0 / (double)W;
         UFaceParallaxComponent* Comp = Owner ? Owner->GetParallaxComponent() : nullptr;
-        const float HZW = Comp ? Comp->HalfZoneWidth : 22.5f;
+        const float HZW = Comp ? Comp->HalfZoneWidth : 45.0f;
+        // The drag applies to the boundary line's OWN angular travel: the
+        // Narrow/Sliver lines move at 0.5x / 1.5x the BM0 handle rate (they
+        // derive from BM0), so the multiplier delta is normalized by the
+        // side's degrees-per-multiplier before writing the multiplier.
+        const float EffHZW = HZW * BoundarySideDegPerMultiplier(DragSide);
         const float Mult = (float)FPLayout::ZoneBoundaryAfterDrag(
-            DragStartMultiplier, DeltaDeg, HZW);
-        if (Owner) Owner->ApplyZoneBoundaryDrag(FMath::Abs(DragSide) - 1, Mult);
+            DragStartMultiplier, DeltaDeg, EffHZW);
+        const int32 MIdx = BoundarySideToMultiplierIndex(DragSide);
+        if (Owner) Owner->ApplyZoneBoundaryDrag(MIdx, Mult);
         return FReply::Handled();
     }
 
@@ -2124,9 +2762,10 @@ private:
 };
 
 // SFacePitchStrip - Phase C: dedicated up/down view slider (the vertical pitch
-// mirror of the yaw zone scrub). A slim vertical strip mounted UNDER the 360
-// deg yaw zone diagram; dragging up lifts the head (toward Top), dragging down
-// lowers it (toward Bottom). Relative pixel drags map through the pure
+// mirror of the yaw zone scrub). A slim vertical strip mounted LEFT of the
+// canvas (the yaw zone bar sits above the main row); dragging up lifts the
+// head (toward Top), dragging down lowers it (toward Bottom). Relative pixel
+// drags map through the pure
 // FPLayout::FPZoneScrubPitchAfterDrag contract (full strip height = 180 deg,
 // clamped to [-90,90], no wrap), drive the orbit pitch live, and repoint the
 // ActiveViewState at the Top/Bottom art states past their thresholds so the

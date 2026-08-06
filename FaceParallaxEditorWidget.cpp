@@ -238,7 +238,7 @@ void UFaceParallaxEditorWidget::SetActiveViewState(EFaceAngleState State)
     ActiveViewState = State;
     if (bCameraFollowsView && PreviewActor.IsValid() && PreviewActor->FaceParallax)
     {
-        PreviewActor->SetOrbitYaw(PreviewActor->FaceParallax->GetZoneCenterYaw(State));
+        PreviewActor->SetOrbitYaw(PreviewActor->FaceParallax->GetYawKeyForState(State));
         PreviewActor->SetOrbitPitch(PreviewActor->FaceParallax->GetZoneCenterPitch(State));
     }
     RefreshUI();
@@ -1036,7 +1036,7 @@ void UFaceParallaxEditorWidget::SnapCameraToActiveView()
 {
     if (!ValidatePreviewActor()) return;
     if (!PreviewActor->FaceParallax) return;
-    const float TargetYaw = PreviewActor->FaceParallax->GetZoneCenterYaw(ActiveViewState);
+    const float TargetYaw = PreviewActor->FaceParallax->GetYawKeyForState(ActiveViewState);
     const float TargetPitch = PreviewActor->FaceParallax->GetZoneCenterPitch(ActiveViewState);
     PreviewActor->SetOrbitYaw(TargetYaw);
     PreviewActor->SetOrbitPitch(TargetPitch);
@@ -1091,9 +1091,10 @@ void UFaceParallaxEditorWidget::CommitZoneScrub()
         const EFaceAngleState ZoneState =
             PreviewActor->FaceParallax->DetermineStateFromAngles(ZoneScrubYaw, 0.0f);
         ActiveViewState = ZoneState;
-        // Snap yaw to the zone center so the view state is canonical; pitch
-        // is a yaw-scrub-only control, so the user's pitch is left alone.
-        PreviewActor->SetOrbitYaw(PreviewActor->FaceParallax->GetZoneCenterYaw(ZoneState));
+        // Snap yaw to the state's POSE KEY so the orbit lands on the authored
+        // pose exactly (the art is exact at 0/45/90/135/180, not at the zone
+        // midpoint); pitch is a yaw-scrub-only control, so it is left alone.
+        PreviewActor->SetOrbitYaw(PreviewActor->FaceParallax->GetYawKeyForState(ZoneState));
     }
     ZoneScrubYaw = ZoneScrubStartYaw;
     RefreshUI();

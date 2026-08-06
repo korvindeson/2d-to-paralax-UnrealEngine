@@ -2,6 +2,7 @@
 #include "FaceParallaxPreset.h"
 #include "FaceParallaxPreviewActor.h"
 #include "FaceParallaxSchematic.h"
+#include "FaceParallaxVectorArt.h"
 #include "DepthDebugVisualizerComponent.h"
 #include "GameFramework/Actor.h"
 #include "Camera/PlayerCameraManager.h"
@@ -19,6 +20,7 @@
 #include "Camera/CameraActor.h"
 #include "Engine/AssetManager.h"
 #include "Engine/StreamableManager.h"
+#include "RHI.h"
 #include <functional>
 
 UFaceParallaxComponent::UFaceParallaxComponent()
@@ -405,6 +407,8 @@ void UFaceParallaxComponent::TickComponent(float DeltaTime, ELevelTick TickType,
 
     if (!OwnerMesh) return;
 
+    TickVectorBakes();
+
     FVector CamLoc;
     FRotator CamRot;
     if (!GetCameraLocationAndRotation(CamLoc, CamRot))
@@ -684,17 +688,27 @@ EFaceAngleState UFaceParallaxComponent::DetermineStateFromAngles(float Yaw, floa
     float BM[4];
     for (int32 i = 0; i < 4; ++i)
         BM[i] = GetBoundaryOrDefault(ZoneBoundaryMultipliers, i) * HalfZoneWidth;
+    // WI1 sub-thresholds, derived from the first primary boundary: the Narrow
+    // zone opens at BM0/2 (22.5 at defaults), the Sliver zone at 1.5*BM0
+    // (67.5), so the 14-state swap set reads 22.5/45/67.5/90/135/180.
+    const float H = BM[0] * 0.5f;
+    const float Q = BM[0] * 1.5f;
 
-    if (Yaw > -BM[0] && Yaw <= BM[0]) return EFaceAngleState::Front;
-
-    if (Yaw > BM[0] && Yaw <= BM[1])        return EFaceAngleState::ThreeQuarterRight;
-    if (Yaw > BM[1] && Yaw <= BM[2])        return EFaceAngleState::RightProfile;
-    if (Yaw > BM[2] && Yaw <= BM[3])        return EFaceAngleState::BackRight;
-    if (Yaw > BM[3] || Yaw <= -BM[3])        return EFaceAngleState::Back;
-    if (Yaw > -BM[3] && Yaw <= -BM[2])       return EFaceAngleState::BackLeft;
-    if (Yaw > -BM[2] && Yaw <= -BM[1])       return EFaceAngleState::LeftProfile;
-    if (Yaw > -BM[1] && Yaw <= -BM[0])       return EFaceAngleState::ThreeQuarterLeft;
-
+    if (Yaw >= -BM[3] && Yaw <= BM[3])
+    {
+        if (Yaw > -H && Yaw < H)            return EFaceAngleState::Front;
+        if (Yaw >= H && Yaw < BM[0])        return EFaceAngleState::NarrowRight;
+        if (Yaw >= BM[0] && Yaw < Q)        return EFaceAngleState::ThreeQuarterRight;
+        if (Yaw >= Q && Yaw < BM[1])        return EFaceAngleState::SliverRight;
+        if (Yaw >= BM[1] && Yaw < BM[2])    return EFaceAngleState::RightProfile;
+        if (Yaw >= BM[2] && Yaw < BM[3])    return EFaceAngleState::BackRight;
+        if (Yaw >= BM[3] || Yaw <= -BM[3])  return EFaceAngleState::Back;
+        if (Yaw > -BM[3] && Yaw <= -BM[2])  return EFaceAngleState::BackLeft;
+        if (Yaw > -BM[2] && Yaw <= -BM[1])  return EFaceAngleState::LeftProfile;
+        if (Yaw > -BM[1] && Yaw <= -Q)      return EFaceAngleState::SliverLeft;
+        if (Yaw > -Q && Yaw <= -BM[0])      return EFaceAngleState::ThreeQuarterLeft;
+        if (Yaw > -BM[0] && Yaw <= -H)      return EFaceAngleState::NarrowLeft;
+    }
     return EFaceAngleState::Front;
 }
 
@@ -703,16 +717,22 @@ float UFaceParallaxComponent::GetZoneCenterYaw(EFaceAngleState State) const
     float BM[4];
     for (int32 i = 0; i < 4; ++i)
         BM[i] = GetBoundaryOrDefault(ZoneBoundaryMultipliers, i) * HalfZoneWidth;
+    const float H = BM[0] * 0.5f;
+    const float Q = BM[0] * 1.5f;
     switch (State)
     {
         case EFaceAngleState::Front:              return 0.0f;
-        case EFaceAngleState::ThreeQuarterRight:  return (BM[0] + BM[1]) * 0.5f;
+        case EFaceAngleState::NarrowRight:        return (H + BM[0]) * 0.5f;
+        case EFaceAngleState::ThreeQuarterRight:  return (BM[0] + Q) * 0.5f;
+        case EFaceAngleState::SliverRight:        return (Q + BM[1]) * 0.5f;
         case EFaceAngleState::RightProfile:       return (BM[1] + BM[2]) * 0.5f;
         case EFaceAngleState::BackRight:          return (BM[2] + BM[3]) * 0.5f;
         case EFaceAngleState::Back:               return 180.0f;
         case EFaceAngleState::BackLeft:           return -(BM[2] + BM[3]) * 0.5f;
         case EFaceAngleState::LeftProfile:        return -(BM[1] + BM[2]) * 0.5f;
-        case EFaceAngleState::ThreeQuarterLeft:   return -(BM[0] + BM[1]) * 0.5f;
+        case EFaceAngleState::SliverLeft:         return -(Q + BM[1]) * 0.5f;
+        case EFaceAngleState::ThreeQuarterLeft:   return -(BM[0] + Q) * 0.5f;
+        case EFaceAngleState::NarrowLeft:         return -(H + BM[0]) * 0.5f;
         default:                                  return 0.0f;
     }
 }
@@ -727,23 +747,208 @@ float UFaceParallaxComponent::GetZoneCenterPitch(EFaceAngleState State) const
     }
 }
 
+float UFaceParallaxComponent::GetYawKeyForState(EFaceAngleState State) const
+{
+    // The authored pose is EXACT at the swap boundary that opens the state
+    // (0 / H / BM[0] / Q / BM[1] / BM[2] / 180 — the sub-threshold states 1
+    // and 3 carry the parent pose and key at H and Q). Left-half states use
+    // the same positive keys — |yaw| resolves them and sign(Yaw) carries the
+    // direction, so the left turn mirrors the right turn exactly.
+    float BM[4];
+    for (int32 i = 0; i < 4; ++i)
+        BM[i] = GetBoundaryOrDefault(ZoneBoundaryMultipliers, i) * HalfZoneWidth;
+    const float H = BM[0] * 0.5f;
+    const float Q = BM[0] * 1.5f;
+    switch (State)
+    {
+        case EFaceAngleState::Front:              return 0.0f;
+        case EFaceAngleState::NarrowRight:        return H;
+        case EFaceAngleState::ThreeQuarterRight:  return BM[0];
+        case EFaceAngleState::SliverRight:        return Q;
+        case EFaceAngleState::RightProfile:       return BM[1];
+        case EFaceAngleState::BackRight:          return BM[2];
+        case EFaceAngleState::Back:               return 180.0f;
+        case EFaceAngleState::BackLeft:           return BM[2];
+        case EFaceAngleState::LeftProfile:        return BM[1];
+        case EFaceAngleState::SliverLeft:         return Q;
+        case EFaceAngleState::ThreeQuarterLeft:   return BM[0];
+        case EFaceAngleState::NarrowLeft:         return H;
+        case EFaceAngleState::Top:                return 0.0f;
+        case EFaceAngleState::Bottom:             return 0.0f;
+        default:                                  return 0.0f;
+    }
+}
+
+float UFaceParallaxComponent::GetYawKeySpacingForState(EFaceAngleState State) const
+{
+    // Distance from the state's pose key to the NEXT state's key along the
+    // turn (the slide peaks exactly there). Derived from the same boundary
+    // set as GetYawKeyForState: the sub-threshold zones space BM0/2 (22.5 at
+    // defaults), the 90/135/180 key spans space a full boundary gap.
+    // Top/Bottom have no yaw slide (key 0, pitch-driven) -> 0.
+    float BM[4];
+    for (int32 i = 0; i < 4; ++i)
+        BM[i] = GetBoundaryOrDefault(ZoneBoundaryMultipliers, i) * HalfZoneWidth;
+    const float H = BM[0] * 0.5f;
+    const float Q = BM[0] * 1.5f;
+    switch (State)
+    {
+        case EFaceAngleState::Front:
+        case EFaceAngleState::NarrowRight:
+        case EFaceAngleState::ThreeQuarterRight:
+        case EFaceAngleState::NarrowLeft:
+        case EFaceAngleState::ThreeQuarterLeft:
+            return H;
+        case EFaceAngleState::SliverRight:
+        case EFaceAngleState::SliverLeft:
+            return FMath::Max(1.0f, BM[1] - Q);
+        case EFaceAngleState::RightProfile:
+        case EFaceAngleState::LeftProfile:
+            return FMath::Max(1.0f, BM[2] - BM[1]);
+        case EFaceAngleState::BackRight:
+        case EFaceAngleState::BackLeft:
+            return FMath::Max(1.0f, BM[3] - BM[2]);
+        case EFaceAngleState::Back:
+            return FMath::Max(1.0f, BM[3] - BM[2]);
+        default:
+            return 0.0f;   // Top/Bottom: pitch-driven, no yaw slide
+    }
+}
+
+float UFaceParallaxComponent::GetBoundaryBetweenStates(EFaceAngleState A, EFaceAngleState B, bool& bOutIsPitchBoundary) const
+{
+    bOutIsPitchBoundary = false;
+    const bool bAVert = (A == EFaceAngleState::Top || A == EFaceAngleState::Bottom);
+    const bool bBVert = (B == EFaceAngleState::Top || B == EFaceAngleState::Bottom);
+    if (bAVert != bBVert)
+    {
+        bOutIsPitchBoundary = true;
+        return (bAVert && A == EFaceAngleState::Top)
+            || (bBVert && B == EFaceAngleState::Top)
+            ? TopViewPitchThreshold
+            : BottomViewPitchThreshold;
+    }
+
+    float BM[4];
+    for (int32 i = 0; i < 4; ++i)
+        BM[i] = GetBoundaryOrDefault(ZoneBoundaryMultipliers, i) * HalfZoneWidth;
+    const float H = BM[0] * 0.5f;
+    const float Q = BM[0] * 1.5f;
+    const auto Pair = [](EFaceAngleState X, EFaceAngleState Y, EFaceAngleState L, EFaceAngleState R, float V) -> float {
+        return ((X == L && Y == R) || (X == R && Y == L)) ? V : -1.0f;
+    };
+    float BR = Pair(A, B, EFaceAngleState::Front, EFaceAngleState::NarrowRight, H);
+    if (BR >= 0.0f) return BR;
+    BR = Pair(A, B, EFaceAngleState::NarrowRight, EFaceAngleState::ThreeQuarterRight, BM[0]);
+    if (BR >= 0.0f) return BR;
+    BR = Pair(A, B, EFaceAngleState::ThreeQuarterRight, EFaceAngleState::SliverRight, Q);
+    if (BR >= 0.0f) return BR;
+    BR = Pair(A, B, EFaceAngleState::SliverRight, EFaceAngleState::RightProfile, BM[1]);
+    if (BR >= 0.0f) return BR;
+    BR = Pair(A, B, EFaceAngleState::RightProfile, EFaceAngleState::BackRight, BM[2]);
+    if (BR >= 0.0f) return BR;
+    BR = Pair(A, B, EFaceAngleState::BackRight, EFaceAngleState::Back, 180.0f);
+    if (BR >= 0.0f) return BR;
+    BR = Pair(A, B, EFaceAngleState::Back, EFaceAngleState::BackLeft, -180.0f);
+    if (BR >= 0.0f) return BR;
+    BR = Pair(A, B, EFaceAngleState::BackLeft, EFaceAngleState::LeftProfile, -BM[2]);
+    if (BR >= 0.0f) return BR;
+    BR = Pair(A, B, EFaceAngleState::LeftProfile, EFaceAngleState::SliverLeft, -BM[1]);
+    if (BR >= 0.0f) return BR;
+    BR = Pair(A, B, EFaceAngleState::SliverLeft, EFaceAngleState::ThreeQuarterLeft, -Q);
+    if (BR >= 0.0f) return BR;
+    BR = Pair(A, B, EFaceAngleState::ThreeQuarterLeft, EFaceAngleState::NarrowLeft, -BM[0]);
+    if (BR >= 0.0f) return BR;
+    BR = Pair(A, B, EFaceAngleState::NarrowLeft, EFaceAngleState::Front, -H);
+    return BR;
+}
+
+float UFaceParallaxComponent::GetTransitionDirectionSign(EFaceAngleState From, EFaceAngleState To, bool bPitchBoundary) const
+{
+    // +1 when the camera crossed toward INCREASING rotation parameter on the
+    // shared axis (zone centers on the raw signed axis), -1 when decreasing.
+    // The +-180 wrap pair (Back<->BackLeft) is disambiguated from the pair
+    // itself: ending in BackLeft means the camera crossed UP through the -180
+    // wrap (a +1 sweep on the normalized parameter).
+    if (bPitchBoundary)
+        return (GetZoneCenterPitch(To) > GetZoneCenterPitch(From)) ? 1.0f : -1.0f;
+    if ((To == EFaceAngleState::Back || From == EFaceAngleState::Back)
+        && (To == EFaceAngleState::BackLeft || From == EFaceAngleState::BackLeft))
+        return (To == EFaceAngleState::BackLeft) ? 1.0f : -1.0f;
+    return (GetZoneCenterYaw(To) > GetZoneCenterYaw(From)) ? 1.0f : -1.0f;
+}
+
 void UFaceParallaxComponent::UpdateStateMachine(float Yaw, float Pitch, float DeltaTime, float AngularVelocity)
 {
     EFaceAngleState RawState = DetermineStateFromAngles(Yaw, Pitch);
 
+    // IV.0 angle-buffer hysteresis: while the camera is still within
+    // AngleHysteresisBuffer degrees of the shared swap boundary with the raw
+    // state, HOLD the current view (the flip only commits after the angle
+    // definitively enters the new zone — a slow hover at a 45/90/135/180
+    // threshold never flickers). The B.3 directional Schmitt below is the
+    // commit authority; the frame count is the same-frame jitter backstop.
+    // Non-adjacent jumps have no shared boundary and pass through unvetoed.
+    if (RawState != CurrentState && RawState != PreviousState && AngleHysteresisBuffer > 0.0f)
+    {
+        bool bPitchBoundary = false;
+        const float Boundary = GetBoundaryBetweenStates(CurrentState, RawState, bPitchBoundary);
+        if (Boundary >= 0.0f)
+        {
+            float Dist = bPitchBoundary
+                ? FMath::Abs(Pitch - Boundary)
+                : FMath::Abs(Yaw - Boundary);
+            while (Dist > 180.0f) Dist -= 360.0f;
+            Dist = FMath::Abs(Dist);
+            if (Dist < AngleHysteresisBuffer)
+            {
+                // Within the buffer: suppress the flip and reset the debounce
+                // so no stale pending flip fires when the camera leaves again.
+                HysteresisFramesRemaining = 0;
+                RawState = CurrentState;
+            }
+        }
+    }
+
     if (RawState != CurrentState && RawState != PreviousState)
     {
-        if (HysteresisFramesRemaining > 0 && RawState == HysteresisPendingState)
-        {
-            --HysteresisFramesRemaining;
-        }
-        else
+        // B.3 IV.0 directional Schmitt commit: the flip is NOT a frame-count
+        // debounce — a frame window is speed-dependent (the same 3 frames
+        // covers a wide angular sweep during a fast drag and a sliver during
+        // a slow hover), the defect B.2 removed from the crossfade. The flip
+        // commits only once the live rotation parameter has passed the shared
+        // swap boundary by the Schmitt margin in the direction of travel
+        // (forward at Boundary + 1.5, reverse at Boundary - 1.5) — the SAME
+        // constant the parameter-space crossfade centers on, so the commit
+        // key coincides exactly with the alpha = 0.5 key: at the instant the
+        // view flips the incoming card is already half-swapped in. The frame
+        // count remains only as a same-frame jitter backstop (a raw flip that
+        // retracts within a frame or two never accumulates).
+        if (RawState != HysteresisPendingState)
         {
             HysteresisFramesRemaining = FMath::Max(1, HysteresisFrames);
             HysteresisPendingState = RawState;
         }
+        else if (HysteresisFramesRemaining > 0)
+        {
+            --HysteresisFramesRemaining;
+        }
 
-        if (HysteresisFramesRemaining <= 0)
+        bool bSchmittPassed = true;
+        {
+            bool bPitchBoundary = false;
+            const float Boundary = GetBoundaryBetweenStates(CurrentState, RawState, bPitchBoundary);
+            if (Boundary >= 0.0f)
+            {
+                const float Param = bPitchBoundary ? Pitch : Yaw;
+                const float Sign = GetTransitionDirectionSign(CurrentState, RawState, bPitchBoundary);
+                bSchmittPassed = FPSchematic::FPSchematicSchmittCrossed(Param, Boundary, Sign);
+            }
+            // Non-adjacent jumps have no shared boundary: pass through
+            // unvetoed (matching the angle-buffer veto above).
+        }
+
+        if (bSchmittPassed && HysteresisFramesRemaining <= 0)
         {
             PreviousState = CurrentState;
             CurrentState = RawState;
@@ -759,9 +964,32 @@ void UFaceParallaxComponent::UpdateStateMachine(float Yaw, float Pitch, float De
             // Phase 4 also sweeps when the old and new silhouettes are
             // structurally different (Front -> Back hides the features, etc.)
             // so the blend never lingers on a shape that does not exist.
+            // Phase 7: a transition ALSO sweeps when any base-preset layer
+            // leaves art behind (the outgoing view has a painted card but the
+            // incoming view does not) — a slow crossfade would linger on stale
+            // art. Gate per layer through the FPSchematicSwapModeFor contract
+            // (structural gap OR outgoing-art-without-incoming-art => Swoosh).
+            const bool bMissingArtSwoosh = [&]() {
+                if (!ActivePreset) return false;
+                for (const auto& LayerPair : FaceMaterialsByLayer)
+                {
+                    const FString TagStr = LayerPair.Key.ToString();
+                    if (TagStr.Contains(TEXT("_"))) continue;   // nested-art quads
+                    const bool bFrom = ActivePreset->GetSlot(
+                        PreviousState, LayerPair.Key).Textures.IsValid();
+                    const bool bTo = ActivePreset->GetSlot(
+                        CurrentState, LayerPair.Key).Textures.IsValid();
+                    if (FPSchematic::FPSchematicSwapModeFor(
+                            (int32)PreviousState, (int32)CurrentState,
+                            bFrom, bTo) == FPSchematic::FPSchematicSwapMode::Swoosh)
+                        return true;
+                }
+                return false;
+            }();
             if (bSwooshEnabled && (AngularVelocity >= SwooshSpeedThreshold
                 || FPSchematic::FPSchematicShouldSwoosh(
-                    (int32)PreviousState, (int32)CurrentState)))
+                    (int32)PreviousState, (int32)CurrentState)
+                || bMissingArtSwoosh))
             {
                 BlendAlpha = 0.0f;
                 bIsInTransition = true;
@@ -806,46 +1034,55 @@ void UFaceParallaxComponent::UpdateStateMachine(float Yaw, float Pitch, float De
     }
     else
     {
+        // Camera is back in a settled state (or mid-crossfade retreat): the
+        // pending flip is cleared so a later re-entry re-arms cleanly.
         HysteresisFramesRemaining = 0;
+        HysteresisPendingState = CurrentState;
     }
 
-    // Normal transition blending (only used when swoosh is not active)
+    // Normal transition blending (only used when swoosh is not active).
+    // Phase B.2: the crossfade is a pure function of the ROTATION PARAMETER
+    // (art_guide III.6 Parameter-Space Crossfade Width / IV.0), NOT a
+    // frame-count fade: the same ±0.75° angular sweep fades identically at any
+    // interaction speed, centered on the hysteresis-adjusted trigger that just
+    // fired (boundary + 1.5° in the direction of travel). The retired
+    // FInterpTo(DeltaTime, CrossfadeSpeed * RateBias) window was silently
+    // speed-dependent — a fast manual drag popped (the fade could not keep up)
+    // while a slow animated turn lingered on an in-between shape.
     if (bIsInTransition && SwooshPhase == ESwooshPhase::Inactive)
     {
-        // Phase 4: a structurally-different transition (Front -> Back, etc.)
-        // blends faster so the crossfade never lingers on an in-between shape.
-        const float RateBias = (float)FPSchematic::FPSchematicTransitionBlendRate(
-            (int32)PreviousState, (int32)CurrentState);
-        if (bUseContinuousBlending)
+        if (!bUseContinuousBlending)
         {
-            float TargetAlpha = 1.0f;
-            float YawCenter = GetZoneCenterYaw(CurrentState);
-            bool bIsVerticalState = (CurrentState == EFaceAngleState::Top || CurrentState == EFaceAngleState::Bottom);
-
-            if (!bIsVerticalState && BlendWindowWidth > 0.0f)
-            {
-                float YawDelta = Yaw - YawCenter;
-                while (YawDelta > 180.0f) YawDelta -= 360.0f;
-                while (YawDelta < -180.0f) YawDelta += 360.0f;
-                float DistToEdge = FMath::Abs(YawDelta) - (HalfZoneWidth - BlendWindowWidth * 0.5f);
-                TargetAlpha = 1.0f - FMath::Clamp(DistToEdge / BlendWindowWidth, 0.0f, 1.0f);
-            }
-
-            BlendAlpha = FMath::FInterpTo(BlendAlpha, TargetAlpha, DeltaTime, CrossfadeSpeed * RateBias);
-
-            if (TargetAlpha >= 1.0f && BlendAlpha >= 0.995f)
-            {
-                BlendAlpha = 1.0f;
-                bIsInTransition = false;
-            }
+            // Hard swap: the incoming card is full immediately.
+            BlendAlpha = 1.0f;
+            bIsInTransition = false;
         }
         else
         {
-            BlendAlpha = FMath::FInterpTo(BlendAlpha, 1.0f, DeltaTime, CrossfadeSpeed * RateBias);
-            if (BlendAlpha >= 1.0f)
+            bool bPitchBoundary = false;
+            const float Boundary = GetBoundaryBetweenStates(CurrentState, PreviousState, bPitchBoundary);
+            if (Boundary < 0.0f)
             {
+                // No shared boundary (non-adjacent jump, or a direct
+                // Top<->Bottom flip): no parameter-space window, swap instantly.
                 BlendAlpha = 1.0f;
                 bIsInTransition = false;
+            }
+            else
+            {
+                const float Param = bPitchBoundary ? Pitch : Yaw;
+                // Direction sign through the shared helper (same rule as the
+                // B.3 commit): +1 when the camera crossed toward INCREASING
+                // rotation parameter on the shared axis, -1 when decreasing.
+                const float Sign = GetTransitionDirectionSign(
+                    PreviousState, CurrentState, bPitchBoundary);
+                BlendAlpha = (float)FPSchematic::FPSchematicCrossfadeAlpha(
+                    Param, Boundary, Sign);
+                if (BlendAlpha >= 1.0f)
+                {
+                    BlendAlpha = 1.0f;
+                    bIsInTransition = false;
+                }
             }
         }
     }
@@ -878,49 +1115,55 @@ FVector2D UFaceParallaxComponent::ComputeOffsetForState(EFaceAngleState State, f
     }
 
     const FFaceLayerDef& Layer = LayerDefinitions[LayerIndex];
-    float DepthFactor = Layer.DepthScale * (Layer.bInvertParallax ? -1.0f : 1.0f);
+    // Master-blueprint velocity hierarchy (+100/+60/0/-50/-100%) is the
+    // displacement authority for the 10 known base-preset tags: the per-tag
+    // rate IS the depth factor (its sign carries the direction). Unknown/user
+    // groups keep the legacy per-class DepthScale / invert composite.
+    const char* LayerTagUtf8 = TCHAR_TO_UTF8(*Layer.LayerTag.ToString());
+    const bool bVelocityHit = FPSchematic::FPSchematicTagHasParallaxRate(LayerTagUtf8);
+    float DepthFactor = bVelocityHit
+        ? (float)FPSchematic::FPSchematicTagParallaxRate(LayerTagUtf8)
+        : Layer.DepthScale * (Layer.bInvertParallax ? -1.0f : 1.0f);
 
-    bool bIsVerticalState = (State == EFaceAngleState::Top || State == EFaceAngleState::Bottom);
-    float YawCenter = GetZoneCenterYaw(State);
-    float PitchCenter = GetZoneCenterPitch(State);
+    // --- Yaw slide, re-baselined at the SWAP KEYS (art_guide III.2 per-zone
+    // rebased sine + III.6 Local Delta Reset / Trajectory Matching) ---
+    // SignedFraction is the distance from the authored pose key
+    // (0 / H / BM0 / Q / BM1 / BM2 / 180 — H = BM0/2 and Q = 1.5*BM0 are the
+    // WI1 sub-threshold keys) in key-spacing units: 0 exactly at the key
+    // (the pose is EXACT there — slide 0), +-1 at the NEXT swap boundary,
+    // for both the 22.5 sub-zones and the 45 primary zones (the spacing is
+    // per-state via GetYawKeySpacingForState; the sine sample θ = key +
+    // fraction × spacing stays an ABSOLUTE angle either way).
+    // The ramp is the same global sine sampled-and-shifted down per zone,
+    // offset(θ) = Peak × [sin(θ°) − sin(θ_a°)] with θ = key + fraction × HZW
+    // and θ_a = the signed key (the zone's opening angle). Velocity ∝ cos(θ):
+    // fastest at the front pole, zero at the 90° profile, decelerating
+    // zone-over-zone — never a generic symmetric ease. The vertical shift
+    // never touches the derivative, so the velocity the outgoing asset
+    // carries at a boundary is exactly what the incoming asset starts with
+    // (boundary velocity continuity falls out of the formula).
+    const float YawSign = (Yaw < 0.0f) ? -1.0f : ((Yaw > 0.0f) ? 1.0f : 0.0f);
+    const float Key = GetYawKeyForState(State);
+    const float Spacing = GetYawKeySpacingForState(State);
+    const float SignedFraction = (Spacing > 0.0f)
+        ? YawSign * (FMath::Abs(Yaw) - Key) / Spacing
+        : 0.0f;
+    const float SlideX = (float)FPSchematic::FPYawRule::RampOffset(
+        SignedFraction, DepthFactor, MaxParallaxOffset,
+        YawSign * Key, Spacing);
 
-    float YawDeviation = Yaw - YawCenter;
-    while (YawDeviation > 180.0f) YawDeviation -= 360.0f;
-    while (YawDeviation < -180.0f) YawDeviation += 360.0f;
-    float PitchDeviation = Pitch - PitchCenter;
+    // --- Vertical shift: ONE continuous sine arc over pitch (art_guide
+    // III.4 rotation-matrix combination) ---
+    // Zero at eye level (exact front art), peak at the +-45 swap thresholds,
+    // zero again at the true Top/Bottom centers (+-90, where the authored
+    // pitch pose is EXACT). sin(2*pitch) matches sign AND magnitude across
+    // the +-45 crossings, so the shift never flips direction or rescales
+    // there — the old vertical branch's /180 yaw normalization (a 4x X
+    // rescale at the crossing) and its sign flip are retired.
+    const float ArcPitch = FMath::Sin(FMath::DegreesToRadians(Pitch * 2.0f));
+    const float ShiftY = ArcPitch * DepthFactor * MaxVerticalParallaxOffset;
 
-    if (bIsVerticalState)
-    {
-        float PitchThreshold = (State == EFaceAngleState::Top)
-            ? TopViewPitchThreshold
-            : FMath::Abs(BottomViewPitchThreshold);
-        float PitchRange = 90.0f - PitchThreshold;
-        float NormalizedPitch = (PitchRange > 0.0f)
-            ? FMath::Clamp(PitchDeviation / PitchRange, -1.0f, 1.0f)
-            : 0.0f;
-
-        float YawRange = 180.0f;
-        float YawNormalizedFull = FMath::Clamp(YawDeviation / YawRange, -1.0f, 1.0f);
-
-        return FVector2D(
-            YawNormalizedFull * DepthFactor * MaxParallaxOffset,
-            NormalizedPitch * DepthFactor * MaxVerticalParallaxOffset
-        );
-    }
-    else
-    {
-        float NormalizedYaw = (HalfZoneWidth > 0.0f)
-            ? FMath::Clamp(YawDeviation / HalfZoneWidth, -1.0f, 1.0f)
-            : 0.0f;
-        float NormalizedPitch = (HalfZoneWidth > 0.0f)
-            ? FMath::Clamp(PitchDeviation / HalfZoneWidth, -1.0f, 1.0f)
-            : 0.0f;
-
-        return FVector2D(
-            NormalizedYaw * DepthFactor * MaxParallaxOffset,
-            NormalizedPitch * DepthFactor * MaxVerticalParallaxOffset
-        );
-    }
+    return FVector2D(SlideX, ShiftY);
 }
 
 void UFaceParallaxComponent::UpdateMaterialParameters()
@@ -930,14 +1173,24 @@ void UFaceParallaxComponent::UpdateMaterialParameters()
     bool bAnyTopOrBottom = (CurrentState == EFaceAngleState::Top || CurrentState == EFaceAngleState::Bottom);
     bool bIsTop = (CurrentState == EFaceAngleState::Top);
 
-    // Compute yaw deviation for dynamic art offset
-    float YawCenter = GetZoneCenterYaw(CurrentState);
-    float YawDeviation = CurrentYaw - YawCenter;
-    while (YawDeviation > 180.0f) YawDeviation -= 360.0f;
-    while (YawDeviation < -180.0f) YawDeviation += 360.0f;
-    float NormalizedYawDev = (HalfZoneWidth > 0.0f)
-        ? FMath::Clamp(YawDeviation / HalfZoneWidth, -1.0f, 1.0f)
-        : 0.0f;
+    // Dynamic art offset — re-baselined at the swap keys with the SAME ramp
+    // contract as ComputeOffsetForState (0 at the authored pose key, the
+    // per-zone rebased-sine slice at the next boundary), so the eye-tracking
+    // offset never backslides through a swap either. The shape (per-zone
+    // rebased sine from RampOffset with unit magnitude) comes from RampOffset
+    // with the signed key anchor; MaxYawArtOffset applies at the use site.
+    const float ArtYawSign = (CurrentYaw < 0.0f) ? -1.0f : ((CurrentYaw > 0.0f) ? 1.0f : 0.0f);
+    float NormalizedYawDev = 0.0f;
+    const float ArtKey = GetYawKeyForState(CurrentState);
+    const float ArtSpacing = GetYawKeySpacingForState(CurrentState);
+    if (ArtSpacing > 0.0f)
+    {
+        const float ArtFraction = ArtYawSign
+            * (FMath::Abs(CurrentYaw) - ArtKey) / ArtSpacing;
+        NormalizedYawDev = (float)FPSchematic::FPYawRule::RampOffset(
+            ArtFraction, 1.0f, 1.0f,
+            ArtYawSign * ArtKey, ArtSpacing);
+    }
 
     // MPC optimization: push shared scalar params once instead of per-MID
     UMaterialParameterCollectionInstance* MPCInstance = nullptr;
@@ -1035,6 +1288,14 @@ void UFaceParallaxComponent::UpdateMaterialParameters()
                 if (PrevTexSet->Albedo) Mat->SetTextureParameterValue(AlbedoPrevParamName, PrevTexSet->Albedo);
                 if (PrevTexSet->Normal) Mat->SetTextureParameterValue(NormalPrevParamName, PrevTexSet->Normal);
                 if (PrevTexSet->Depth)  Mat->SetTextureParameterValue(DepthPrevParamName, PrevTexSet->Depth);
+            }
+            else
+            {
+                // No valid previous art for this layer: clear the prev params
+                // (never blend against stale art from an older transition).
+                Mat->SetTextureParameterValue(AlbedoPrevParamName, nullptr);
+                Mat->SetTextureParameterValue(NormalPrevParamName, nullptr);
+                Mat->SetTextureParameterValue(DepthPrevParamName, nullptr);
             }
 
             // Swoosh transition — overrides view textures during fast camera moves
@@ -1167,6 +1428,11 @@ void UFaceParallaxComponent::UpdateMaterialParameters()
                     float PitchDeviation = CurrentPitch - PitchCenter;
                     float NormPitchDev = FMath::Clamp(PitchDeviation / FMath::Max(1.0f, HalfZoneWidth), -1.0f, 1.0f);
                     FinalArtPos.Y += NormPitchDev * MaxYawArtOffset;
+                    // The yaw-driven X offset applies in the vertical states
+                    // too, so the art position stays continuous across the
+                    // +-45 pitch crossing (the old vertical branch dropped it,
+                    // leaving an abrupt X stop at every Top/Bottom entry).
+                    FinalArtPos.X += NormalizedYawDev * MaxYawArtOffset;
                 }
                 else
                 {
@@ -1175,8 +1441,10 @@ void UFaceParallaxComponent::UpdateMaterialParameters()
             }
 
             // Phase 5: primary-layer 3D pin (LayerPin3D) — the whole layer's
-            // art stays attached to a projected 3D point, with optional
-            // view-angle rotation/scale exactly like a nested pin.
+            // art stays attached to a projected 3D point. MASTER BLUEPRINT:
+            // 2D art never rotates/scales per-frame, so the pin is
+            // translation-only (the view-angle helpers are identity:
+            // rotation 0, scale 1.0).
             if (ActivePreset && ParamSlot.LayerPin3D.bPinned)
             {
                 const FVector2D PinnedUV = ProjectPinToUVInternal(ParamSlot.LayerPin3D.Position3D);
@@ -1185,7 +1453,13 @@ void UFaceParallaxComponent::UpdateMaterialParameters()
                                          (PinnedUV.Y - 0.5f) * Canvas.Y);
                 if (ParamSlot.LayerPin3D.bEnableViewAngleRotation)
                 {
-                    // YawCenter is already in scope (dynamic art offset above).
+                    // View-angle rotation/scale are IDENTITY (translation-only
+                    // pins, master blueprint) so this deviation only feeds the
+                    // always-zero helpers; use the pose-key frame (signed for
+                    // the left half) so it stays consistent if ever wired.
+                    const int32 StateIdx = (int32)CurrentState;
+                    const float YawCenter = ((StateIdx >= 5 && StateIdx <= 7) ? -1.0f : 1.0f)
+                        * GetYawKeyForState(CurrentState);
                     const float PitchCenter = GetZoneCenterPitch(CurrentState);
                     ParamDrivenTransform.Rotation += PinRotationFromViewAngles(
                         CurrentYaw - YawCenter, CurrentPitch - PitchCenter, HalfZoneWidth,
@@ -1362,6 +1636,8 @@ void UFaceParallaxComponent::SetStateTextures(EFaceAngleState State)
 {
     if (!ActivePreset) return;
 
+    EnsureVectorBakesStarted();
+
     for (const auto& LayerPair : FaceMaterialsByLayer)
     {
         FName LayerTag = LayerPair.Key;
@@ -1390,6 +1666,18 @@ void UFaceParallaxComponent::SetStateTextures(EFaceAngleState State)
                 if (TexSet.Depth) Mat->SetTextureParameterValue(DepthParamName, TexSet.Depth);
                 Cached.Depth = TexSet.Depth;
             }
+
+            // Phase 5: vector-art albedo override — the baked per-tag composite
+            // for this state replaces the raster slot albedo while the mode is
+            // on (walk-behind/Top-hidden tags never bake, so the quad keeps
+            // the hidden-card semantics via RefreshLayerVisibilityForState).
+            if (UsesVectorAlbedo())
+            {
+                if (UTexture2D* Bake = GetOrCreateVectorAlbedo(LayerTag, (int32)State))
+                {
+                    Mat->SetTextureParameterValue(AlbedoParamName, Bake);
+                }
+            }
         }
     }
 
@@ -1409,6 +1697,143 @@ void UFaceParallaxComponent::SetStateTextures(EFaceAngleState State)
     }
 }
 
+bool UFaceParallaxComponent::UsesVectorAlbedo() const
+{
+    return ActivePreset != nullptr
+        && ActivePreset->bUseVectorArtAlbedo
+        && ActivePreset->LibraryVectorArt.Num() > 0;
+}
+
+void UFaceParallaxComponent::EnsureVectorBakesStarted()
+{
+    if (UsesVectorAlbedo())
+    {
+        if (bVectorBakeStarted && BakePresetWhenStarted == ActivePreset) return;
+        // A different preset carries a different library — stale bakes for the
+        // same cell keys must not leak across presets.
+        if (BakePresetWhenStarted != nullptr && BakePresetWhenStarted != ActivePreset)
+        {
+            VectorAlbedoCache.Reset();
+        }
+        bVectorBakeStarted = true;
+        BakePresetWhenStarted = ActivePreset;
+        VectorBakeQueue.Reset();
+        // Pre-warm exactly the (tag, state) combos the layer-visibility truth
+        // renders: walk-behind and Top states drop most tags, so only cards
+        // that can appear on screen are ever baked (GetOrCreateVectorAlbedo
+        // re-checks the same predicate per push).
+        const int32 StateCount = (int32)EFaceAngleState::Bottom + 1;
+        for (int32 StateIdx = 0; StateIdx < StateCount; ++StateIdx)
+        {
+            for (int32 t = 0; t < FPSvg::TagCount(); ++t)
+            {
+                const char* Tag = FPSvg::TagFeatureTable()[t].Tag;
+                if (!FPSchematic::FPSchematicLayerVisibleInTag(StateIdx, Tag)) continue;
+                VectorBakeQueue.Emplace(FName(UTF8_TO_TCHAR(Tag)), StateIdx);
+            }
+        }
+        return;
+    }
+    bVectorBakeStarted = false;
+    BakePresetWhenStarted = nullptr;
+    VectorBakeQueue.Reset();
+}
+
+void UFaceParallaxComponent::TickVectorBakes()
+{
+    if (!UsesVectorAlbedo())
+    {
+        if (!VectorBakeQueue.IsEmpty() || bVectorBakeStarted)
+        {
+            bVectorBakeStarted = false;
+            BakePresetWhenStarted = nullptr;
+            VectorBakeQueue.Reset();
+        }
+        return;
+    }
+    if (VectorBakeQueue.IsEmpty()) return;
+
+    bool bAnyNew = false;
+    const int32 Batch = FMath::Min(VectorBakeQueue.Num(), VectorAlbedoBatchPerTick);
+    for (int32 i = 0; i < Batch; ++i)
+    {
+        const TPair<FName, int32> Item = VectorBakeQueue.Pop();
+        if (GetOrCreateVectorAlbedo(Item.Key, Item.Value) != nullptr)
+        {
+            bAnyNew = true;
+        }
+    }
+    if (bAnyNew)
+    {
+        // Fresh bakes for the current/previous state swap in immediately.
+        SetStateTextures(CurrentState);
+        SetPreviousStateTextures();
+    }
+}
+
+UTexture2D* UFaceParallaxComponent::GetOrCreateVectorAlbedo(FName Tag, int32 StateIdx)
+{
+    if (!UsesVectorAlbedo()) return nullptr;
+    const char* TagUtf8 = TCHAR_TO_UTF8(*Tag.ToString());
+    if (!FPSchematic::FPSchematicLayerVisibleInTag(StateIdx, TagUtf8)) return nullptr;
+
+    const std::string KeyStr = FPSvg::ResolveVectorAlbedoKey(TagUtf8, StateIdx, 0);
+    const FString Key(UTF8_TO_TCHAR(KeyStr.c_str()));
+    if (TObjectPtr<UTexture2D>* Found = VectorAlbedoCache.Find(Key))
+    {
+        return Found->Get();
+    }
+
+    // Resolve the per-feature cells in tag painter order (far members first,
+    // Teeth under the Mouth interior, the face base under chin/neck cards).
+    std::vector<const FPSvg::FDocument*> Docs;
+    std::vector<FPSvg::FDocument> Owned;
+    const int32 FeatureCount = FPSvg::TagFeatureCount(TagUtf8);
+    for (int32 f = 0; f < FeatureCount; ++f)
+    {
+        const char* Feature = FPSvg::TagFeatureAt(TagUtf8, f);
+        if (!Feature) continue;
+        const FName FeatureName(UTF8_TO_TCHAR(Feature));
+        const TSoftObjectPtr<UFaceVectorArt>* Entry = ActivePreset->LibraryVectorArt.Find(FeatureName);
+        if (!Entry || Entry->IsNull()) continue;
+        UFaceVectorArt* Library = Entry->LoadSynchronous();
+        if (!Library) continue;
+        const std::string CellKeyStr = FPSvg::TagFeatureCellKey(Feature, StateIdx, 0);
+        const FFaceVectorArtPaths* Cell = Library->FindCell(FString(UTF8_TO_TCHAR(CellKeyStr.c_str())));
+        if (!Cell || !Cell->IsValid()) continue;
+        Owned.emplace_back();
+        Cell->ConvertTo(Owned.back());
+        Docs.push_back(&Owned.back());
+    }
+    if (Docs.empty()) return nullptr;
+
+    std::vector<uint8_t> RGBA;
+    if (!FPSvg::RasterizeAlbedoForTag(Docs, VectorAlbedoSize, VectorAlbedoSS, RGBA))
+    {
+        return nullptr;
+    }
+
+    UTexture2D* Tex = UTexture2D::CreateTransient(VectorAlbedoSize, VectorAlbedoSize, PF_R8G8B8A8);
+    if (!Tex) return nullptr;
+    Tex->SRGB = true;
+    Tex->Filter = TF_Bilinear;
+    Tex->AddressX = TA_Clamp;
+    Tex->AddressY = TA_Clamp;
+    if (FTexture2DMipMap* Mip = Tex->GetPlatformData() && Tex->GetPlatformData()->Mips.Num() > 0 ? &Tex->GetPlatformData()->Mips[0] : nullptr)
+    {
+        void* Data = Mip->BulkData.Lock(LOCK_READ_WRITE);
+        if (Data)
+        {
+            FMemory::Memcpy(Data, RGBA.data(), (size_t)VectorAlbedoSize * (size_t)VectorAlbedoSize * 4);
+        }
+        Mip->BulkData.Unlock();
+    }
+    Tex->UpdateResource();
+
+    VectorAlbedoCache.Add(Key, Tex);
+    return Tex;
+}
+
 void UFaceParallaxComponent::ApplyCurrentStateTextures()
 {
     SetStateTextures(CurrentState);
@@ -1417,11 +1842,14 @@ void UFaceParallaxComponent::ApplyCurrentStateTextures()
 
 void UFaceParallaxComponent::RefreshLayerVisibilityForState()
 {
-    // Phase 3: hide per base-preset tag in the current view state. Feature
-    // cards (Eyes/Brows/Mouth/Nose/Cheeks) hide in the walk-behind states so
-    // their front art cannot edge-peek around the skull; the silhouette + ear
-    // cards stay in the read. Root layer quads carry the plain layer tag;
-    // nested art quads carry "Tag_Element" tags and are skipped.
+    // Phase 7: per-layer ART AVAILABILITY drives quad visibility — a card is
+    // shown only when the tag renders in this state AND the preset actually
+    // has art painted for this view (FPSchematicLayerArtAlpha == 1). A layer
+    // with no incoming art is hidden at transition start ("fades before the
+    // state center") so stale front art can never linger through the back;
+    // the master material is opaque (MSM_UNLIT), so alpha 0 renders as hidden.
+    // Root layer quads carry the plain layer tag; nested art quads carry
+    // "Tag_Element" tags and are skipped.
     const int32 StateIdx = (int32)CurrentState;
     for (const TObjectPtr<UStaticMeshComponent>& Quad : SpawnedLayerQuads)
     {
@@ -1430,11 +1858,87 @@ void UFaceParallaxComponent::RefreshLayerVisibilityForState()
         {
             const FString TagStr = Tag.ToString();
             if (TagStr.Contains(TEXT("_"))) continue;
+            // Phase 5: in vector-albedo mode the baked composite IS the card's
+            // art (bakes exist for exactly the visible combos; SetStateTextures
+            // runs before this and fills the cache for the current state), so
+            // art availability follows the mode instead of the raster slots.
+            bool bHasArt = ActivePreset
+                && ActivePreset->GetSlot(CurrentState, Tag).Textures.IsValid();
+            if (UsesVectorAlbedo())
+            {
+                const char* TagUtf8 = TCHAR_TO_UTF8(*TagStr);
+                const std::string Key = FPSvg::ResolveVectorAlbedoKey(TagUtf8, (int32)CurrentState, 0);
+                bHasArt = VectorAlbedoCache.Contains(FString(UTF8_TO_TCHAR(Key.c_str())));
+            }
             Quad->SetVisibility(
-                FPSchematic::FPSchematicLayerVisibleInTag(
-                    StateIdx, TCHAR_TO_UTF8(*TagStr)));
+                FPSchematic::FPSchematicLayerArtAlpha(
+                    StateIdx, TCHAR_TO_UTF8(*TagStr), bHasArt) > 0.0);
             break;
         }
+    }
+    // II.2: dynamic depth reordering for the new state (BackHair promote at
+    // the true back, Top/Bottom crown reorders) — painter's order re-attach,
+    // guarded by CachedQuadOrder.
+    ApplyLayerDepthOrderForState(StateIdx);
+}
+
+void UFaceParallaxComponent::ApplyLayerDepthOrderForState(int32 StateIdx)
+{
+    if (SpawnedLayerQuads.Num() == 0) return;
+
+    // Per-state layer order (FPSchematicLayerOrderInTag) applied as PAINTER'S
+    // ORDER: opaque unlit planes at the same transform draw in attachment
+    // order, so re-attaching the visible quads in ascending order (backmost
+    // first, frontmost last) makes the later-attached quads paint on top.
+    // Only re-attach when the order actually changed (CachedQuadOrder).
+    struct FOrderedQuad { int32 QuadIdx; int32 Order; };
+    TArray<FOrderedQuad> Ordered;
+    CachedQuadOrder.SetNum(SpawnedLayerQuads.Num());
+    for (int32 i = 0; i < SpawnedLayerQuads.Num(); ++i)
+    {
+        const TObjectPtr<UStaticMeshComponent>& Quad = SpawnedLayerQuads[i];
+        int32 Order = -1;
+        if (Quad && Quad->IsVisible())
+        {
+            for (const FName& Tag : Quad->ComponentTags)
+            {
+                const FString TagStr = Tag.ToString();
+                if (TagStr.Contains(TEXT("_"))) continue;   // nested-art quads
+                Order = FPSchematic::FPSchematicLayerOrderInTag(
+                    StateIdx, TCHAR_TO_UTF8(*TagStr));
+                break;
+            }
+        }
+        if (Order != CachedQuadOrder[i])
+        {
+            CachedQuadOrder[i] = Order;
+            if (Order >= 0)
+            {
+                Ordered.Add({ i, Order });
+            }
+        }
+    }
+    if (Ordered.Num() < 2) return;
+
+    Ordered.Sort([](const FOrderedQuad& A, const FOrderedQuad& B) { return A.Order < B.Order; });
+
+    USceneComponent* Parent = nullptr;
+    FName Bone = HeadBoneName;
+    if (OwnerMesh)
+    {
+        Parent = OwnerMesh;
+    }
+    else if (AActor* Owner = GetOwner())
+    {
+        Parent = Owner->GetRootComponent();
+    }
+    if (!Parent) return;
+
+    for (const FOrderedQuad& Q : Ordered)
+    {
+        if (!SpawnedLayerQuads[Q.QuadIdx]) continue;
+        SpawnedLayerQuads[Q.QuadIdx]->AttachToComponent(
+            Parent, FAttachmentTransformRules::KeepRelativeTransform, Bone);
     }
 }
 
@@ -1463,7 +1967,30 @@ void UFaceParallaxComponent::SetPreviousStateTextures()
     {
         FName LayerTag = LayerPair.Key;
         const FFaceTextureSet* PrevTex = PreviousTextureSets.Find(LayerTag);
-        if (!PrevTex || !PrevTex->IsValid()) continue;
+        if (!PrevTex || !PrevTex->IsValid())
+        {
+            // The state we are leaving has no painted card for this layer
+            // (walk-behind drop, Top drop, ...): CLEAR the prev params so the
+            // crossfade never blends against stale art pushed by an older
+            // transition — "fades before the state center" (IV.0) requires
+            // an artless previous to render as fully hidden, not ghosted.
+            // In vector-albedo mode the previous state's bake IS the art, so
+            // it fills the prev slot instead of the clear (a nullptr bake
+            // means the tag was hidden in the previous state → clear).
+            for (UMaterialInstanceDynamic* Mat : LayerPair.Value)
+            {
+                if (!Mat) continue;
+                UTexture2D* Bake = UsesVectorAlbedo()
+                    ? GetOrCreateVectorAlbedo(LayerTag, (int32)PreviousState) : nullptr;
+                Mat->SetTextureParameterValue(AlbedoPrevParamName, Bake);
+                if (!Bake)
+                {
+                    Mat->SetTextureParameterValue(NormalPrevParamName, nullptr);
+                    Mat->SetTextureParameterValue(DepthPrevParamName, nullptr);
+                }
+            }
+            continue;
+        }
 
         for (UMaterialInstanceDynamic* Mat : LayerPair.Value)
         {
@@ -1473,6 +2000,15 @@ void UFaceParallaxComponent::SetPreviousStateTextures()
                 Mat->SetTextureParameterValue(NormalPrevParamName, PrevTex->Normal);
             if (PrevTex->Depth)
                 Mat->SetTextureParameterValue(DepthPrevParamName, PrevTex->Depth);
+
+            // Phase 5: vector-albedo override for the outgoing card.
+            if (UsesVectorAlbedo())
+            {
+                if (UTexture2D* Bake = GetOrCreateVectorAlbedo(LayerTag, (int32)PreviousState))
+                {
+                    Mat->SetTextureParameterValue(AlbedoPrevParamName, Bake);
+                }
+            }
         }
     }
 }
@@ -2277,8 +2813,10 @@ FFaceArtTransform UFaceParallaxComponent::ComputeNestedEffectiveTransform(
         const float PitchCenter = GetZoneCenterPitch(CurrentState);
         const float YawDev = CurrentYaw - YawCenter;
         const float PitchDev = CurrentPitch - PitchCenter;
-        // Phase 5: pitch-aware 2D rotation (byte-identical to the old
-        // yaw-only path at zero pitch) plus view-angle scale easing.
+        // MASTER BLUEPRINT: 2D art cards never rotate/scale per-frame, so the
+        // pin contribution is translation-only — the view-angle helpers are
+        // identity (rotation += 0 and scale *= 1.0), leaving exactly the
+        // parent + relative composition plus the projected-pin offset.
         Result.Rotation += PinRotationFromViewAngles(YawDev, PitchDev, HalfZoneWidth,
             Element.Pin3D.MinRotation, Element.Pin3D.MaxRotation,
             Element.Pin3D.RotationSensitivity);
@@ -2453,42 +2991,29 @@ FVector2D UFaceParallaxComponent::GetEffectivePivot(const FFaceNestedArt& Elemen
 float UFaceParallaxComponent::PinRotationFromYawDev(float YawDev, float HalfZoneWidth,
     float MinRotation, float MaxRotation, float RotationSensitivity)
 {
-    // Wrap to [-180, 180]
-    while (YawDev > 180.0f) YawDev -= 360.0f;
-    while (YawDev < -180.0f) YawDev += 360.0f;
-
-    const float HalfWidth = FMath::Max(1.0f, HalfZoneWidth);
-    const float NormDev = FMath::Clamp(YawDev / HalfWidth, -1.0f, 1.0f);
-    const float Mapped = FMath::Lerp(MinRotation, MaxRotation, 0.5f * (NormDev + 1.0f));
-    return Mapped * RotationSensitivity;
+    // Master blueprint: real 2D art cards never rotate per-frame — the turn is
+    // parallax translation + pre-created view swaps. Translation-only: identity.
+    (void)YawDev; (void)HalfZoneWidth; (void)MinRotation; (void)MaxRotation;
+    (void)RotationSensitivity;
+    return 0.0f;
 }
 
 float UFaceParallaxComponent::PinRotationFromViewAngles(float YawDev, float PitchDev,
     float HalfZoneWidth, float MinRotation, float MaxRotation, float RotationSensitivity)
 {
-    // Wrap both axes to [-180, 180]
-    while (YawDev > 180.0f) YawDev -= 360.0f;
-    while (YawDev < -180.0f) YawDev += 360.0f;
-    while (PitchDev > 180.0f) PitchDev -= 360.0f;
-    while (PitchDev < -180.0f) PitchDev += 360.0f;
-
-    const float HalfWidth = FMath::Max(1.0f, HalfZoneWidth);
-    const float NormYaw = FMath::Clamp(YawDev / HalfWidth, -1.0f, 1.0f);
-    const float NormPitch = FMath::Clamp(PitchDev / HalfWidth, -1.0f, 1.0f);
-    // Pitch attenuates the yaw driver. At PitchDev = 0 the driver is exactly
-    // NormYaw, so the result is byte-identical to PinRotationFromYawDev;
-    // at the pitch zone edge the rotation eases to the center (MinRotation).
-    const float Driver = NormYaw * (1.0f - FMath::Abs(NormPitch));
-    const float Mapped = FMath::Lerp(MinRotation, MaxRotation, 0.5f * (Driver + 1.0f));
-    return Mapped * RotationSensitivity;
+    // Master blueprint: real 2D art cards never rotate per-frame — the turn is
+    // parallax translation + pre-created view swaps. Translation-only: identity.
+    (void)YawDev; (void)PitchDev; (void)HalfZoneWidth; (void)MinRotation;
+    (void)MaxRotation; (void)RotationSensitivity;
+    return 0.0f;
 }
 
 float UFaceParallaxComponent::PinScaleFromView(float YawDev, float PitchDev, float MinScale)
 {
-    const float YawRad = FMath::DegreesToRadians(YawDev);
-    const float PitchRad = FMath::DegreesToRadians(PitchDev);
-    const float W = 1.0f - FMath::Abs(FMath::Cos(YawRad) * FMath::Cos(PitchRad));
-    return FMath::Lerp(1.0f, MinScale, W);
+    // Master blueprint: real 2D art cards never scale per-frame — the turn is
+    // parallax translation + pre-created view swaps. Translation-only: identity.
+    (void)YawDev; (void)PitchDev; (void)MinScale;
+    return 1.0f;
 }
 
 FVector2D UFaceParallaxComponent::ProjectPinToUVAtAngles(const FVector& Pin3D, float YawDeg, float PitchDeg, const FFaceProfile3D& Profile)
@@ -2916,8 +3441,8 @@ bool UFaceParallaxComponent::GenerateDepthBufferFromOutlines(int32 GridSize, TAr
 
 float UFaceParallaxComponent::VisualHullYawForState(EFaceAngleState State)
 {
-    // Default zone centers: HalfZoneWidth 22.5, multipliers {1, 3, 5, 7}
-    static const float BM[4] = { 22.5f, 67.5f, 112.5f, 157.5f };
+    // Default zone centers: HalfZoneWidth 45, multipliers {1, 2, 3, 4}
+    static const float BM[4] = { 45.0f, 90.0f, 135.0f, 180.0f };
     switch (State)
     {
         case EFaceAngleState::Front:               return 0.0f;
@@ -3145,13 +3670,17 @@ FName UFaceParallaxComponent::GetStateLabel(EFaceAngleState State)
     switch (State)
     {
         case EFaceAngleState::Front: return TEXT("Front");
+        case EFaceAngleState::NarrowRight: return TEXT("Narrow R");
         case EFaceAngleState::ThreeQuarterRight: return TEXT("3/4 R");
+        case EFaceAngleState::SliverRight: return TEXT("Sliver R");
         case EFaceAngleState::RightProfile: return TEXT("Profile R");
         case EFaceAngleState::BackRight: return TEXT("Back R");
         case EFaceAngleState::Back: return TEXT("Back");
         case EFaceAngleState::BackLeft: return TEXT("Back L");
         case EFaceAngleState::LeftProfile: return TEXT("Profile L");
+        case EFaceAngleState::SliverLeft: return TEXT("Sliver L");
         case EFaceAngleState::ThreeQuarterLeft: return TEXT("3/4 L");
+        case EFaceAngleState::NarrowLeft: return TEXT("Narrow L");
         case EFaceAngleState::Top: return TEXT("Top");
         case EFaceAngleState::Bottom: return TEXT("Bottom");
     }
@@ -3163,13 +3692,17 @@ FLinearColor UFaceParallaxComponent::GetStateColor(EFaceAngleState State)
     switch (State)
     {
         case EFaceAngleState::Front: return FLinearColor(0.6f, 0.8f, 1.0f);
+        case EFaceAngleState::NarrowRight: return FLinearColor(0.55f, 0.75f, 1.0f);
         case EFaceAngleState::ThreeQuarterRight: return FLinearColor(0.5f, 0.7f, 1.0f);
+        case EFaceAngleState::SliverRight: return FLinearColor(0.45f, 0.65f, 1.0f);
         case EFaceAngleState::RightProfile: return FLinearColor(0.4f, 0.6f, 1.0f);
         case EFaceAngleState::BackRight: return FLinearColor(0.5f, 0.5f, 0.7f);
         case EFaceAngleState::Back: return FLinearColor(0.4f, 0.4f, 0.6f);
         case EFaceAngleState::BackLeft: return FLinearColor(0.5f, 0.5f, 0.7f);
         case EFaceAngleState::LeftProfile: return FLinearColor(0.4f, 0.6f, 1.0f);
+        case EFaceAngleState::SliverLeft: return FLinearColor(0.45f, 0.65f, 1.0f);
         case EFaceAngleState::ThreeQuarterLeft: return FLinearColor(0.5f, 0.7f, 1.0f);
+        case EFaceAngleState::NarrowLeft: return FLinearColor(0.55f, 0.75f, 1.0f);
         case EFaceAngleState::Top: return FLinearColor(0.6f, 1.0f, 0.6f);
         case EFaceAngleState::Bottom: return FLinearColor(1.0f, 0.6f, 0.6f);
     }

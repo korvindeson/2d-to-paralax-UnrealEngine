@@ -231,8 +231,8 @@ if ($doSync) {
     $editorPub  = Join-Path $pluginRoot "FaceParallaxEditor\Public"
     $editorPrv  = Join-Path $pluginRoot "FaceParallaxEditor\Private"
 
-    $runtimePublicFiles = @("FaceParallaxTypes.h","FaceParallaxComponent.h","FaceParallaxPreset.h","FaceParallaxPreviewActor.h","DepthDebugVisualizerComponent.h","FaceParallaxSchematic.h")
-    $runtimePrivateFiles = @("FaceParallaxComponent.cpp","FaceParallaxPreset.cpp","FaceParallaxPreviewActor.cpp","DepthDebugVisualizerComponent.cpp","FaceParallaxModule.cpp")
+    $runtimePublicFiles = @("FaceParallaxTypes.h","FaceParallaxComponent.h","FaceParallaxPreset.h","FaceParallaxPreviewActor.h","DepthDebugVisualizerComponent.h","FaceParallaxSchematic.h","FaceParallaxSvgParse.h","FaceParallaxVectorArt.h")
+    $runtimePrivateFiles = @("FaceParallaxComponent.cpp","FaceParallaxPreset.cpp","FaceParallaxPreviewActor.cpp","DepthDebugVisualizerComponent.cpp","FaceParallaxModule.cpp","FaceParallaxVectorArt.cpp")
     $editorPublicFiles = @("FaceParallaxEditorWidget.h","FaceParallaxEditorSubsystem.h")
     $editorPrivateFiles = @("FaceParallaxEditorWidget.cpp","FaceParallaxEditorSubsystem.cpp",
         "FaceParallaxEditorWidgetShared.h","FaceParallaxEditorWidgetUI.cpp",
@@ -294,6 +294,26 @@ if (-not $NoPython) {
         }
     } catch {
         Write-Host "Python not available, skipping syntax validation" -ForegroundColor DarkYellow
+    }
+    Write-Host ""
+}
+
+# 1c. Silhouette geometry validator (E11: hair-ribbon separation, ahoge at
+# every yaw, canthus preservation through the foreshortened eye cards)
+if (-not $NoPython) {
+    Write-Host "--- Silhouette Validator ---" -ForegroundColor Yellow
+    try {
+        $silOut = python "$testDir\validator_silhouette.py" --path "$root" 2>&1
+        $silExit = $LASTEXITCODE
+        Write-Host $silOut
+        if ($silExit -ne 0) {
+            $failed = $true
+            Write-Host "SILHOUETTE VALIDATION FAILED" -ForegroundColor Red
+        } else {
+            Write-Host "SILHOUETTE VALIDATION PASSED" -ForegroundColor Green
+        }
+    } catch {
+        Write-Host "Python not available, skipping silhouette validation" -ForegroundColor DarkYellow
     }
     Write-Host ""
 }

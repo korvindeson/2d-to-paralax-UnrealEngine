@@ -12,6 +12,7 @@
 #include <cctype>
 #include <string>
 #include <vector>
+#include <map>
 
 // Phase H: the layout design-contract manifest (pure C++, no UE deps).
 #include "../FaceParallaxLayoutSpec.h"
@@ -19,6 +20,10 @@
 // Central-canvas redesign: part schematic glyphs + front/base/back yaw rules
 // (pure C++, no UE deps — the same header the runtime component consults).
 #include "../FaceParallaxSchematic.h"
+
+// Vector art pipeline: the SVG parser + guide-token grid contract that the
+// placeholder art library and the FaceVectorArt import path are built on.
+#include "../FaceParallaxSvgParse.h"
 
 // --- Minimal math types matching our UE types ---
 struct FVector2D {
@@ -37,13 +42,17 @@ struct FLinearColor {
 // --- Replicated enum (matches FaceParallaxTypes.h order exactly) ---
 enum class EFaceAngleState : unsigned char {
     Front,
+    NarrowRight,
     ThreeQuarterRight,
+    SliverRight,
     RightProfile,
     BackRight,
     Back,
     BackLeft,
     LeftProfile,
+    SliverLeft,
     ThreeQuarterLeft,
+    NarrowLeft,
     Top,
     Bottom,
     MAX
@@ -92,37 +101,61 @@ struct FFaceArtTransform {
 
 // --- State determination logic (mirrors component zone-based system) ---
 constexpr double HZW = 22.5;           // Half-zone width (component default)
-constexpr double Z2 = HZW * 2.0;       //  45.0 — 3Q center
-constexpr double Z3 = HZW * 3.0;       //  67.5 — Profile boundary
+constexpr double Z2 = HZW * 2.0;       //  45.0 — 3Q boundary (BM0)
+constexpr double Z3 = HZW * 3.0;       //  67.5 — Profile boundary (BM1)
 constexpr double Z4 = HZW * 4.0;       //  90.0 — Profile center
-constexpr double Z5 = HZW * 5.0;       // 112.5 — BackR boundary
+constexpr double Z5 = HZW * 5.0;       // 112.5 — BackR boundary (BM2)
 constexpr double Z6 = HZW * 6.0;       // 135.0 — BackR center
-constexpr double Z7 = HZW * 7.0;       // 157.5 — Back boundary
+constexpr double Z7 = HZW * 7.0;       // 157.5 — Back boundary (BM3)
+// WI1 sub-boundaries DERIVED from the first primary boundary:
+constexpr double ZN = HZW * 0.5;       //  11.25 — Narrow boundary (H = BM0/2)
+constexpr double ZQ = HZW * 1.5;       //  33.75 — Sliver boundary (Q = 1.5*BM0)
 
 struct AngleStateConfig {
-    double CenterYaw[10];
-    double CenterPitch[10];
-    double YawRange[10];
-    double PitchRange[10];
+    double CenterYaw[14];
+    double CenterPitch[14];
+    double YawRange[14];
+    double PitchRange[14];
 
     constexpr AngleStateConfig() : CenterYaw{}, CenterPitch{}, YawRange{}, PitchRange{} {
         // Centers match FaceParallaxComponent::GetZoneCenterYaw and GetZoneCenterPitch
+        // (WI1 14-state: sub-zone centers sit midway between their boundaries)
         CenterYaw[(int)EFaceAngleState::Front] = 0.0;
-        CenterYaw[(int)EFaceAngleState::ThreeQuarterRight] = Z2;
+        CenterYaw[(int)EFaceAngleState::NarrowRight] = (ZN + Z2) * 0.5;      // 16.875
+        CenterYaw[(int)EFaceAngleState::ThreeQuarterRight] = (Z2 + ZQ) * 0.5; // 28.125
+        CenterYaw[(int)EFaceAngleState::SliverRight] = (ZQ + Z3) * 0.5;      // 50.625
         CenterYaw[(int)EFaceAngleState::RightProfile] = Z4;
         CenterYaw[(int)EFaceAngleState::BackRight] = Z6;
         CenterYaw[(int)EFaceAngleState::Back] = 180.0;
         CenterYaw[(int)EFaceAngleState::BackLeft] = -Z6;
         CenterYaw[(int)EFaceAngleState::LeftProfile] = -Z4;
-        CenterYaw[(int)EFaceAngleState::ThreeQuarterLeft] = -Z2;
+        CenterYaw[(int)EFaceAngleState::SliverLeft] = -(ZQ + Z3) * 0.5;      // -50.625
+        CenterYaw[(int)EFaceAngleState::ThreeQuarterLeft] = -(Z2 + ZQ) * 0.5; // -28.125
+        CenterYaw[(int)EFaceAngleState::NarrowLeft] = -(ZN + Z2) * 0.5;      // -16.875
         CenterYaw[(int)EFaceAngleState::Top] = 0.0;
         CenterYaw[(int)EFaceAngleState::Bottom] = 0.0;
 
         CenterPitch[(int)EFaceAngleState::Top] = 60.0;
         CenterPitch[(int)EFaceAngleState::Bottom] = -60.0;
 
-        for (int i = 0; i < 10; ++i) {
-            YawRange[i] = HZW;
+        // Per-zone yaw half-widths from the WI1 12-segment ring: Front spans
+        // -H..H, the sub-zones NarR/3QR span (BM0-H) each side of center, the
+        // Sliver zones span BM1-Q, the profile/back states span the primary
+        // boundaries, Back tails from BM3 to 180. Pitch range stays HZW.
+        YawRange[(int)EFaceAngleState::Front] = ZN;                  // 11.25
+        YawRange[(int)EFaceAngleState::NarrowRight] = (HZW - ZN) * 0.5;  // 5.625
+        YawRange[(int)EFaceAngleState::ThreeQuarterRight] = (ZQ - HZW) * 0.5; // 5.625
+        YawRange[(int)EFaceAngleState::SliverRight] = (Z3 - ZQ) * 0.5;  // 16.875
+        YawRange[(int)EFaceAngleState::RightProfile] = (Z5 - Z3) * 0.5; // 22.5
+        YawRange[(int)EFaceAngleState::BackRight] = (Z7 - Z5) * 0.5;    // 22.5
+        YawRange[(int)EFaceAngleState::Back] = 180.0 - Z7;              // 22.5
+        YawRange[(int)EFaceAngleState::BackLeft] = (Z7 - Z5) * 0.5;
+        YawRange[(int)EFaceAngleState::LeftProfile] = (Z5 - Z3) * 0.5;
+        YawRange[(int)EFaceAngleState::SliverLeft] = (Z3 - ZQ) * 0.5;
+        YawRange[(int)EFaceAngleState::ThreeQuarterLeft] = (ZQ - HZW) * 0.5;
+        YawRange[(int)EFaceAngleState::NarrowLeft] = (HZW - ZN) * 0.5;
+
+        for (int i = 0; i < 14; ++i) {
             PitchRange[i] = HZW;
         }
     }
@@ -144,22 +177,34 @@ bool IsInStateZone(double yaw, double pitch, EFaceAngleState state) {
 }
 
 // --- DetermineStateFromAngles with custom ZoneBoundaryMultipliers ---
+// WI1 mirror of UFaceParallaxComponent::DetermineStateFromAngles: the Narrow
+// sub-zone opens at BM0*HZW/2 (H) and the Sliver zone at 1.5*BM0*HZW (Q),
+// both DERIVED from the first primary boundary, so the full swap set reads
+// H / BM0 / Q / BM1 / BM2 / BM3 (22.5/45/67.5/90/135/180 at the component
+// defaults {1,2,3,4} x HalfZoneWidth 45; the harness config {1,3,5,7} x 22.5
+// exercises the same derivation at 11.25/22.5/33.75/67.5/112.5/157.5).
 EFaceAngleState DetermineStateFromAngles(double yaw, double pitch, const double multipliers[4]) {
     double BM[4];
     for (int i = 0; i < 4; ++i)
         BM[i] = multipliers[i] * HZW;
+    const double H = BM[0] * 0.5;
+    const double Q = BM[0] * 1.5;
 
     if (pitch > 60.0) return EFaceAngleState::Top;
     if (pitch < -60.0) return EFaceAngleState::Bottom;
 
-    if (yaw > -BM[0] && yaw <= BM[0]) return EFaceAngleState::Front;
-    if (yaw > BM[0] && yaw <= BM[1])  return EFaceAngleState::ThreeQuarterRight;
-    if (yaw > BM[1] && yaw <= BM[2])  return EFaceAngleState::RightProfile;
-    if (yaw > BM[2] && yaw <= BM[3])  return EFaceAngleState::BackRight;
-    if (yaw > BM[3] || yaw <= -BM[3]) return EFaceAngleState::Back;
-    if (yaw > -BM[3] && yaw <= -BM[2]) return EFaceAngleState::BackLeft;
-    if (yaw > -BM[2] && yaw <= -BM[1]) return EFaceAngleState::LeftProfile;
-    if (yaw > -BM[1] && yaw <= -BM[0]) return EFaceAngleState::ThreeQuarterLeft;
+    if (yaw > -H && yaw < H)              return EFaceAngleState::Front;
+    if (yaw >= H && yaw < BM[0])          return EFaceAngleState::NarrowRight;
+    if (yaw >= BM[0] && yaw < Q)          return EFaceAngleState::ThreeQuarterRight;
+    if (yaw >= Q && yaw < BM[1])          return EFaceAngleState::SliverRight;
+    if (yaw >= BM[1] && yaw < BM[2])      return EFaceAngleState::RightProfile;
+    if (yaw >= BM[2] && yaw < BM[3])      return EFaceAngleState::BackRight;
+    if (yaw >= BM[3] || yaw <= -BM[3])    return EFaceAngleState::Back;
+    if (yaw > -BM[3] && yaw <= -BM[2])    return EFaceAngleState::BackLeft;
+    if (yaw > -BM[2] && yaw <= -BM[1])    return EFaceAngleState::LeftProfile;
+    if (yaw > -BM[1] && yaw <= -Q)        return EFaceAngleState::SliverLeft;
+    if (yaw > -Q && yaw <= -BM[0])        return EFaceAngleState::ThreeQuarterLeft;
+    if (yaw > -BM[0] && yaw <= -H)        return EFaceAngleState::NarrowLeft;
     return EFaceAngleState::Front;
 }
 
@@ -168,32 +213,134 @@ EFaceAngleState DetermineStateFromAngles(double yaw, double pitch) {
     return DetermineStateFromAngles(yaw, pitch, Defaults);
 }
 
-// --- Hysteresis state machine ---
+// --- Hysteresis state machine (B.3 directional Schmitt mirror) ---
 struct StateMachine {
     EFaceAngleState CurrentState = EFaceAngleState::Front;
     EFaceAngleState PendingState = EFaceAngleState::Front;
     int HysteresisFrames = 0;
     static constexpr int HYSTERESIS_THRESHOLD = 2;
     static constexpr double BLEND_WINDOW = 5.0;
+    static constexpr double SCHMITT_DEG = 1.5;
+
+    static double ZoneCenterYaw(EFaceAngleState s) {
+        switch (s) {
+            case EFaceAngleState::Front: return 0.0;
+            case EFaceAngleState::NarrowRight: return (ZN + Z2) * 0.5;        // 16.875
+            case EFaceAngleState::ThreeQuarterRight: return (Z2 + ZQ) * 0.5;  // 28.125
+            case EFaceAngleState::SliverRight: return (ZQ + Z3) * 0.5;        // 50.625
+            case EFaceAngleState::RightProfile: return Z4;
+            case EFaceAngleState::BackRight: return Z6;
+            case EFaceAngleState::Back: return 180.0;
+            case EFaceAngleState::BackLeft: return -Z6;
+            case EFaceAngleState::LeftProfile: return -Z4;
+            case EFaceAngleState::SliverLeft: return -(ZQ + Z3) * 0.5;        // -50.625
+            case EFaceAngleState::ThreeQuarterLeft: return -(Z2 + ZQ) * 0.5;  // -28.125
+            case EFaceAngleState::NarrowLeft: return -(ZN + Z2) * 0.5;        // -16.875
+            default: return 0.0;
+        }
+    }
+
+    static double ZoneCenterPitch(EFaceAngleState s) {
+        if (s == EFaceAngleState::Top) return 60.0;
+        if (s == EFaceAngleState::Bottom) return -60.0;
+        return 0.0;
+    }
+
+    // Mirror of UFaceParallaxComponent::GetBoundaryBetweenStates with the
+    // harness config (multipliers {1,3,5,7}, pitch thresholds +-60).
+    // WI1 14-state: 12 adjacent yaw pairs; non-adjacent jumps have NO shared
+    // boundary (-1) and pass through unvetoed (same-frame backstop only).
+    static double BoundaryBetween(EFaceAngleState A, EFaceAngleState B, bool& bPitch) {
+        bPitch = false;
+        const bool bAV = (A == EFaceAngleState::Top || A == EFaceAngleState::Bottom);
+        const bool bBV = (B == EFaceAngleState::Top || B == EFaceAngleState::Bottom);
+        if (bAV != bBV) {
+            bPitch = true;
+            return (A == EFaceAngleState::Top || B == EFaceAngleState::Top) ? 60.0 : -60.0;
+        }
+        const double BM[4] = { HZW, Z3, Z5, Z7 };
+        const auto Pair = [](EFaceAngleState X, EFaceAngleState Y, EFaceAngleState L, EFaceAngleState R, double V) -> double {
+            return ((X == L && Y == R) || (X == R && Y == L)) ? V : -1.0;
+        };
+        double BR = Pair(A, B, EFaceAngleState::Front, EFaceAngleState::NarrowRight, ZN);
+        if (BR >= 0.0) return BR;
+        BR = Pair(A, B, EFaceAngleState::NarrowRight, EFaceAngleState::ThreeQuarterRight, BM[0]);
+        if (BR >= 0.0) return BR;
+        BR = Pair(A, B, EFaceAngleState::ThreeQuarterRight, EFaceAngleState::SliverRight, ZQ);
+        if (BR >= 0.0) return BR;
+        BR = Pair(A, B, EFaceAngleState::SliverRight, EFaceAngleState::RightProfile, BM[1]);
+        if (BR >= 0.0) return BR;
+        BR = Pair(A, B, EFaceAngleState::RightProfile, EFaceAngleState::BackRight, BM[2]);
+        if (BR >= 0.0) return BR;
+        BR = Pair(A, B, EFaceAngleState::BackRight, EFaceAngleState::Back, 180.0);
+        if (BR >= 0.0) return BR;
+        BR = Pair(A, B, EFaceAngleState::Back, EFaceAngleState::BackLeft, -180.0);
+        if (BR >= 0.0) return BR;
+        BR = Pair(A, B, EFaceAngleState::BackLeft, EFaceAngleState::LeftProfile, -BM[2]);
+        if (BR >= 0.0) return BR;
+        BR = Pair(A, B, EFaceAngleState::LeftProfile, EFaceAngleState::SliverLeft, -BM[1]);
+        if (BR >= 0.0) return BR;
+        BR = Pair(A, B, EFaceAngleState::SliverLeft, EFaceAngleState::ThreeQuarterLeft, -ZQ);
+        if (BR >= 0.0) return BR;
+        BR = Pair(A, B, EFaceAngleState::ThreeQuarterLeft, EFaceAngleState::NarrowLeft, -BM[0]);
+        if (BR >= 0.0) return BR;
+        BR = Pair(A, B, EFaceAngleState::NarrowLeft, EFaceAngleState::Front, -ZN);
+        return BR;
+    }
+
+    // Mirror of UFaceParallaxComponent::GetTransitionDirectionSign: +1 when
+    // the crossing moves toward INCREASING parameter, -1 when decreasing.
+    // The +-180 Back<->BackLeft wrap pair is disambiguated from the pair.
+    static double DirectionSign(EFaceAngleState From, EFaceAngleState To, bool bPitch) {
+        if (bPitch) return (ZoneCenterPitch(To) > ZoneCenterPitch(From)) ? 1.0 : -1.0;
+        if ((To == EFaceAngleState::Back || From == EFaceAngleState::Back)
+            && (To == EFaceAngleState::BackLeft || From == EFaceAngleState::BackLeft))
+            return (To == EFaceAngleState::BackLeft) ? 1.0 : -1.0;
+        return (ZoneCenterYaw(To) > ZoneCenterYaw(From)) ? 1.0 : -1.0;
+    }
+
+    // Mirror of FPSchematicSchmittCrossed (B.3 pure contract).
+    static bool SchmittCrossed(double param, double boundary, double sign) {
+        double trigger = boundary + sign * SCHMITT_DEG;
+        double diff = param - trigger;
+        if (diff > 180.0) diff -= 360.0;
+        else if (diff < -180.0) diff += 360.0;
+        return sign * diff >= 0.0;
+    }
 
     void Update(double yaw, double pitch) {
         EFaceAngleState raw = DetermineStateFromAngles(yaw, pitch);
         if (raw == EFaceAngleState::Top || raw == EFaceAngleState::Bottom) {
             if (IsInStateZone(yaw, pitch, raw)) {
                 CurrentState = raw;
-                HysteresisFrames = 0;
                 PendingState = raw;
+                HysteresisFrames = 0;
                 return;
             }
         }
+        if (raw == CurrentState) {
+            PendingState = raw;
+            HysteresisFrames = 0;
+            return;
+        }
+        // Same-frame jitter backstop: the raw flip must persist across frames
+        // before the directional Schmitt can commit it.
         if (raw != PendingState) {
             PendingState = raw;
             HysteresisFrames = 0;
         } else {
             HysteresisFrames++;
         }
-        if (HysteresisFrames >= HYSTERESIS_THRESHOLD) {
+        bool bPitch = false;
+        const double boundary = BoundaryBetween(CurrentState, raw, bPitch);
+        bool schmitt = true;
+        if (boundary >= 0.0) {
+            const double param = bPitch ? pitch : yaw;
+            schmitt = SchmittCrossed(param, boundary, DirectionSign(CurrentState, raw, bPitch));
+        }
+        if (schmitt && HysteresisFrames >= HYSTERESIS_THRESHOLD) {
             CurrentState = raw;
+            PendingState = raw;
         }
     }
 };
@@ -218,19 +365,22 @@ void TestStateDetermination() {
     printf("=== State Determination ===\n");
     TEST("Front at origin", DetermineStateFromAngles(0, 0) == EFaceAngleState::Front);
     TEST("Front small yaw", DetermineStateFromAngles(10, 5) == EFaceAngleState::Front);
-    TEST("3Q Left", DetermineStateFromAngles(-35, 0) == EFaceAngleState::ThreeQuarterLeft);
-    TEST("3Q Right", DetermineStateFromAngles(35, 0) == EFaceAngleState::ThreeQuarterRight);
+    TEST("3Q Left", DetermineStateFromAngles(-25, 0) == EFaceAngleState::ThreeQuarterLeft);
+    TEST("3Q Right", DetermineStateFromAngles(25, 0) == EFaceAngleState::ThreeQuarterRight);
+    TEST("Narrow Right", DetermineStateFromAngles(20, 0) == EFaceAngleState::NarrowRight);
+    TEST("Sliver Right", DetermineStateFromAngles(35, 0) == EFaceAngleState::SliverRight);
+    TEST("Sliver Left", DetermineStateFromAngles(-35, 0) == EFaceAngleState::SliverLeft);
     TEST("Profile Left", DetermineStateFromAngles(-80, 0) == EFaceAngleState::LeftProfile);
     TEST("Profile Right", DetermineStateFromAngles(80, 0) == EFaceAngleState::RightProfile);
     TEST("Top", DetermineStateFromAngles(0, 70) == EFaceAngleState::Top);
     TEST("Bottom", DetermineStateFromAngles(0, -70) == EFaceAngleState::Bottom);
     TEST("Top beats yaw", DetermineStateFromAngles(80, 70) == EFaceAngleState::Top);
     TEST("Bottom beats yaw", DetermineStateFromAngles(-80, -70) == EFaceAngleState::Bottom);
-    TEST("Boundary 20 is Front", DetermineStateFromAngles(20, 0) == EFaceAngleState::Front);
-    TEST("Boundary 30 is 3Q", DetermineStateFromAngles(30, 0) == EFaceAngleState::ThreeQuarterRight);
-    TEST("Boundary 67.5 is 3Q", DetermineStateFromAngles(67.49, 0) == EFaceAngleState::ThreeQuarterRight);
+    TEST("Boundary 10 is Front", DetermineStateFromAngles(10, 0) == EFaceAngleState::Front);
+    TEST("Boundary 20 is NarrowR", DetermineStateFromAngles(20, 0) == EFaceAngleState::NarrowRight);
+    TEST("Boundary 67.5 is SlivR", DetermineStateFromAngles(67.49, 0) == EFaceAngleState::SliverRight);
     TEST("Boundary 67.51 is Profile", DetermineStateFromAngles(67.51, 0) == EFaceAngleState::RightProfile);
-    TEST("Negative yaw mirror", DetermineStateFromAngles(-30, 0) == EFaceAngleState::ThreeQuarterLeft);
+    TEST("Negative yaw mirror", DetermineStateFromAngles(-20, 0) == EFaceAngleState::NarrowLeft);
     TEST("Negative yaw profile", DetermineStateFromAngles(-67.51, 0) == EFaceAngleState::LeftProfile);
     // Back state coverage
     TEST("Back Right", DetermineStateFromAngles(135, 0) == EFaceAngleState::BackRight);
@@ -246,9 +396,9 @@ void TestStateZoneInclusion() {
     TEST("Bottom in bottom zone", IsInStateZone(0, -50, EFaceAngleState::Bottom));
     TEST("Front not in top", !IsInStateZone(0, 0, EFaceAngleState::Top));
     TEST("Top not in front", !IsInStateZone(60, 60, EFaceAngleState::Front));
-    TEST("Edge of zone", !IsInStateZone(30, 0, EFaceAngleState::Front));
-    TEST("Just inside", IsInStateZone(22.49, 0, EFaceAngleState::Front));
-    TEST("Just outside yaw", !IsInStateZone(22.51, 0, EFaceAngleState::Front));
+    TEST("Edge of zone", !IsInStateZone(12, 0, EFaceAngleState::Front));
+    TEST("Just inside", IsInStateZone(11.24, 0, EFaceAngleState::Front));
+    TEST("Just outside yaw", !IsInStateZone(11.26, 0, EFaceAngleState::Front));
     TEST("Just inside pitch top", IsInStateZone(0, 37.51, EFaceAngleState::Top));
     TEST("Just outside pitch top", !IsInStateZone(0, 82.51, EFaceAngleState::Top));
 }
@@ -260,13 +410,13 @@ void TestHysteresis() {
     sm.Update(0, 0);
     TEST("Initial state front", sm.CurrentState == EFaceAngleState::Front);
 
-    sm.Update(35, 0);
+    sm.Update(25, 0);
     TEST("Still front after 1 frame 3Q", sm.CurrentState == EFaceAngleState::Front);
-    sm.Update(35, 0);
+    sm.Update(25, 0);
     TEST("Still front after 2 frames", sm.CurrentState == EFaceAngleState::Front);
-    sm.Update(35, 0);
+    sm.Update(25, 0);
     TEST("Now 3Q after 3 frames", sm.CurrentState == EFaceAngleState::ThreeQuarterRight);
-    sm.Update(35, 0);
+    sm.Update(25, 0);
     TEST("Stay 3Q after 4 frames", sm.CurrentState == EFaceAngleState::ThreeQuarterRight);
 
     // Instant flip back
@@ -387,12 +537,28 @@ void TestEdgeCases() {
 
     // Hysteresis at exact boundary
     StateMachine sm;
-    sm.Update(22.5, 0); // exactly on Front/3Q boundary
+    sm.Update(22.5, 0); // NarrowR/3Q boundary belongs to the next zone
     TEST("Boundary at 22.5 is Front", sm.CurrentState == EFaceAngleState::Front);
-    sm.Update(23.0, 0); // just past boundary → 3Q
-    sm.Update(23.0, 0);
-    sm.Update(23.0, 0);
-    TEST("Just past boundary becomes 3Q", sm.CurrentState == EFaceAngleState::ThreeQuarterRight);
+    // B.3 directional Schmitt on the WI1 Front<->NarrowR adjacent pair
+    // (boundary 11.25, forward trigger 11.25 + 1.5 = 12.75): a slow hover
+    // inside the +-1.5 deg band never commits, regardless of frame count.
+    sm.Update(12.0, 0);
+    sm.Update(12.0, 0);
+    sm.Update(12.0, 0);
+    sm.Update(12.0, 0);
+    sm.Update(12.0, 0);
+    TEST("Hover in Schmitt band stays Front", sm.CurrentState == EFaceAngleState::Front);
+    // Past the forward trigger: the flip commits once the backstop is met.
+    sm.Update(13.5, 0);
+    sm.Update(13.5, 0);
+    TEST("Past forward trigger becomes NarrowR", sm.CurrentState == EFaceAngleState::NarrowRight);
+    // Reverse: trigger at 11.25 - 1.5 = 9.75; 10.5 is still inside the band.
+    sm.Update(10.5, 0);
+    sm.Update(10.5, 0);
+    TEST("Reverse hover stays NarrowR", sm.CurrentState == EFaceAngleState::NarrowRight);
+    sm.Update(9.0, 0);
+    sm.Update(9.0, 0);
+    TEST("Past reverse trigger becomes Front", sm.CurrentState == EFaceAngleState::Front);
 
     // Rapid oscillation test
     sm.CurrentState = EFaceAngleState::Front;
@@ -609,10 +775,14 @@ void TestStateBoundaryPrecision() {
     };
 
     TEST("Front (0,0)", TestState(0, 0, EFaceAngleState::Front));
-    TEST("3QR (35,0)", TestState(35, 0, EFaceAngleState::ThreeQuarterRight));
-    TEST("3QL (-35,0)", TestState(-35, 0, EFaceAngleState::ThreeQuarterLeft));
+    TEST("NarR (15,0)", TestState(15, 0, EFaceAngleState::NarrowRight));
+    TEST("3QR (25,0)", TestState(25, 0, EFaceAngleState::ThreeQuarterRight));
+    TEST("SlivR (35,0)", TestState(35, 0, EFaceAngleState::SliverRight));
     TEST("ProR (80,0)", TestState(80, 0, EFaceAngleState::RightProfile));
     TEST("ProL (-80,0)", TestState(-80, 0, EFaceAngleState::LeftProfile));
+    TEST("SlivL (-35,0)", TestState(-35, 0, EFaceAngleState::SliverLeft));
+    TEST("3QL (-25,0)", TestState(-25, 0, EFaceAngleState::ThreeQuarterLeft));
+    TEST("NarL (-15,0)", TestState(-15, 0, EFaceAngleState::NarrowLeft));
     TEST("BackR (135,0)", TestState(135, 0, EFaceAngleState::BackRight));
     TEST("BackL (-135,0)", TestState(-135, 0, EFaceAngleState::BackLeft));
     TEST("Back (175,0)", TestState(175, 0, EFaceAngleState::Back));
@@ -625,8 +795,10 @@ void TestStateBoundaryPrecision() {
         int s = (int)DetermineStateFromAngles((double)yaw, 0);
         if (s != lastState) { transitions++; lastState = s; }
     }
-    // Should have 9 transitions across full range: (-1→Back, Back↔BackL↔ProL↔3QL↔Front↔3QR↔ProR↔BackR↔Back)
-    TEST("Transitions across full range", transitions >= 9);
+    // 12 transitions across the full 14-state range:
+    // Back -> BackL -> ProL -> SlivL -> 3QL -> NarL -> Front -> NarR -> 3QR
+    // -> SlivR -> ProR -> BackR -> Back
+    TEST("Transitions across full range", transitions >= 12);
 
     // Every state enum value is reachable
     TEST("MAX not reachable", DetermineStateFromAngles(0, 0) != EFaceAngleState::MAX);
@@ -660,27 +832,42 @@ void TestZoneCenterCalculations() {
 
     double HalfZone = 22.5;
     auto GetZoneCenterYaw = [HalfZone](EFaceAngleState s) -> double {
+        // WI1 14-state: sub-zone centers sit midway between their derived
+        // boundaries (H = BM0/2, Q = 1.5*BM0 at the harness {1,3,5,7} config)
+        double BM0 = HalfZone;
+        double BM1 = HalfZone * 3.0;
+        double BM2 = HalfZone * 5.0;
+        double H = BM0 * 0.5;
+        double Q = BM0 * 1.5;
         switch (s) {
             case EFaceAngleState::Front: return 0.0;
-            case EFaceAngleState::ThreeQuarterRight: return HalfZone * 2.0;
-            case EFaceAngleState::RightProfile: return HalfZone * 4.0;
-            case EFaceAngleState::BackRight: return HalfZone * 6.0;
+            case EFaceAngleState::NarrowRight: return (H + BM0) * 0.5;
+            case EFaceAngleState::ThreeQuarterRight: return (BM0 + Q) * 0.5;
+            case EFaceAngleState::SliverRight: return (Q + BM1) * 0.5;
+            case EFaceAngleState::RightProfile: return (BM1 + BM2) * 0.5;
+            case EFaceAngleState::BackRight: return (BM2 + HalfZone * 7.0) * 0.5;
             case EFaceAngleState::Back: return 180.0;
-            case EFaceAngleState::BackLeft: return -HalfZone * 6.0;
-            case EFaceAngleState::LeftProfile: return -HalfZone * 4.0;
-            case EFaceAngleState::ThreeQuarterLeft: return -HalfZone * 2.0;
+            case EFaceAngleState::BackLeft: return -((BM2 + HalfZone * 7.0) * 0.5);
+            case EFaceAngleState::LeftProfile: return -((BM1 + BM2) * 0.5);
+            case EFaceAngleState::SliverLeft: return -((Q + BM1) * 0.5);
+            case EFaceAngleState::ThreeQuarterLeft: return -((BM0 + Q) * 0.5);
+            case EFaceAngleState::NarrowLeft: return -((H + BM0) * 0.5);
             default: return 0.0;
         }
     };
 
     TEST("Front center", fabs(GetZoneCenterYaw(EFaceAngleState::Front)) < 0.001);
-    TEST("3QR center", fabs(GetZoneCenterYaw(EFaceAngleState::ThreeQuarterRight) - 45.0) < 0.001);
+    TEST("NarR center", fabs(GetZoneCenterYaw(EFaceAngleState::NarrowRight) - 16.875) < 0.001);
+    TEST("3QR center", fabs(GetZoneCenterYaw(EFaceAngleState::ThreeQuarterRight) - 28.125) < 0.001);
+    TEST("SlivR center", fabs(GetZoneCenterYaw(EFaceAngleState::SliverRight) - 50.625) < 0.001);
     TEST("ProR center", fabs(GetZoneCenterYaw(EFaceAngleState::RightProfile) - 90.0) < 0.001);
     TEST("BackR center", fabs(GetZoneCenterYaw(EFaceAngleState::BackRight) - 135.0) < 0.001);
     TEST("Back center", fabs(GetZoneCenterYaw(EFaceAngleState::Back) - 180.0) < 0.001);
     TEST("BackL center", fabs(GetZoneCenterYaw(EFaceAngleState::BackLeft) + 135.0) < 0.001);
     TEST("ProL center", fabs(GetZoneCenterYaw(EFaceAngleState::LeftProfile) + 90.0) < 0.001);
-    TEST("3QL center", fabs(GetZoneCenterYaw(EFaceAngleState::ThreeQuarterLeft) + 45.0) < 0.001);
+    TEST("SlivL center", fabs(GetZoneCenterYaw(EFaceAngleState::SliverLeft) + 50.625) < 0.001);
+    TEST("3QL center", fabs(GetZoneCenterYaw(EFaceAngleState::ThreeQuarterLeft) + 28.125) < 0.001);
+    TEST("NarL center", fabs(GetZoneCenterYaw(EFaceAngleState::NarrowLeft) + 16.875) < 0.001);
     TEST("Top center", fabs(GetZoneCenterYaw(EFaceAngleState::Top)) < 0.001);
     TEST("Bottom center", fabs(GetZoneCenterYaw(EFaceAngleState::Bottom)) < 0.001);
 }
@@ -1221,13 +1408,21 @@ void TestStateChangeCancelsAnimations() {
                 PendingState = raw;
                 return;
             }
+            // B.3 directional Schmitt mirror: the flip commits only once the
+            // live parameter passes the shared boundary by the +-1.5 deg
+            // margin in the direction of travel; the frame count is the
+            // same-frame jitter backstop. AnimHost only exercises the
+            // Front<->3QR pair (boundary HZW, forward sign +1, reverse -1).
             if (raw != PendingState) {
                 PendingState = raw;
                 HystRemaining = HYST;
-            } else {
+            } else if (HystRemaining > 0) {
                 HystRemaining--;
             }
-            if (HystRemaining <= 0) {
+            const double sign = (raw == EFaceAngleState::ThreeQuarterRight) ? 1.0 : -1.0;
+            const double trigger = HZW + sign * 1.5;
+            const bool schmitt = sign * (yaw - trigger) >= 0.0;
+            if (schmitt && HystRemaining <= 0) {
                 CurrentState = raw;
                 StopAnimations();
             }
@@ -3116,11 +3311,11 @@ void TestPinProjection() {
 void TestBatchOperations() {
     printf("\n=== Batch Operations ===\n");
 
-    // 1) Count of EFaceAngleState values (10)
-    TEST("EFaceAngleState count is 10", int(EFaceAngleState::MAX) == 10);
+    // 1) Count of EFaceAngleState values (14)
+    TEST("EFaceAngleState count is 14", int(EFaceAngleState::MAX) == 14);
     TEST("Front is first", EFaceAngleState::Front == EFaceAngleState(0));
-    TEST("Back is index 4", EFaceAngleState::Back == EFaceAngleState(4));
-    TEST("Bottom is last before MAX", EFaceAngleState::Bottom == EFaceAngleState(9));
+    TEST("Back is index 6", EFaceAngleState::Back == EFaceAngleState(6));
+    TEST("Bottom is last before MAX", EFaceAngleState::Bottom == EFaceAngleState(13));
 
     // 2) Simulate DuplicateState: copy front layer tags to another map
     {
@@ -3262,51 +3457,68 @@ void TestBatchOperations() {
 // ====================================================================
 
 const char* GetStateLabel(int state) {
-    static const char* labels[] = {"Front","3/4R","ProfR","BackR","Back","BackL","ProfL","3/4L","Top","Bottom"};
-    return (state >= 0 && state < 10) ? labels[state] : "?";
+    static const char* labels[] = {"Front","NarR","3/4R","SlivR","ProfR","BackR","Back","BackL","ProfL","SlivL","3/4L","NarL","Top","Bottom"};
+    return (state >= 0 && state < 14) ? labels[state] : "?";
 }
 
+// WI1 14-state zone geometry at the harness config ({1,3,5,7} x HZW 22.5):
+// derived sub-boundaries H = 11.25 (BM0/2), Q = 33.75 (1.5*BM0), with the
+// primary boundaries BM = {22.5, 67.5, 112.5, 157.5}. The 12 yaw segments
+// match the widget's RebuildZoneDiagram (Front -H..H, NarR H..BM0, 3QR
+// BM0..Q, SlivR Q..BM1, ProfR BM1..BM2, BackR BM2..BM3, Back tail, left mirror).
 double GetZoneYawBoundary(EFaceAngleState state) {
+    const double H = ZN, Q = ZQ, BM0 = HZW, BM1 = Z3, BM2 = Z5;
     switch (state) {
         case EFaceAngleState::Front: return 0.0;
-        case EFaceAngleState::ThreeQuarterRight: return Z2;
-        case EFaceAngleState::RightProfile: return Z4;
-        case EFaceAngleState::BackRight: return Z6;
+        case EFaceAngleState::NarrowRight: return (H + BM0) * 0.5;
+        case EFaceAngleState::ThreeQuarterRight: return (BM0 + Q) * 0.5;
+        case EFaceAngleState::SliverRight: return (Q + BM1) * 0.5;
+        case EFaceAngleState::RightProfile: return (BM1 + BM2) * 0.5;
+        case EFaceAngleState::BackRight: return (BM2 + Z7) * 0.5;
         case EFaceAngleState::Back: return 180.0;
-        case EFaceAngleState::BackLeft: return -Z6;
-        case EFaceAngleState::LeftProfile: return -Z4;
-        case EFaceAngleState::ThreeQuarterLeft: return -Z2;
+        case EFaceAngleState::BackLeft: return -((BM2 + Z7) * 0.5);
+        case EFaceAngleState::LeftProfile: return -((BM1 + BM2) * 0.5);
+        case EFaceAngleState::SliverLeft: return -((Q + BM1) * 0.5);
+        case EFaceAngleState::ThreeQuarterLeft: return -((BM0 + Q) * 0.5);
+        case EFaceAngleState::NarrowLeft: return -((H + BM0) * 0.5);
         default: return 0.0;
     }
 }
 
 double GetZoneYawStart(EFaceAngleState state) {
-    // Each horizontal zone spans HZW either side of center except Back
-    if (state == EFaceAngleState::Back) return Z7; // actually wraps at 180
-    // For right-side states: front is -HZW to HZW, 3QR is HZW to 3*HZW, etc.
+    const double H = ZN, Q = ZQ, BM0 = HZW, BM1 = Z3, BM2 = Z5;
     switch (state) {
-        case EFaceAngleState::Front: return -HZW;
-        case EFaceAngleState::ThreeQuarterRight: return HZW;
-        case EFaceAngleState::RightProfile: return Z3;
-        case EFaceAngleState::BackRight: return Z5;
-        case EFaceAngleState::Back: return Z7;
+        case EFaceAngleState::Front: return -H;
+        case EFaceAngleState::NarrowRight: return H;
+        case EFaceAngleState::ThreeQuarterRight: return BM0;
+        case EFaceAngleState::SliverRight: return Q;
+        case EFaceAngleState::RightProfile: return BM1;
+        case EFaceAngleState::BackRight: return BM2;
+        case EFaceAngleState::Back: return Z7; // wraps at 180
         case EFaceAngleState::BackLeft: return -Z7;
-        case EFaceAngleState::LeftProfile: return -Z5;
-        case EFaceAngleState::ThreeQuarterLeft: return -Z3;
+        case EFaceAngleState::LeftProfile: return -BM2;
+        case EFaceAngleState::SliverLeft: return -BM1;
+        case EFaceAngleState::ThreeQuarterLeft: return -Q;
+        case EFaceAngleState::NarrowLeft: return -BM0;
         default: return 0.0;
     }
 }
 
 double GetZoneYawEnd(EFaceAngleState state) {
+    const double H = ZN, Q = ZQ, BM0 = HZW, BM1 = Z3, BM2 = Z5;
     switch (state) {
-        case EFaceAngleState::Front: return HZW;
-        case EFaceAngleState::ThreeQuarterRight: return Z3;
-        case EFaceAngleState::RightProfile: return Z5;
+        case EFaceAngleState::Front: return H;
+        case EFaceAngleState::NarrowRight: return BM0;
+        case EFaceAngleState::ThreeQuarterRight: return Q;
+        case EFaceAngleState::SliverRight: return BM1;
+        case EFaceAngleState::RightProfile: return BM2;
         case EFaceAngleState::BackRight: return Z7;
         case EFaceAngleState::Back: return 180.0; // wraps
-        case EFaceAngleState::BackLeft: return -Z5;
-        case EFaceAngleState::LeftProfile: return -Z3;
-        case EFaceAngleState::ThreeQuarterLeft: return -HZW;
+        case EFaceAngleState::BackLeft: return -BM2;
+        case EFaceAngleState::LeftProfile: return -BM1;
+        case EFaceAngleState::SliverLeft: return -Q;
+        case EFaceAngleState::ThreeQuarterLeft: return -BM0;
+        case EFaceAngleState::NarrowLeft: return -H;
         default: return 0.0;
     }
 }
@@ -3314,23 +3526,36 @@ double GetZoneYawEnd(EFaceAngleState state) {
 // How wide the crossfade window is at any zone boundary
 double CrossfadeWindowStart(EFaceAngleState from, EFaceAngleState to) {
     // Returns the yaw where crossfade begins (approach from 'from' toward 'to')
-    // Crossfade window = BlendWindowWidth degrees
-    constexpr double BlendW = 5.0;
+    // Crossfade window = BlendWindowWidth degrees (parameter-space half-width,
+    // art_guide III.6 — the fade spans +/-0.75° around the trigger)
+    constexpr double BlendW = 0.75;
+    const double H = ZN, Q = ZQ, BM0 = HZW, BM1 = Z3, BM2 = Z5;
     double boundary = 0.0;
-    // Determine boundary between adjacent states
-    // Front/3QR boundary is at HZW (22.5)
-    if (from == EFaceAngleState::Front && to == EFaceAngleState::ThreeQuarterRight) boundary = HZW;
-    else if (from == EFaceAngleState::ThreeQuarterRight && to == EFaceAngleState::Front) boundary = HZW;
-    else if (from == EFaceAngleState::ThreeQuarterRight && to == EFaceAngleState::RightProfile) boundary = Z3;
-    else if (from == EFaceAngleState::RightProfile && to == EFaceAngleState::ThreeQuarterRight) boundary = Z3;
-    else if (from == EFaceAngleState::RightProfile && to == EFaceAngleState::BackRight) boundary = Z5;
-    else if (from == EFaceAngleState::BackRight && to == EFaceAngleState::RightProfile) boundary = Z5;
-    else if (from == EFaceAngleState::Front && to == EFaceAngleState::ThreeQuarterLeft) boundary = -HZW;
-    else if (from == EFaceAngleState::ThreeQuarterLeft && to == EFaceAngleState::Front) boundary = -HZW;
-    else if (from == EFaceAngleState::ThreeQuarterLeft && to == EFaceAngleState::LeftProfile) boundary = -Z3;
-    else if (from == EFaceAngleState::LeftProfile && to == EFaceAngleState::ThreeQuarterLeft) boundary = -Z3;
-    else if (from == EFaceAngleState::LeftProfile && to == EFaceAngleState::BackLeft) boundary = -Z5;
-    else if (from == EFaceAngleState::BackLeft && to == EFaceAngleState::LeftProfile) boundary = -Z5;
+    // Determine boundary between adjacent states (12 WI1 pairs)
+    if ((from == EFaceAngleState::Front && to == EFaceAngleState::NarrowRight)
+        || (from == EFaceAngleState::NarrowRight && to == EFaceAngleState::Front)) boundary = H;
+    else if ((from == EFaceAngleState::NarrowRight && to == EFaceAngleState::ThreeQuarterRight)
+        || (from == EFaceAngleState::ThreeQuarterRight && to == EFaceAngleState::NarrowRight)) boundary = BM0;
+    else if ((from == EFaceAngleState::ThreeQuarterRight && to == EFaceAngleState::SliverRight)
+        || (from == EFaceAngleState::SliverRight && to == EFaceAngleState::ThreeQuarterRight)) boundary = Q;
+    else if ((from == EFaceAngleState::SliverRight && to == EFaceAngleState::RightProfile)
+        || (from == EFaceAngleState::RightProfile && to == EFaceAngleState::SliverRight)) boundary = BM1;
+    else if ((from == EFaceAngleState::RightProfile && to == EFaceAngleState::BackRight)
+        || (from == EFaceAngleState::BackRight && to == EFaceAngleState::RightProfile)) boundary = BM2;
+    else if ((from == EFaceAngleState::BackRight && to == EFaceAngleState::Back)
+        || (from == EFaceAngleState::Back && to == EFaceAngleState::BackRight)) boundary = 180.0;
+    else if ((from == EFaceAngleState::Back && to == EFaceAngleState::BackLeft)
+        || (from == EFaceAngleState::BackLeft && to == EFaceAngleState::Back)) boundary = -180.0;
+    else if ((from == EFaceAngleState::BackLeft && to == EFaceAngleState::LeftProfile)
+        || (from == EFaceAngleState::LeftProfile && to == EFaceAngleState::BackLeft)) boundary = -BM2;
+    else if ((from == EFaceAngleState::LeftProfile && to == EFaceAngleState::SliverLeft)
+        || (from == EFaceAngleState::SliverLeft && to == EFaceAngleState::LeftProfile)) boundary = -BM1;
+    else if ((from == EFaceAngleState::SliverLeft && to == EFaceAngleState::ThreeQuarterLeft)
+        || (from == EFaceAngleState::ThreeQuarterLeft && to == EFaceAngleState::SliverLeft)) boundary = -Q;
+    else if ((from == EFaceAngleState::ThreeQuarterLeft && to == EFaceAngleState::NarrowLeft)
+        || (from == EFaceAngleState::NarrowLeft && to == EFaceAngleState::ThreeQuarterLeft)) boundary = -BM0;
+    else if ((from == EFaceAngleState::NarrowLeft && to == EFaceAngleState::Front)
+        || (from == EFaceAngleState::Front && to == EFaceAngleState::NarrowLeft)) boundary = -H;
     // For boundaries approached from the 'from' side, window starts boundary - BlendW
     // (the boundary itself is the midpoint of the blend window)
     if (from < to) return boundary - BlendW;
@@ -3340,29 +3565,38 @@ double CrossfadeWindowStart(EFaceAngleState from, EFaceAngleState to) {
 void TestZoneBoundaries() {
     printf("=== Zone Boundaries (editor visualization) ===\n");
 
-    // All 8 horizontal zone boundaries are at multiples of HZW
+    const double H = ZN, Q = ZQ, BM0 = HZW, BM1 = Z3, BM2 = Z5;
+
+    // All 12 horizontal zone centers sit midway between their boundaries
     TEST("Front center", GetZoneYawBoundary(EFaceAngleState::Front) == 0.0);
-    TEST("3QR center", GetZoneYawBoundary(EFaceAngleState::ThreeQuarterRight) == Z2);
-    TEST("ProfR center", GetZoneYawBoundary(EFaceAngleState::RightProfile) == Z4);
-    TEST("BackR center", GetZoneYawBoundary(EFaceAngleState::BackRight) == Z6);
+    TEST("NarR center", GetZoneYawBoundary(EFaceAngleState::NarrowRight) == (H + BM0) * 0.5);
+    TEST("3QR center", GetZoneYawBoundary(EFaceAngleState::ThreeQuarterRight) == (BM0 + Q) * 0.5);
+    TEST("SlivR center", GetZoneYawBoundary(EFaceAngleState::SliverRight) == (Q + BM1) * 0.5);
+    TEST("ProfR center", GetZoneYawBoundary(EFaceAngleState::RightProfile) == (BM1 + BM2) * 0.5);
+    TEST("BackR center", GetZoneYawBoundary(EFaceAngleState::BackRight) == (BM2 + Z7) * 0.5);
     TEST("Back center", GetZoneYawBoundary(EFaceAngleState::Back) == 180.0);
 
-    TEST("Front zone start", GetZoneYawStart(EFaceAngleState::Front) == -HZW);
-    TEST("Front zone end", GetZoneYawEnd(EFaceAngleState::Front) == HZW);
-    TEST("3QR zone start", GetZoneYawStart(EFaceAngleState::ThreeQuarterRight) == HZW);
-    TEST("3QR zone end", GetZoneYawEnd(EFaceAngleState::ThreeQuarterRight) == Z3);
-    TEST("ProfR zone start", GetZoneYawStart(EFaceAngleState::RightProfile) == Z3);
-    TEST("ProfR zone end", GetZoneYawEnd(EFaceAngleState::RightProfile) == Z5);
+    TEST("Front zone start", GetZoneYawStart(EFaceAngleState::Front) == -H);
+    TEST("Front zone end", GetZoneYawEnd(EFaceAngleState::Front) == H);
+    TEST("NarR zone start", GetZoneYawStart(EFaceAngleState::NarrowRight) == H);
+    TEST("NarR zone end", GetZoneYawEnd(EFaceAngleState::NarrowRight) == BM0);
+    TEST("3QR zone start", GetZoneYawStart(EFaceAngleState::ThreeQuarterRight) == BM0);
+    TEST("3QR zone end", GetZoneYawEnd(EFaceAngleState::ThreeQuarterRight) == Q);
+    TEST("SlivR zone start", GetZoneYawStart(EFaceAngleState::SliverRight) == Q);
+    TEST("SlivR zone end", GetZoneYawEnd(EFaceAngleState::SliverRight) == BM1);
+    TEST("ProfR zone start", GetZoneYawStart(EFaceAngleState::RightProfile) == BM1);
+    TEST("ProfR zone end", GetZoneYawEnd(EFaceAngleState::RightProfile) == BM2);
 
-    // Zone width = 2*HZW for all horizontal states
-    double expectedWidth = 2.0 * HZW;
-    TEST("Front zone width", GetZoneYawEnd(EFaceAngleState::Front) - GetZoneYawStart(EFaceAngleState::Front) == expectedWidth);
-    TEST("3QR zone width", GetZoneYawEnd(EFaceAngleState::ThreeQuarterRight) - GetZoneYawStart(EFaceAngleState::ThreeQuarterRight) == expectedWidth);
-    TEST("ProfR zone width", GetZoneYawEnd(EFaceAngleState::RightProfile) - GetZoneYawStart(EFaceAngleState::RightProfile) == expectedWidth);
-    TEST("BackR zone width", GetZoneYawEnd(EFaceAngleState::BackRight) - GetZoneYawStart(EFaceAngleState::BackRight) == expectedWidth);
+    // Zone width = 2*HZW for the primary zones, derived for the sub-zones
+    TEST("Front zone width", GetZoneYawEnd(EFaceAngleState::Front) - GetZoneYawStart(EFaceAngleState::Front) == 2.0 * H);
+    TEST("NarR zone width", GetZoneYawEnd(EFaceAngleState::NarrowRight) - GetZoneYawStart(EFaceAngleState::NarrowRight) == BM0 - H);
+    TEST("3QR zone width", GetZoneYawEnd(EFaceAngleState::ThreeQuarterRight) - GetZoneYawStart(EFaceAngleState::ThreeQuarterRight) == Q - BM0);
+    TEST("SlivR zone width", GetZoneYawEnd(EFaceAngleState::SliverRight) - GetZoneYawStart(EFaceAngleState::SliverRight) == BM1 - Q);
+    TEST("ProfR zone width", GetZoneYawEnd(EFaceAngleState::RightProfile) - GetZoneYawStart(EFaceAngleState::RightProfile) == BM2 - BM1);
 
     // State labels for editor display
     TEST("Front label", std::string(GetStateLabel((int)EFaceAngleState::Front)) == "Front");
+    TEST("NarR label", std::string(GetStateLabel((int)EFaceAngleState::NarrowRight)) == "NarR");
     TEST("3QR label", std::string(GetStateLabel((int)EFaceAngleState::ThreeQuarterRight)) == "3/4R");
     TEST("Profile labels correct", std::string(GetStateLabel((int)EFaceAngleState::RightProfile)) == "ProfR");
     TEST("Back label", std::string(GetStateLabel((int)EFaceAngleState::Back)) == "Back");
@@ -3371,62 +3605,305 @@ void TestZoneBoundaries() {
     TEST("State count", GetStateLabel(-1) != nullptr); // bounds check
 
     // Pitch thresholds
-    TEST("Crossfade window Front->3QR", CrossfadeWindowStart(EFaceAngleState::Front, EFaceAngleState::ThreeQuarterRight) < HZW);
-    TEST("Crossfade window symmetric", CrossfadeWindowStart(EFaceAngleState::ThreeQuarterRight, EFaceAngleState::Front) > HZW);
+    TEST("Crossfade window Front->NarR", CrossfadeWindowStart(EFaceAngleState::Front, EFaceAngleState::NarrowRight) < H);
+    TEST("Crossfade window symmetric", CrossfadeWindowStart(EFaceAngleState::NarrowRight, EFaceAngleState::Front) > H);
 
-    printf("  [Zone Boundary Tests: 24 tests]\n");
+    printf("  [Zone Boundary Tests: 31 tests]\n");
+}
+
+void TestParameterSpaceCrossfade() {
+    printf("=== Parameter-Space Crossfade (B.2, art_guide III.6/IV.0) ===\n");
+    using namespace FPSchematic;
+
+    // Trigger is centered: alpha is 0.5 exactly at boundary + Sign*1.5.
+    TEST("trigger center forward",
+        fabs(FPSchematicCrossfadeAlpha(46.5, 45.0, +1.0) - 0.5) < 1e-9);
+    TEST("trigger center reverse",
+        fabs(FPSchematicCrossfadeAlpha(43.5, 45.0, -1.0) - 0.5) < 1e-9);
+
+    // Window edges: +-0.75° around the trigger hits 0 / 1 exactly.
+    TEST("forward window near edge = 0",
+        fabs(FPSchematicCrossfadeAlpha(45.75, 45.0, +1.0) - 0.0) < 1e-9);
+    TEST("forward window far edge = 1",
+        fabs(FPSchematicCrossfadeAlpha(47.25, 45.0, +1.0) - 1.0) < 1e-9);
+    TEST("reverse window near edge = 0",
+        fabs(FPSchematicCrossfadeAlpha(44.25, 45.0, -1.0) - 0.0) < 1e-9);
+    TEST("reverse window far edge = 1",
+        fabs(FPSchematicCrossfadeAlpha(42.75, 45.0, -1.0) - 1.0) < 1e-9);
+
+    // Clamps hard outside the window (never overshoots, never negative).
+    TEST("clamp below = 0",
+        fabs(FPSchematicCrossfadeAlpha(20.0, 45.0, +1.0) - 0.0) < 1e-9);
+    TEST("clamp above = 1",
+        fabs(FPSchematicCrossfadeAlpha(90.0, 45.0, +1.0) - 1.0) < 1e-9);
+
+    // The ramp is LINEAR in parameter degrees: slope 1/(2*HalfWindow).
+    TEST("linear ramp slope",
+        fabs((FPSchematicCrossfadeAlpha(46.8, 45.0, +1.0) - FPSchematicCrossfadeAlpha(46.5, 45.0, +1.0)) - 0.2) < 1e-9);
+
+    // Left-half mirror: BoundaryDeg -45 with the mirror sign mirrors exactly.
+    TEST("negative-side trigger center",
+        fabs(FPSchematicCrossfadeAlpha(-46.5, -45.0, -1.0) - 0.5) < 1e-9);
+    TEST("negative-side far edge = 1",
+        fabs(FPSchematicCrossfadeAlpha(-47.25, -45.0, -1.0) - 1.0) < 1e-9);
+    TEST("negative-side near edge = 0",
+        fabs(FPSchematicCrossfadeAlpha(-45.75, -45.0, -1.0) - 0.0) < 1e-9);
+    TEST("negative-side up-crossing (3QL->Front)",
+        fabs(FPSchematicCrossfadeAlpha(-42.75, -45.0, +1.0) - 1.0) < 1e-9);
+    TEST("mirror symmetry",
+        fabs(FPSchematicCrossfadeAlpha(46.5, 45.0, +1.0) - FPSchematicCrossfadeAlpha(-46.5, -45.0, -1.0)) < 1e-12);
+
+    // Schmitt offset is exactly 1.5° per IV.0 (trigger = boundary + Sign*1.5).
+    TEST("schmitt forward offset",
+        fabs(FPSchematicCrossfadeAlpha(45.0 + FPSchematicCrossfadeSchmittDeg, 45.0, +1.0) - 0.5) < 1e-9);
+    TEST("schmitt reverse offset",
+        fabs(FPSchematicCrossfadeAlpha(45.0 - FPSchematicCrossfadeSchmittDeg, 45.0, -1.0) - 0.5) < 1e-9);
+
+    // Monotonic forward sweep across the window, parameter-stepped.
+    {
+        double Prev = FPSchematicCrossfadeAlpha(45.75, 45.0, +1.0);
+        bool bMonotonic = true;
+        for (int i = 1; i <= 20; ++i) {
+            double A = FPSchematicCrossfadeAlpha(45.75 + 0.075 * i, 45.0, +1.0);
+            if (A < Prev - 1e-12) bMonotonic = false;
+            Prev = A;
+        }
+        TEST("monotonic ramp", bMonotonic);
+    }
+
+    // Back-wrap: trigger fired at 181.5; the camera keeps rotating through
+    // +-180 so the param wraps negative; the sweep must stay on the correct
+    // side of the wrap (param -175 == 185 > 181.5 -> full fade).
+    TEST("back-wrap done past trigger",
+        fabs(FPSchematicCrossfadeAlpha(-175.0, 180.0, +1.0) - 1.0) < 1e-9);
+    TEST("back-wrap still approaching",
+        fabs(FPSchematicCrossfadeAlpha(179.0, 180.0, +1.0) - 0.0) < 1e-9);
+    TEST("back-wrap trigger center",
+        fabs(FPSchematicCrossfadeAlpha(-178.5, 180.0, +1.0) - 0.5) < 1e-9);
+    TEST("back-wrap one-sixth in",
+        fabs(FPSchematicCrossfadeAlpha(-179.0, 180.0, +1.0) - 1.0 / 6.0) < 1e-9);
+
+    // Back<->BackLeft pair (boundary -180):
+    TEST("backleft entering (Sign +1) far edge = 1",
+        fabs(FPSchematicCrossfadeAlpha(-177.75, -180.0, +1.0) - 1.0) < 1e-9);
+    TEST("backleft entering near edge = 0",
+        fabs(FPSchematicCrossfadeAlpha(-179.25, -180.0, +1.0) - 0.0) < 1e-9);
+    TEST("back entering (Sign -1) far edge = 1",
+        fabs(FPSchematicCrossfadeAlpha(-182.25, -180.0, -1.0) - 1.0) < 1e-9);
+    TEST("back entering near edge = 0",
+        fabs(FPSchematicCrossfadeAlpha(-180.75, -180.0, -1.0) - 0.0) < 1e-9);
+    TEST("backleft->back trigger center",
+        fabs(FPSchematicCrossfadeAlpha(-181.5, -180.0, -1.0) - 0.5) < 1e-9);
+
+    // DirectionSign is a sign, not a magnitude: +2 collapses to +1.
+    TEST("sign magnitude normalized",
+        fabs(FPSchematicCrossfadeAlpha(46.5, 45.0, +2.0) - 0.5) < 1e-9);
+
+    // Speed independence: alpha is a pure function of position. A fast drag
+    // that lands at the same parameter yields the identical opacity as the
+    // slow path through the same point.
+    TEST("fast-drag landing equals slow-drag landing",
+        FPSchematicCrossfadeAlpha(46.8, 45.0, +1.0) == FPSchematicCrossfadeAlpha(46.8 - 0.0, 45.0, +1.0));
+
+    printf("  [Parameter-Space Crossfade Tests: 28 tests]\n");
+}
+
+void TestParameterSpaceTriggers() {
+    printf("=== Parameter-Space Schmitt Triggers (B.3, art_guide IV.0) ===\n");
+    using namespace FPSchematic;
+
+    // Trigger points: forward at Boundary + 1.5, reverse at Boundary - 1.5.
+    TEST("forward trigger +45", fabs(FPSchematicSchmittTriggerAt(45.0, +1.0) - 46.5) < 1e-9);
+    TEST("reverse trigger +45", fabs(FPSchematicSchmittTriggerAt(45.0, -1.0) - 43.5) < 1e-9);
+    TEST("forward trigger -45", fabs(FPSchematicSchmittTriggerAt(-45.0, +1.0) - (-43.5)) < 1e-9);
+    TEST("reverse trigger -45", fabs(FPSchematicSchmittTriggerAt(-45.0, -1.0) - (-46.5)) < 1e-9);
+    TEST("forward trigger +90", fabs(FPSchematicSchmittTriggerAt(90.0, +1.0) - 91.5) < 1e-9);
+    TEST("forward trigger wrap 180", fabs(FPSchematicSchmittTriggerAt(180.0, +1.0) - 181.5) < 1e-9);
+    TEST("forward trigger wrap -180", fabs(FPSchematicSchmittTriggerAt(-180.0, +1.0) - (-178.5)) < 1e-9);
+
+    // Forward crossing commits exactly at the trigger, not before.
+    TEST("forward crossed at trigger", FPSchematicSchmittCrossed(46.5, 45.0, +1.0));
+    TEST("forward crossed just past", FPSchematicSchmittCrossed(46.51, 45.0, +1.0));
+    TEST("forward not crossed at 1.4", !FPSchematicSchmittCrossed(46.4, 45.0, +1.0));
+    TEST("forward not crossed at boundary", !FPSchematicSchmittCrossed(45.0, 45.0, +1.0));
+    TEST("forward not crossed in band", !FPSchematicSchmittCrossed(45.5, 45.0, +1.0));
+
+    // Reverse crossing commits exactly at the trigger, not before.
+    TEST("reverse crossed at trigger", FPSchematicSchmittCrossed(43.5, 45.0, -1.0));
+    TEST("reverse crossed just past", FPSchematicSchmittCrossed(43.49, 45.0, -1.0));
+    TEST("reverse not crossed at 1.4", !FPSchematicSchmittCrossed(43.6, 45.0, -1.0));
+    TEST("reverse not crossed in band", !FPSchematicSchmittCrossed(44.5, 45.0, -1.0));
+
+    // Left-half mirror: the -45 pair is the exact horizontal mirror of +45.
+    TEST("mirror forward trigger", fabs(FPSchematicSchmittTriggerAt(-45.0, -1.0) - FPSchematicSchmittTriggerAt(45.0, +1.0) * -1.0) < 1e-12);
+    TEST("mirror crossed forward",
+        FPSchematicSchmittCrossed(46.5, 45.0, +1.0) == FPSchematicSchmittCrossed(-46.5, -45.0, -1.0));
+    TEST("mirror not crossed forward",
+        FPSchematicSchmittCrossed(46.4, 45.0, +1.0) == FPSchematicSchmittCrossed(-46.4, -45.0, -1.0));
+    TEST("mirror reverse pair",
+        FPSchematicSchmittCrossed(43.5, 45.0, -1.0) == FPSchematicSchmittCrossed(-43.5, -45.0, +1.0));
+
+    // No-jitter band: the full +-1.5° band around the boundary never fires.
+    {
+        bool bAnyCrossed = false;
+        for (double p = 45.0; p < 46.5; p += 0.1)
+            if (FPSchematicSchmittCrossed(p, 45.0, +1.0)) bAnyCrossed = true;
+        TEST("no forward fires inside band", !bAnyCrossed);
+        bAnyCrossed = false;
+        for (double p = 43.6; p <= 45.0; p += 0.1)
+            if (FPSchematicSchmittCrossed(p, 45.0, -1.0)) bAnyCrossed = true;
+        TEST("no reverse fires inside band", !bAnyCrossed);
+    }
+
+    // Monotonic: once crossed at the trigger, every further step stays crossed.
+    {
+        bool bMonotonic = true;
+        for (double p = 46.5; p <= 50.0; p += 0.25)
+            if (!FPSchematicSchmittCrossed(p, 45.0, +1.0)) bMonotonic = false;
+        TEST("monotonic past forward trigger", bMonotonic);
+        bMonotonic = true;
+        for (double p = 38.0; p <= 43.5; p += 0.25)
+            if (!FPSchematicSchmittCrossed(p, 45.0, -1.0)) bMonotonic = false;
+        TEST("monotonic past reverse trigger", bMonotonic);
+    }
+
+    // +-180 wrap pair: the sweep is measured across the wrap, so committing
+    // into BackLeft needs the parameter to pass -178.5 (not +181.5).
+    TEST("backleft commit at trigger", FPSchematicSchmittCrossed(-178.5, -180.0, +1.0));
+    TEST("backleft not crossed before", !FPSchematicSchmittCrossed(-179.0, -180.0, +1.0));
+    TEST("backleft not crossed at -180", !FPSchematicSchmittCrossed(-180.0, -180.0, +1.0));
+    TEST("back commit wraps past -181.5", FPSchematicSchmittCrossed(178.4, -180.0, -1.0));
+    TEST("back not crossed at 179", !FPSchematicSchmittCrossed(179.0, -180.0, -1.0));
+    TEST("back not crossed at 180", !FPSchematicSchmittCrossed(180.0, -180.0, -1.0));
+
+    // The commit key is EXACTLY the crossfade midpoint key: at the instant the
+    // view flips, alpha is 0.5 (the incoming card is already half-swapped in).
+    TEST("commit key == crossfade midpoint +45",
+        fabs(FPSchematicCrossfadeAlpha(FPSchematicSchmittTriggerAt(45.0, +1.0), 45.0, +1.0) - 0.5) < 1e-9);
+    TEST("commit key == crossfade midpoint reverse",
+        fabs(FPSchematicCrossfadeAlpha(FPSchematicSchmittTriggerAt(45.0, -1.0), 45.0, -1.0) - 0.5) < 1e-9);
+    TEST("commit key == crossfade midpoint +90",
+        fabs(FPSchematicCrossfadeAlpha(FPSchematicSchmittTriggerAt(90.0, +1.0), 90.0, +1.0) - 0.5) < 1e-9);
+    TEST("commit key == crossfade midpoint wrap",
+        fabs(FPSchematicCrossfadeAlpha(FPSchematicSchmittTriggerAt(-180.0, +1.0), -180.0, +1.0) - 0.5) < 1e-9);
+
+    // DirectionSign is a sign, not a magnitude: +2 collapses to +1 (and any
+    // non-negative value is +1), matching FPSchematicCrossfadeAlpha.
+    TEST("sign magnitude normalized +2",
+        FPSchematicSchmittCrossed(46.5, 45.0, +2.0) == FPSchematicSchmittCrossed(46.5, 45.0, +1.0));
+    TEST("sign magnitude normalized -2",
+        FPSchematicSchmittCrossed(43.5, 45.0, -2.0) == FPSchematicSchmittCrossed(43.5, 45.0, -1.0));
+    TEST("sign zero is +1", FPSchematicSchmittCrossed(46.5, 45.0, 0.0));
+
+    // Speed independence: SchmittCrossed is a pure function of position — the
+    // same parameter yields the identical decision no matter how fast or slow
+    // the camera reached it (a frame debounce would depend on the path).
+    TEST("fast-drag decision equals slow-drag decision",
+        FPSchematicSchmittCrossed(46.8, 45.0, +1.0) == FPSchematicSchmittCrossed(46.8, 45.0, +1.0));
+
+    // StateMachine mirror: hover in the band never commits, penetration past
+    // the trigger commits after the same-frame backstop, and a retreat before
+    // the trigger re-arms cleanly (never a stale flip). Uses the WI1 14-state
+    // Front<->NarrowRight adjacent pair (boundary H = 11.25, forward trigger
+    // 12.75, reverse trigger 9.75).
+    {
+        StateMachine sm;
+        sm.Update(12.0, 0);
+        sm.Update(12.0, 0);
+        sm.Update(12.0, 0);
+        TEST("mirror band hover stays Front", sm.CurrentState == EFaceAngleState::Front);
+        sm.Update(13.5, 0);
+        sm.Update(13.5, 0);
+        TEST("mirror past trigger commits", sm.CurrentState == EFaceAngleState::NarrowRight);
+        sm.Update(10.5, 0);
+        sm.Update(10.5, 0);
+        sm.Update(10.5, 0);
+        TEST("mirror reverse band hover stays NarR", sm.CurrentState == EFaceAngleState::NarrowRight);
+        sm.Update(9.0, 0);
+        sm.Update(9.0, 0);
+        TEST("mirror past reverse trigger commits", sm.CurrentState == EFaceAngleState::Front);
+        // Retreat before trigger: raw flips back to NarrowR at 12.5 (band) after
+        // a single frame at 13.8 — the pending flip must not fire later.
+        sm.Update(13.8, 0);  // pending NarrowR, not yet committed (backstop)
+        sm.Update(12.5, 0);  // retreat into the band: re-arms to NarrowR pending
+        sm.Update(12.5, 0);
+        sm.Update(12.5, 0);
+        TEST("mirror retreat never commits", sm.CurrentState == EFaceAngleState::Front);
+    }
+
+    printf("  [Parameter-Space Schmitt Trigger Tests: 43 tests]\n");
 }
 
 void TestCustomZoneBoundaryMultipliers() {
     printf("=== Custom Zone Boundary Multipliers ===\n");
 
-    // Default multipliers {1,3,5,7} produce same behavior as original
+    // Default multipliers {1,3,5,7} x HZW 22.5: BM = {22.5, 67.5, 112.5,
+    // 157.5}, derived sub-zones H = 11.25 (Narrow) and Q = 33.75 (Sliver).
     static const double Defaults[4] = {1.0, 3.0, 5.0, 7.0};
     TEST("Default: Front at 0",
         DetermineStateFromAngles(0, 0, Defaults) == EFaceAngleState::Front);
-    TEST("Default: Front at 22.49",
-        DetermineStateFromAngles(22.49, 0, Defaults) == EFaceAngleState::Front);
+    TEST("Default: Front at 11.24",
+        DetermineStateFromAngles(11.24, 0, Defaults) == EFaceAngleState::Front);
+    TEST("Default: NarrowR at 11.26",
+        DetermineStateFromAngles(11.26, 0, Defaults) == EFaceAngleState::NarrowRight);
     TEST("Default: 3QR at 22.51",
         DetermineStateFromAngles(22.51, 0, Defaults) == EFaceAngleState::ThreeQuarterRight);
+    TEST("Default: SliverR at 33.76",
+        DetermineStateFromAngles(33.76, 0, Defaults) == EFaceAngleState::SliverRight);
+    TEST("Default: Profile at 67.51",
+        DetermineStateFromAngles(67.51, 0, Defaults) == EFaceAngleState::RightProfile);
+    TEST("Default: BackR at 112.51",
+        DetermineStateFromAngles(112.51, 0, Defaults) == EFaceAngleState::BackRight);
     TEST("Default: Back at 157.51",
         DetermineStateFromAngles(157.51, 0, Defaults) == EFaceAngleState::Back);
 
-    // Wide front zone: multipliers {2,3,5,7}
+    // Wide front zone: multipliers {2,3,5,7} -> BM0 45, H 22.5, Q 67.5
     static const double WideFront[4] = {2.0, 3.0, 5.0, 7.0};
-    TEST("WideFront: still Front at 22.5",
-        DetermineStateFromAngles(22.5, 0, WideFront) == EFaceAngleState::Front);
-    TEST("WideFront: Front at 44.99",
-        DetermineStateFromAngles(44.99, 0, WideFront) == EFaceAngleState::Front);
+    TEST("WideFront: still Front at 22.49",
+        DetermineStateFromAngles(22.49, 0, WideFront) == EFaceAngleState::Front);
+    TEST("WideFront: NarrowR at 22.5",
+        DetermineStateFromAngles(22.5, 0, WideFront) == EFaceAngleState::NarrowRight);
     TEST("WideFront: 3QR at 45.01",
         DetermineStateFromAngles(45.01, 0, WideFront) == EFaceAngleState::ThreeQuarterRight);
+    TEST("WideFront: Profile at 67.51",
+        DetermineStateFromAngles(67.51, 0, WideFront) == EFaceAngleState::RightProfile);
 
-    // Narrow front zone: multipliers {0.5,3,5,7}
+    // Narrow front zone: multipliers {0.5,3,5,7} -> BM0 11.25, H 5.625
     static const double NarrowFront[4] = {0.5, 3.0, 5.0, 7.0};
     TEST("NarrowFront: 3QR at 11.26",
         DetermineStateFromAngles(11.26, 0, NarrowFront) == EFaceAngleState::ThreeQuarterRight);
-    TEST("NarrowFront: Front at 11.24",
-        DetermineStateFromAngles(11.24, 0, NarrowFront) == EFaceAngleState::Front);
+    TEST("NarrowFront: Front at 5.61",
+        DetermineStateFromAngles(5.61, 0, NarrowFront) == EFaceAngleState::Front);
 
     // Symmetric left-side with wide front
-    TEST("WideFront: Left side Front at -22.5",
-        DetermineStateFromAngles(-22.5, 0, WideFront) == EFaceAngleState::Front);
+    TEST("WideFront: Left side Front at -22.49",
+        DetermineStateFromAngles(-22.49, 0, WideFront) == EFaceAngleState::Front);
+    TEST("WideFront: NarrowL at -22.5",
+        DetermineStateFromAngles(-22.5, 0, WideFront) == EFaceAngleState::NarrowLeft);
     TEST("WideFront: 3QL at -45.01",
         DetermineStateFromAngles(-45.01, 0, WideFront) == EFaceAngleState::ThreeQuarterLeft);
 
-    // All zones equal width: multipliers {1,2,3,4}
+    // All zones equal width: multipliers {1,2,3,4} -> BM = {22.5, 45, 67.5,
+    // 90}, H 11.25, Q 33.75
     static const double EqualWidth[4] = {1.0, 2.0, 3.0, 4.0};
     TEST("EqualWidth: Front at 0",
         DetermineStateFromAngles(0, 0, EqualWidth) == EFaceAngleState::Front);
+    TEST("EqualWidth: NarrowR at 11.26",
+        DetermineStateFromAngles(11.26, 0, EqualWidth) == EFaceAngleState::NarrowRight);
     TEST("EqualWidth: 3QR at 22.51",
         DetermineStateFromAngles(22.51, 0, EqualWidth) == EFaceAngleState::ThreeQuarterRight);
+    TEST("EqualWidth: SliverR at 33.76",
+        DetermineStateFromAngles(33.76, 0, EqualWidth) == EFaceAngleState::SliverRight);
     TEST("EqualWidth: Profile at 45.01",
         DetermineStateFromAngles(45.01, 0, EqualWidth) == EFaceAngleState::RightProfile);
     TEST("EqualWidth: BackR at 67.51",
         DetermineStateFromAngles(67.51, 0, EqualWidth) == EFaceAngleState::BackRight);
     TEST("EqualWidth: Back at 90.01",
         DetermineStateFromAngles(90.01, 0, EqualWidth) == EFaceAngleState::Back);
-    TEST("EqualWidth: Front at -22.49",
-        DetermineStateFromAngles(-22.49, 0, EqualWidth) == EFaceAngleState::Front);
+    TEST("EqualWidth: Front at -11.24",
+        DetermineStateFromAngles(-11.24, 0, EqualWidth) == EFaceAngleState::Front);
+    TEST("EqualWidth: NarrowL at -11.26",
+        DetermineStateFromAngles(-11.26, 0, EqualWidth) == EFaceAngleState::NarrowLeft);
     TEST("EqualWidth: 3QL at -22.51",
         DetermineStateFromAngles(-22.51, 0, EqualWidth) == EFaceAngleState::ThreeQuarterLeft);
 
@@ -3437,7 +3914,7 @@ void TestCustomZoneBoundaryMultipliers() {
     TEST("Pitch unaffected: Bottom below threshold",
         DetermineStateFromAngles(0, -61, AnyMults) == EFaceAngleState::Bottom);
 
-    printf("  [Custom Zone Boundary Multipliers: 20 tests]\n");
+    printf("  [Custom Zone Boundary Multipliers: 32 tests]\n");
 }
 
 // ====================================================================
@@ -3804,8 +4281,8 @@ void TestGetBoundaryOrDefault() {
     // 6. Custom multipliers produce correct boundaries in state determination
     {
         static const double Custom[4] = {2.0, 4.0, 6.0, 8.0};
-        TEST("Custom: Front at 44.99",
-            DetermineStateFromAngles(44.99, 0, Custom) == EFaceAngleState::Front);
+        TEST("Custom: NarrowR at 44.99",
+            DetermineStateFromAngles(44.99, 0, Custom) == EFaceAngleState::NarrowRight);
         TEST("Custom: 3QR at 45.01",
             DetermineStateFromAngles(45.01, 0, Custom) == EFaceAngleState::ThreeQuarterRight);
         TEST("Custom: Back at 180.01",
@@ -3816,11 +4293,12 @@ void TestGetBoundaryOrDefault() {
     {
         static const double AllDefault[4] = {1.0, 3.0, 5.0, 7.0};
         TEST("Fallback Front at 0", DetermineStateFromAngles(0, 0, AllDefault) == EFaceAngleState::Front);
-        TEST("Fallback 3QR at 35", DetermineStateFromAngles(35, 0, AllDefault) == EFaceAngleState::ThreeQuarterRight);
+        TEST("Fallback 3QR at 25", DetermineStateFromAngles(25, 0, AllDefault) == EFaceAngleState::ThreeQuarterRight);
+        TEST("Fallback SliverR at 35", DetermineStateFromAngles(35, 0, AllDefault) == EFaceAngleState::SliverRight);
         TEST("Fallback Back at 170", DetermineStateFromAngles(170, 0, AllDefault) == EFaceAngleState::Back);
     }
 
-    printf("  [GetBoundaryOrDefault: 24 tests]\n");
+    printf("  [GetBoundaryOrDefault: 26 tests]\n");
 }
 
 void TestDepthRange() {
@@ -6515,13 +6993,13 @@ void TestPhaseHUIDesign() {
 
     // Positive contract: the real manifest must be clean.
     const std::vector<FPLayout::FPLayoutNode> Spec = FPLayout::BuildSpec();
-    TEST("Phase H: manifest builds (518 nodes)", Spec.size() == 518u);
+    TEST("Phase H: manifest builds (522 nodes)", Spec.size() == 522u);
     TEST("Phase H: every node reachable from root", FPLayout::CountReachable(Spec) == (int)Spec.size());
     const int RootIdx = FPLayout::FindRootIndex(Spec);
     TEST("Phase H: single root is the last node", RootIdx == (int)Spec.size() - 1);
     const std::vector<FPLayout::FPRect> Rects = FPLayout::ResolveLayout(Spec);
-    TEST("Phase H: root rect matches design (1089x1106)",
-        Rects[(size_t)RootIdx].W == 1089.0 && Rects[(size_t)RootIdx].H == 1106.0);
+    TEST("Phase H: root rect matches design (1089x1054)",
+        Rects[(size_t)RootIdx].W == 1089.0 && Rects[(size_t)RootIdx].H == 1054.0);
     const std::vector<FPLayout::FPViolation> V = FPLayout::ValidateDesign(Spec);
     TEST("Phase H: zero design violations (P1..P23)", V.empty());
 
@@ -6613,9 +7091,9 @@ void TestPhaseHUIDesign() {
                 if (std::string(Spec[i].Name) == "PinnedStrip") StripIdx = (int)i;
             }
         TEST("Phase H: CT-TabRow is a 6-node fixed-height tab row (W1)",
-            bTabs && RootNode && RootNode->Children.size() == 10
-            && RootNode->Children[3] == StripIdx && RootNode->Children[4] == TabIdx
-            && std::string(Spec[(size_t)RootNode->Children[5]].Name) == "MainRow");
+            bTabs && RootNode && RootNode->Children.size() == 9
+            && RootNode->Children[2] == StripIdx && RootNode->Children[3] == TabIdx
+            && std::string(Spec[(size_t)RootNode->Children[4]].Name) == "MainRow");
     }
     {
         // Dev tools relocated (W1): Tag Validator + Material Cross-Reference
@@ -6943,6 +7421,41 @@ void TestPhaseHUIDesign() {
         TEST("Phase H: CN-Preview resolved rect keeps the aspect ratio (P23)", bRatio);
     }
     {
+        // Req 4: the 360 rotation bar lives in the CENTER column directly
+        // ABOVE the schematic canvas (moved off the widget-top root row). The
+        // manifest mirrors BuildPanelCanvas: ModeRow, FilterRow, the zone
+        // diagram, then CN-Preview; the zone row's resolved bottom edge sits
+        // right above the canvas, and the Root no longer carries the row.
+        const FPLayout::FPLayoutNode* Center = nullptr;
+        for (const FPLayout::FPLayoutNode& n : Spec)
+            if (std::string(n.Name) == "CENTER") { Center = &n; break; }
+        bool bOrder = false;
+        if (Center && Center->Children.size() >= 4)
+        {
+            bOrder = std::string(Spec[(size_t)Center->Children[2]].Name) == "CN-ZoneDiagram"
+                && std::string(Spec[(size_t)Center->Children[3]].Name) == "CN-Preview";
+        }
+        TEST("Phase H: zone bar is a center-column row (Req 4)", bOrder);
+        bool bAbove = false;
+        int PrevIdx = -1, ZdIdx = -1;
+        for (size_t i = 0; i < Spec.size(); ++i)
+        {
+            if (std::string(Spec[i].Name) == "CN-Preview") PrevIdx = (int)i;
+            if (std::string(Spec[i].Name) == "CN-ZoneDiagram") ZdIdx = (int)i;
+        }
+        if (ZdIdx >= 0 && PrevIdx >= 0)
+            bAbove = Rects[(size_t)ZdIdx].Y + Rects[(size_t)ZdIdx].H
+                <= Rects[(size_t)PrevIdx].Y + 0.001;
+        TEST("Phase H: zone bar resolves directly above the canvas (Req 4)", bAbove);
+        bool bRootCarries = false;
+        for (size_t i = 0; i < Spec.size() && !bRootCarries; ++i)
+            if (std::string(Spec[i].Name) == "Root")
+                for (size_t c = 0; c < Spec[i].Children.size(); ++c)
+                    if (std::string(Spec[(size_t)Spec[i].Children[c]].Name) == "CN-ZoneDiagram")
+                        bRootCarries = true;
+        TEST("Phase H: zone bar removed from the root row (Req 4)", !bRootCarries);
+    }
+    {
         // P22 positive: NO context-page content may be wider than the 621px
         // viewport - a wider row would scroll left-to-right under the face
         // schematic.
@@ -7158,7 +7671,7 @@ void TestPhaseIUITesting() {
 
     // --- Step 1 fit-first: the real context pages pack without vertical scroll ---
     const std::vector<FPLayout::FPLayoutNode> Spec = FPLayout::BuildSpec();
-    TEST("UI: manifest builds (518 nodes)", Spec.size() == 518u);
+    TEST("UI: manifest builds (522 nodes)", Spec.size() == 522u);
     {
         const char* PageNames[5] = { "CP-P0-Assign", "CP-P1-Transform", "CP-P2-Expression", "CP-P3-Preview", "CP-DevDrawer" };
         bool bNoV = true;
@@ -7482,9 +7995,9 @@ void TestHotspotRegions() {
     TEST("Template: ear hits EarL", std::string(FPLayout::FPHotspotHit(Def, 0.05, 0.55)) == "EarL");
     TEST("Template: ear overlap resolves to CheekL", std::string(FPLayout::FPHotspotHit(Def, 0.09, 0.55)) == "CheekL");
     TEST("Template: outside ear misses", FPLayout::FPHotspotHit(Def, 0.02, 0.55) == nullptr);
-    TEST("Template: eye hits EyeL", std::string(FPLayout::FPHotspotHit(Def, 0.33, 0.44)) == "EyeL");
-    TEST("Template: eye right hits EyeR", std::string(FPLayout::FPHotspotHit(Def, 0.67, 0.44)) == "EyeR");
-    TEST("Template: brow hits BrowL", std::string(FPLayout::FPHotspotHit(Def, 0.32, 0.315)) == "BrowL");
+    TEST("Template: eye hits EyeL", std::string(FPLayout::FPHotspotHit(Def, 0.36, 0.44)) == "EyeL");
+    TEST("Template: eye right hits EyeR", std::string(FPLayout::FPHotspotHit(Def, 0.64, 0.44)) == "EyeR");
+    TEST("Template: brow hits BrowL", std::string(FPLayout::FPHotspotHit(Def, 0.32, 0.28)) == "BrowL");
     TEST("Template: forehead misses", FPLayout::FPHotspotHit(Def, 0.5, 0.36) == nullptr);
     TEST("Template: corner misses", FPLayout::FPHotspotHit(Def, 0.01, 0.01) == nullptr);
 }
@@ -7846,87 +8359,58 @@ void TestPhase4Mirrors() {
 
 // --- Phase 5 mirrors: 2D pitch-aware pin rotation/scale + pin sync semantics ---
 // (Float mirrors of UFaceParallaxComponent::PinRotationFromViewAngles /
-// PinScaleFromView, which are FMath-based; 1D yaw-only mirror used for the
-// byte-identical-at-pitch-0 contract.)
+// PinScaleFromView. MASTER BLUEPRINT: 2D art cards never rotate/scale
+// per-frame — the turn is parallax translation + pre-created view swaps, so
+// the pin transforms are TRANSLATION-ONLY: rotation is always 0, scale is
+// always 1.0. The pin's position still translates via the projection.)
 static float M1DPinRotationFromYawDev(float YawDev, float HZW, float MinR, float MaxR, float Sens)
 {
-    while (YawDev > 180.0f) YawDev -= 360.0f;
-    while (YawDev < -180.0f) YawDev += 360.0f;
-    const float HW = std::fmax(1.0f, HZW);
-    const float ND = std::clamp(YawDev / HW, -1.0f, 1.0f);
-    const float Mapped = MinR + (MaxR - MinR) * (0.5f * (ND + 1.0f));
-    return Mapped * Sens;
+    (void)YawDev; (void)HZW; (void)MinR; (void)MaxR; (void)Sens;
+    return 0.0f;
 }
 
 static float M2DPinRotationFromViewAngles(float YawDev, float PitchDev, float HZW,
     float MinR, float MaxR, float Sens)
 {
-    while (YawDev > 180.0f) YawDev -= 360.0f;
-    while (YawDev < -180.0f) YawDev += 360.0f;
-    while (PitchDev > 180.0f) PitchDev -= 360.0f;
-    while (PitchDev < -180.0f) PitchDev += 360.0f;
-    const float HW = std::fmax(1.0f, HZW);
-    const float NY = std::clamp(YawDev / HW, -1.0f, 1.0f);
-    const float NP = std::clamp(PitchDev / HW, -1.0f, 1.0f);
-    const float Driver = NY * (1.0f - std::fabs(NP));
-    const float Mapped = MinR + (MaxR - MinR) * (0.5f * (Driver + 1.0f));
-    return Mapped * Sens;
+    (void)YawDev; (void)PitchDev; (void)HZW; (void)MinR; (void)MaxR; (void)Sens;
+    return 0.0f;
 }
 
 static float M2DPinScaleFromView(float YawDev, float PitchDev, float MinScale)
 {
-    const float PI = 3.14159265f;
-    const float W = 1.0f - std::fabs(std::cos(YawDev * PI / 180.0f)
-                                   * std::cos(PitchDev * PI / 180.0f));
-    return 1.0f + (MinScale - 1.0f) * W;
+    (void)YawDev; (void)PitchDev; (void)MinScale;
+    return 1.0f;
 }
 
 void TestPrimaryLayerPin() {
     printf("\n=== Primary Layer Pin (Phase 5) ===\n");
 
-    const auto Approx = [](float A, float B) -> bool { return std::fabs(A - B) < 1e-4f; };
-
-    // ---- PinRotationFromViewAngles: byte-identical to PinRotationFromYawDev at pitch 0 ----
+    // ---- Translation-only contract (master blueprint): pins still translate via
+    // the projection, but real 2D art cards NEVER rotate or scale per-frame ----
     const float HZW = 22.5f, MinR = -30.0f, MaxR = 30.0f, Sens = 1.0f;
-    bool bIdentical = true;
-    for (float Yaw = -180.0f; Yaw <= 180.0f && bIdentical; Yaw += 7.5f)
+    bool bAlwaysIdentity = true;
+    for (float Yaw = -180.0f; Yaw <= 180.0f && bAlwaysIdentity; Yaw += 7.5f)
     {
-        if (M2DPinRotationFromViewAngles(Yaw, 0.0f, HZW, MinR, MaxR, Sens)
-            != M1DPinRotationFromYawDev(Yaw, HZW, MinR, MaxR, Sens))
-            bIdentical = false;
+        if (M2DPinRotationFromViewAngles(Yaw, 0.0f, HZW, MinR, MaxR, Sens) != 0.0f)
+            bAlwaysIdentity = false;
+        if (M1DPinRotationFromYawDev(Yaw, HZW, MinR, MaxR, Sens) != 0.0f)
+            bAlwaysIdentity = false;
     }
-    TEST("Pitch=0: byte-identical to PinRotationFromYawDev across yaw sweep", bIdentical);
-    TEST("Pitch=0: sensitivity scales", M2DPinRotationFromViewAngles(45.0f, 0.0f, HZW, MinR, MaxR, 2.0f)
-        == 2.0f * M2DPinRotationFromViewAngles(45.0f, 0.0f, HZW, MinR, MaxR, 1.0f));
-
-    // ---- Pitch attenuation ----
-    TEST("Pitch at zone edge -> center rotation (0)",
-        M2DPinRotationFromViewAngles(45.0f, HZW, HZW, MinR, MaxR, 1.0f) == 0.0f);
-    TEST("Pitch beyond zone edge clamps to center",
-        M2DPinRotationFromViewAngles(45.0f, 90.0f, HZW, MinR, MaxR, 1.0f) == 0.0f);
-    TEST("Negative pitch attenuates symmetrically",
-        M2DPinRotationFromViewAngles(45.0f, -HZW, HZW, MinR, MaxR, 1.0f) == 0.0f);
-    TEST("Half pitch moves rotation halfway to center",
-        M2DPinRotationFromViewAngles(45.0f, HZW * 0.5f, HZW, MinR, MaxR, 1.0f)
-        == M2DPinRotationFromViewAngles(0.0f, 0.0f, HZW, MinR, MaxR, 1.0f)
-           + 0.5f * (M2DPinRotationFromViewAngles(45.0f, 0.0f, HZW, MinR, MaxR, 1.0f)
-                   - M2DPinRotationFromViewAngles(0.0f, 0.0f, HZW, MinR, MaxR, 1.0f)));
-    TEST("Wrap: yaw 200 == -160",
-        M2DPinRotationFromViewAngles(200.0f, 0.0f, HZW, MinR, MaxR, 1.0f)
-        == M2DPinRotationFromViewAngles(-160.0f, 0.0f, HZW, MinR, MaxR, 1.0f));
-    TEST("Wrap: pitch 190 == -170",
-        M2DPinRotationFromViewAngles(0.0f, 190.0f, HZW, MinR, MaxR, 1.0f)
-        == M2DPinRotationFromViewAngles(0.0f, -170.0f, HZW, MinR, MaxR, 1.0f));
-
-    // ---- PinScaleFromView ----
-    TEST("Scale: zone center -> 1.0", M2DPinScaleFromView(0.0f, 0.0f, 0.5f) == 1.0f);
-    TEST("Scale: 90deg yaw -> MinScale", Approx(M2DPinScaleFromView(90.0f, 0.0f, 0.5f), 0.5f));
-    TEST("Scale: 90deg pitch -> MinScale", Approx(M2DPinScaleFromView(0.0f, 90.0f, 0.5f), 0.5f));
-    TEST("Scale: 45/45 combined -> midpoint", Approx(M2DPinScaleFromView(45.0f, 45.0f, 0.5f), 0.75f));
-    TEST("Scale: MinScale=1 is identity", M2DPinScaleFromView(90.0f, 45.0f, 1.0f) == 1.0f);
-    TEST("Scale: mirrored axes commute",
-        M2DPinScaleFromView(30.0f, 60.0f, 0.5f) == M2DPinScaleFromView(60.0f, 30.0f, 0.5f));
-    TEST("Scale: 180deg yaw -> 1.0", Approx(M2DPinScaleFromView(180.0f, 0.0f, 0.5f), 1.0f));
+    TEST("Rotation always 0 across yaw sweep (translation-only)", bAlwaysIdentity);
+    TEST("Rotation ignores sensitivity", M2DPinRotationFromViewAngles(45.0f, 0.0f, HZW, MinR, MaxR, 2.0f) == 0.0f);
+    TEST("Rotation ignores pitch / wrap (translation-only)", [&]() {
+        return M2DPinRotationFromViewAngles(45.0f, HZW, HZW, MinR, MaxR, 1.0f) == 0.0f
+            && M2DPinRotationFromViewAngles(45.0f, -HZW, HZW, MinR, MaxR, 1.0f) == 0.0f
+            && M2DPinRotationFromViewAngles(200.0f, 190.0f, HZW, MinR, MaxR, 1.0f) == 0.0f;
+    }());
+    TEST("Scale always 1.0 across deviations (translation-only)", [&]() {
+        return M2DPinScaleFromView(0.0f, 0.0f, 0.5f) == 1.0f
+            && M2DPinScaleFromView(90.0f, 0.0f, 0.5f) == 1.0f
+            && M2DPinScaleFromView(0.0f, 90.0f, 0.5f) == 1.0f
+            && M2DPinScaleFromView(45.0f, 45.0f, 0.5f) == 1.0f
+            && M2DPinScaleFromView(180.0f, 0.0f, 0.5f) == 1.0f;
+    }());
+    TEST("Scale ignores MinScale (identity regardless)", M2DPinScaleFromView(90.0f, 45.0f, 0.25f) == 1.0f);
 
     // ---- SyncLayerNestedToAllViews bSyncPins semantics ----
     struct MPin { bool bPinned = false; float MinScale = 0.5f; };
@@ -7946,47 +8430,39 @@ void TestPrimaryLayerPin() {
         !Copied.Pin.bPinned && Copied.Pin.MinScale == 0.5f);
 }
 
-// --- Pin View-Angle Rotation Tests (mirrors UFaceParallaxComponent::PinRotationFromYawDev) ---
+// --- Pin View-Angle Rotation Tests (mirror of UFaceParallaxComponent::PinRotationFromYawDev) ---
+// MASTER BLUEPRINT: 2D art never rotates per-frame, so the mirror is
+// translation-only (always 0). Used by TestPinRotation and the nested-art
+// effective-transform mirrors.
 static double MirrorPinRotationFromYawDev(double YawDev, double HalfZoneWidth,
     double MinRotation, double MaxRotation, double RotationSensitivity)
 {
-    while (YawDev > 180.0) YawDev -= 360.0;
-    while (YawDev < -180.0) YawDev += 360.0;
-    const double HalfWidth = std::fmax(1.0, HalfZoneWidth);
-    const double NormDev = std::clamp(YawDev / HalfWidth, -1.0, 1.0);
-    const double Mapped = MinRotation + (MaxRotation - MinRotation) * (0.5 * (NormDev + 1.0));
-    return Mapped * RotationSensitivity;
+    (void)YawDev; (void)HalfZoneWidth; (void)MinRotation; (void)MaxRotation;
+    (void)RotationSensitivity;
+    return 0.0;
 }
 
 void TestPinRotation() {
-    printf("\n=== Pin Rotation (view-angle) ===\n");
+    printf("\n=== Pin Rotation (view-angle, translation-only) ===\n");
 
     const double HZW = 22.5;
 
-    // 1. Home view (dev 0) -> midpoint of min/max
-    TEST("Dev 0 -> midpoint 15", std::abs(MirrorPinRotationFromYawDev(0.0, HZW, 0.0, 30.0, 1.0) - 15.0) < 1e-6);
-    // 2. One half-zone toward max -> MaxRotation
-    TEST("Dev +HZW -> MaxRotation", std::abs(MirrorPinRotationFromYawDev(HZW, HZW, 0.0, 30.0, 1.0) - 30.0) < 1e-6);
-    // 3. One half-zone toward min -> MinRotation
-    TEST("Dev -HZW -> MinRotation", std::abs(MirrorPinRotationFromYawDev(-HZW, HZW, 0.0, 30.0, 1.0) - 0.0) < 1e-6);
-    // 4. Past the zone edge clamps to MaxRotation
-    TEST("Dev 3*HZW clamps to Max", std::abs(MirrorPinRotationFromYawDev(3.0 * HZW, HZW, 0.0, 30.0, 1.0) - 30.0) < 1e-6);
-    // 5. Wrap: 195 -> -165 -> clamps to Min
-    TEST("Dev 195 wraps to Min", std::abs(MirrorPinRotationFromYawDev(195.0, HZW, 0.0, 30.0, 1.0) - 0.0) < 1e-6);
-    // 6. Wrap: -190 -> 170 -> clamps to Max
-    TEST("Dev -190 wraps to Max", std::abs(MirrorPinRotationFromYawDev(-190.0, HZW, 0.0, 30.0, 1.0) - 30.0) < 1e-6);
-    // 7. Sensitivity 0 kills the rotation
+    // 1-11. Translation-only contract: 2D art never rotates per-frame, so the
+    // pin rotation is ALWAYS 0 regardless of deviation/zone range/sensitivity/
+    // wrap. The pin still translates via the projection (tests 12-14 below).
+    TEST("Dev 0 -> 0", std::abs(MirrorPinRotationFromYawDev(0.0, HZW, 0.0, 30.0, 1.0)) < 1e-6);
+    TEST("Dev +HZW -> 0", std::abs(MirrorPinRotationFromYawDev(HZW, HZW, 0.0, 30.0, 1.0)) < 1e-6);
+    TEST("Dev -HZW -> 0", std::abs(MirrorPinRotationFromYawDev(-HZW, HZW, 0.0, 30.0, 1.0)) < 1e-6);
+    TEST("Dev 3*HZW -> 0", std::abs(MirrorPinRotationFromYawDev(3.0 * HZW, HZW, 0.0, 30.0, 1.0)) < 1e-6);
+    TEST("Dev 195 wraps -> 0", std::abs(MirrorPinRotationFromYawDev(195.0, HZW, 0.0, 30.0, 1.0)) < 1e-6);
+    TEST("Dev -190 wraps -> 0", std::abs(MirrorPinRotationFromYawDev(-190.0, HZW, 0.0, 30.0, 1.0)) < 1e-6);
     TEST("Sensitivity 0 -> 0", std::abs(MirrorPinRotationFromYawDev(45.0, HZW, 0.0, 30.0, 0.0)) < 1e-6);
-    // 8. Sensitivity 2 doubles the mapped angle
-    TEST("Sensitivity 2 doubles", std::abs(MirrorPinRotationFromYawDev(HZW, HZW, 0.0, 30.0, 2.0) - 60.0) < 1e-6);
-    TEST("Sensitivity 2 mid", std::abs(MirrorPinRotationFromYawDev(0.0, HZW, -30.0, 30.0, 2.0)) < 1e-6);
-    // 9. Min == Max -> constant
-    TEST("Min==Max constant", std::abs(MirrorPinRotationFromYawDev(50.0, HZW, 10.0, 10.0, 1.0) - 10.0) < 1e-6);
-    // 10. Zero half-zone guard (span floored at 1.0)
-    TEST("Zero HZW guarded", std::abs(MirrorPinRotationFromYawDev(5.0, 0.0, 0.0, 30.0, 1.0) - 30.0) < 1e-6);
-    TEST("Zero HZW small dev", std::abs(MirrorPinRotationFromYawDev(0.5, 0.0, 0.0, 30.0, 1.0) - 22.5) < 1e-6);
-    // 11. Symmetric min/max -> 0 at home, +30 at zone edge
-    TEST("Symmetric -30/30 home -> 0", std::abs(MirrorPinRotationFromYawDev(0.0, HZW, -30.0, 30.0, 1.0)) < 1e-6);
+    TEST("Sensitivity 2 -> 0", std::abs(MirrorPinRotationFromYawDev(HZW, HZW, 0.0, 30.0, 2.0)) < 1e-6);
+    TEST("Sensitivity 2 mid -> 0", std::abs(MirrorPinRotationFromYawDev(0.0, HZW, -30.0, 30.0, 2.0)) < 1e-6);
+    TEST("Min==Max constant 0", std::abs(MirrorPinRotationFromYawDev(50.0, HZW, 10.0, 10.0, 1.0)) < 1e-6);
+    TEST("Zero HZW guarded -> 0", std::abs(MirrorPinRotationFromYawDev(5.0, 0.0, 0.0, 30.0, 1.0)) < 1e-6);
+    TEST("Zero HZW small dev -> 0", std::abs(MirrorPinRotationFromYawDev(0.5, 0.0, 0.0, 30.0, 1.0)) < 1e-6);
+    TEST("Symmetric -30/30 -> 0", std::abs(MirrorPinRotationFromYawDev(0.0, HZW, -30.0, 30.0, 1.0)) < 1e-6);
 
     // 12-14. State-based projection + SetNestedPinFromUV back-view mirroring
     auto GetZoneYaw = [](int StateIdx) -> double {
@@ -8170,14 +8646,16 @@ void TestNestedEffectiveTransform() {
     const double CW = 512.0, CH = 512.0;
     const double HZW = 22.5;
 
-    // 1. THE regression: pinned + enabled, dev = +HZW -> rotation survives
+    // 1. THE regression: pinned + enabled, dev = +HZW -> translation-only
+    // (master blueprint: 2D art never rotates per-frame, so the pin rotation is
+    // always 0 even when pinned + enabled at a zone edge — the pin moves only).
     {
         MirrorPinEl E;
         E.bPinned = true; E.bRotEnabled = true;
         E.MinR = 0.0; E.MaxR = 30.0;
         MirrorEffT T = MirrorEffectiveTransform(E, 0, 0, 1, 1, 0,
             22.5, 0.0, 0.0, HZW, 0, 0, CW, CH, HW, HD, HH);
-        TEST("Pin rotation accumulates (was overwritten)", std::abs(T.R - 30.0) < 1e-9);
+        TEST("Pin rotation is 0 at zone edge (translation-only)", std::abs(T.R) < 1e-9);
     }
     // 2. Symmetric range at home -> 0
     {
@@ -8187,14 +8665,14 @@ void TestNestedEffectiveTransform() {
             0.0, 0.0, 0.0, HZW, 0, 0, CW, CH, HW, HD, HH);
         TEST("Symmetric range home -> 0", std::abs(T.R) < 1e-9);
     }
-    // 3. Composes with parent + relative rotation
+    // 3. Composes with parent + relative rotation (never adds view-angle rotation)
     {
         MirrorPinEl E;
         E.bPinned = true; E.bRotEnabled = true;
         E.MinR = 0.0; E.MaxR = 30.0;
         MirrorEffT T = MirrorEffectiveTransform(E, 0, 0, 1, 1, 10.0,
             22.5, 0.0, 0.0, HZW, 0, 0, CW, CH, HW, HD, HH);
-        TEST("Rotation adds to parent+relative", std::abs(T.R - 40.0) < 1e-9);
+        TEST("Rotation stays parent+relative (no view-angle add)", std::abs(T.R - 10.0) < 1e-9);
     }
     // 4. Disabled -> no addition
     {
@@ -8505,9 +8983,9 @@ void TestPinnedActionsRule() {
     TEST("P21: strip holds exactly the 3 canonical actions, flagged", bStripOk);
     TEST("P21: strip is a direct root child above the main row",
         RootNode && StripIdx >= 0
-        && (int)RootNode->Children.size() == 10
-        && RootNode->Children[3] == StripIdx
-        && std::string(Spec[(size_t)RootNode->Children[5]].Name) == "MainRow");
+        && (int)RootNode->Children.size() == 9
+        && RootNode->Children[2] == StripIdx
+        && std::string(Spec[(size_t)RootNode->Children[4]].Name) == "MainRow");
 
     auto Violates = [](const std::vector<FPLayout::FPLayoutNode>& nodes, FPLayout::DesignRule rule) {
         for (const FPLayout::FPViolation& v : FPLayout::ValidateDesign(nodes))
@@ -9146,14 +9624,14 @@ void TestSchematicParts() {
     // region, so their probes must hit the schematic only.
     struct Probe { const char* Name; double X; double Y; };
     static const Probe Probes[] = {
-        { "BrowL", 0.32, 0.315 }, { "BrowR", 0.68, 0.315 },
-        { "EyeL", 0.33, 0.44 },   { "EyeR", 0.67, 0.44 },
-        { "Nose", 0.50, 0.65 },   { "CheekL", 0.17, 0.58 },
-        { "CheekR", 0.83, 0.58 }, { "Mouth", 0.50, 0.76 },
+        { "BrowL", 0.36, 0.175 },   { "BrowR", 0.64, 0.175 },
+        { "EyeL", 0.31, 0.45 },   { "EyeR", 0.69, 0.45 },
+        { "Nose", 0.50, 0.685 },   { "CheekL", 0.16, 0.58 },
+        { "CheekR", 0.84, 0.58 },         { "Mouth",  0.50, 0.80 },
         { "Teeth", 0.50, 0.79 },  { "Chin", 0.50, 0.84 },
-        { "EarL", 0.06, 0.55 },   { "EarR", 0.94, 0.55 },
-        { "Neck", 0.50, 0.93 },   { "Bangs", 0.50, 0.06 },
-        { "Hair", 0.50, 0.015 },  { "BackHair", 0.30, 0.85 },
+        { "EarL", 0.09, 0.44 },   { "EarR", 0.91, 0.44 },
+        { "Neck", 0.50, 0.92 },   { "Bangs", 0.50, 0.06 },
+        { "Hair", 0.04, 0.40 },   { "BackHair", 0.25, 0.90 },
         { "Head", 0.50, 0.40 },
     };
     for (const Probe& Pr : Probes)
@@ -9207,7 +9685,7 @@ void TestSchematicParts() {
                 FPLayout::FPHotspotPoint{ Pt.X, Pt.Y }, 0.1, 0.1, 1.0, 1.0, 0.0);
             T.Outline.push_back({ H.X, H.Y });
         }
-        const FPSchematicPart* Hit = FPSchematicPartAt(Moved, 0.6, 0.72);
+        const FPSchematicPart* Hit = FPSchematicPartAt(Moved, 0.6, 0.785);
         return Hit && std::string(Hit->Name) == "Nose";
     }());
 }
@@ -9290,12 +9768,12 @@ void TestBatch1StackCycle() {
 
     // ---- FPSchematicPartStackCount: depth of the stack under a point ----
     // The real schematic has the Head silhouette under every feature, so the
-    // open-mouth hole stacks Teeth + Mouth + Head; the Mouth ring is Mouth +
-    // Head; the cap is Bangs + Head.
-    TEST("stack: Teeth-under-Mouth hole point has depth 3",
+    // teeth-overlap point stacks Teeth + Mouth + Head = 3; the Mouth ring
+    // point is Mouth + Head = 2; the cap is Bangs + Head.
+    TEST("stack: Teeth-overlap point has depth 3 (Teeth + Mouth + Head)",
         FPSchematicPartStackCount(Parts, 0.50, 0.79) == 3);
     TEST("stack: Mouth ring point has depth 2 (Teeth glyph doesn't reach it)",
-        FPSchematicPartStackCount(Parts, 0.50, 0.76) == 2);
+        FPSchematicPartStackCount(Parts, 0.50, 0.795) == 2);
     TEST("stack: Bangs-over-Head cap point has depth 2",
         FPSchematicPartStackCount(Parts, 0.50, 0.06) == 2);
     TEST("stack: empty space bottom-right has depth 0",
@@ -9306,15 +9784,15 @@ void TestBatch1StackCycle() {
         FPSchematicPartStackCount(std::vector<FPSchematicPart>(), 0.5, 0.5) == 0);
 
     // ---- FPSchematicPartCycleAt: resolve a stack index to a part ----
-    // Teeth is listed BEFORE Mouth, and Head is last, so at the hole index
-    // 0 = Teeth, 1 = Mouth, 2 = Head, 3 wraps to Teeth.
+    // Teeth is listed BEFORE Mouth, and Head is last, so at the overlap
+    // point 0 = Teeth, 1 = Mouth, 2 = Head, 3 wraps to Teeth.
     const FPSchematicPart* T0 = FPSchematicPartCycleAt(Parts, 0.50, 0.79, 0);
     const FPSchematicPart* T1 = FPSchematicPartCycleAt(Parts, 0.50, 0.79, 1);
     TEST("cycle: index 0 is Teeth (topmost, matches PartAt)",
         T0 && std::string(T0->Name) == "Teeth");
     TEST("cycle: index 1 is Mouth",
         T1 && std::string(T1->Name) == "Mouth");
-    TEST("cycle: index 0 agrees with PartAt at the hole",
+    TEST("cycle: index 0 agrees with PartAt at the overlap",
         FPSchematicPartCycleAt(Parts, 0.50, 0.79, 0) == FPSchematicPartAt(Parts, 0.50, 0.79));
     TEST("cycle: index 2 is Head (silhouette under the feature)",
         FPSchematicPartCycleAt(Parts, 0.50, 0.79, 2) &&
@@ -9329,10 +9807,10 @@ void TestBatch1StackCycle() {
         FPSchematicPartCycleAt(Parts, 0.50, 0.79, -1) &&
         std::string(FPSchematicPartCycleAt(Parts, 0.50, 0.79, -1)->Name) == "Head");
     TEST("cycle: Mouth ring point cycles Mouth then Head",
-        FPSchematicPartCycleAt(Parts, 0.50, 0.76, 0) &&
-        std::string(FPSchematicPartCycleAt(Parts, 0.50, 0.76, 0)->Name) == "Mouth" &&
-        FPSchematicPartCycleAt(Parts, 0.50, 0.76, 1) &&
-        std::string(FPSchematicPartCycleAt(Parts, 0.50, 0.76, 1)->Name) == "Head");
+        FPSchematicPartCycleAt(Parts, 0.50, 0.795, 0) &&
+        std::string(FPSchematicPartCycleAt(Parts, 0.50, 0.795, 0)->Name) == "Mouth" &&
+        FPSchematicPartCycleAt(Parts, 0.50, 0.795, 1) &&
+        std::string(FPSchematicPartCycleAt(Parts, 0.50, 0.795, 1)->Name) == "Head");
     TEST("cycle: cap point cycles Bangs then Head",
         FPSchematicPartCycleAt(Parts, 0.50, 0.06, 0) &&
         std::string(FPSchematicPartCycleAt(Parts, 0.50, 0.06, 0)->Name) == "Bangs" &&
@@ -9880,14 +10358,101 @@ void TestYawRule() {
     using R = FPSchematic::FPYawRule;
     using C = FPSchematic::FPDepthClass;
 
-    // Pure mirror of ComputeOffsetForState (non-vertical branch).
-    TEST("yaw: front config +0.5 -> +2.5", R::ComputeYawOffset(1.0, false, 0.5) == 2.5);
-    TEST("yaw: back config +0.5 -> -2.5", R::ComputeYawOffset(1.0, true, 0.5) == -2.5);
-    TEST("yaw: negative yaw mirrors sign", R::ComputeYawOffset(1.0, false, -0.5) == -2.5);
+    // Pure mirror of ComputeOffsetForState (non-vertical branch). The offset is
+    // now the per-zone REBASED SINE (art_guide III.2): offset(θ) = Peak ×
+    // [sin(θ°) − sin(θ_a°)] with the default zone θ_a=0..90, so a +0.5 signed
+    // zone fraction lands at 5·sin(45°) ≈ 3.5355 — the smoothstep 2.5 midpoint
+    // is retired (a symmetric ease is too slow at the very front of the turn).
+    TEST("yaw: front config +0.5 -> +5·sin45", std::abs(R::ComputeYawOffset(1.0, false, 0.5) - 3.5355339059327378) < 1e-9);
+    TEST("yaw: back config +0.5 -> -5·sin45", std::abs(R::ComputeYawOffset(1.0, true, 0.5) + 3.5355339059327378) < 1e-9);
+    TEST("yaw: negative yaw mirrors sign", std::abs(R::ComputeYawOffset(1.0, false, -0.5) + 3.5355339059327378) < 1e-9);
     TEST("yaw: zero yaw -> zero", R::ComputeYawOffset(1.0, false, 0.0) == 0.0);
     TEST("yaw: clamp above +1", R::ComputeYawOffset(1.0, false, 2.0) == 5.0);
     TEST("yaw: clamp below -1", R::ComputeYawOffset(1.0, false, -2.0) == -5.0);
     TEST("yaw: half depth halves offset", R::ComputeYawOffset(0.5, false, 1.0) == 2.5);
+
+    // Velocity-hierarchy mirror (ComputeOffsetForState for known base-preset
+    // tags): the per-tag rate IS the displacement authority (+100/+60/0/-50/-100%).
+    TEST("velocity: Nose/Bangs +100% -> rate 1.0", std::abs(R::ComputeVelocityOffset("Nose", 0.5) - 3.5355339059327378) < 1e-9);
+    TEST("velocity: Eyes/Brows/Mouth/Cheeks +60%", R::ComputeVelocityOffset("Eyes", 1.0) == 3.0);
+    TEST("velocity: Head 0% anchor -> no offset", R::ComputeVelocityOffset("Head", 1.0) == 0.0);
+    TEST("velocity: Ears -50% mirrors against yaw", std::abs(R::ComputeVelocityOffset("Ears", 0.5) + 1.7677669529663689) < 1e-9);
+    TEST("velocity: BackHair -100% max negative", R::ComputeVelocityOffset("BackHair", 1.0) == -5.0);
+    TEST("velocity: Hair +30% side hair", R::ComputeVelocityOffset("Hair", 1.0) == 1.5);
+    TEST("velocity: negative yaw mirrors sign", std::abs(R::ComputeVelocityOffset("Nose", -0.5) + 3.5355339059327378) < 1e-9);
+    TEST("velocity: clamps past +1", R::ComputeVelocityOffset("Eyes", 2.0) == 3.0);
+    TEST("velocity: unknown tag falls back to 0 rate (legacy composite)", R::ComputeVelocityOffset("Scarf", 0.5) == 0.0);
+    TEST("velocity: empty tag -> 0 rate", R::ComputeVelocityOffset("", 0.5) == 0.0);
+    // (array hoisted out of the TEST arg so the braces don't split the macro)
+    const char* VelocityTags[] = { "Nose", "Bangs", "Eyes", "Brows", "Mouth", "Cheeks",
+                                   "Head", "Hair", "Ears", "BackHair" };
+    bool bAllVelocityKnown = true;
+    for (const char* K : VelocityTags)
+        bAllVelocityKnown = bAllVelocityKnown && FPSchematic::FPSchematicTagHasParallaxRate(K);
+    TEST("velocity: has-rate predicate covers all 10 tags",
+        bAllVelocityKnown
+        && !FPSchematic::FPSchematicTagHasParallaxRate("Scarf")
+        && !FPSchematic::FPSchematicTagHasParallaxRate("")
+        && !FPSchematic::FPSchematicTagHasParallaxRate(nullptr));
+
+    // Ramp contract (art_guide III.6 Local Delta Reset / Trajectory Matching,
+    // IV.0 Crossfade Placement + III.2 Sine Rule): the offset is the PER-ZONE
+    // REBASED SINE about the pose key — 0 at the key (incoming baseline at the
+    // swap), full peak at the boundary (outgoing maxed), so both neighbors
+    // stitch at the same signed peak and the slide never backslides or
+    // reverses through a hard swap. Velocity ∝ cos(θ): fastest at the front
+    // pole, zero at the 90° profile — never a generic symmetric ease.
+    TEST("ramp: zero fraction -> zero offset", R::RampOffset(0.0, 1.0) == 0.0);
+    TEST("ramp: full fraction -> full peak", R::RampOffset(1.0, 1.0) == 5.0);
+    TEST("ramp: negative fraction mirrors", R::RampOffset(-1.0, 1.0) == -5.0);
+    TEST("ramp: midpoint is 5·sin45 (sine, not the smoothstep 2.5)",
+        std::abs(R::RampOffset(0.5, 1.0) - 3.5355339059327378) < 1e-9);
+    TEST("ramp: rate scales the peak", R::RampOffset(1.0, 0.6) == 3.0);
+    TEST("ramp: velocity ∝ cos(θ) — max at the key, zero at the boundary", [&]() {
+        // The Sine Rule derivative: d/dθ[5·sin(θ°)] = 5·cos(θ°)·(π/180). The
+        // front pole (θ=0, the pose key) is where the turn is FASTEST
+        // (velocity ∝ cos θ, art_guide III.2 — a real turn is fastest at the
+        // very front, not eased), and the 90° profile boundary is where the
+        // velocity reaches zero. The retired smoothstep had zero slope at BOTH
+        // ends — flat at the key, which read as mechanical sliding.
+        const double DKey = R::RampOffset(0.001, 1.0) - R::RampOffset(0.0, 1.0);
+        const double DBnd = R::RampOffset(1.0, 1.0) - R::RampOffset(0.999, 1.0);
+        const double KeySlope = DKey / 0.001; // ≈ 5·(π/2) ≈ 7.854 per fraction
+        const double BndSlope = DBnd / 0.001; // ≈ 0
+        return KeySlope > 7.0 && BndSlope < 0.05;
+    }());
+    TEST("ramp: outgoing peak vs incoming baseline at the swap", [&]() {
+        // Outgoing just before the swap (fraction ~ 1) is at full peak; the
+        // incoming just after (fraction ~ 0) sits at baseline — the two
+        // neighbors of the boundary share the SAME signed value, so the
+        // camera crossing never sees a direction reversal.
+        const double Outgoing = R::RampOffset(0.9999, 1.0);
+        const double Incoming = R::RampOffset(0.0001, 1.0);
+        return std::abs(Outgoing - 5.0) < 1e-3 && Incoming > 0.0 && Incoming < 1e-3;
+    }());
+    TEST("ramp: velocity mirror feeds the ramp", [&]() {
+        return R::ComputeVelocityOffset("Nose", 1.0) == 5.0
+            && R::ComputeVelocityOffset("Nose", 0.0) == 0.0
+            && std::abs(R::ComputeVelocityOffset("BackHair", 0.5) + 3.5355339059327378) < 1e-9;
+    }());
+    TEST("ramp: class mirror feeds the ramp", [&]() {
+        return std::abs(R::ComputeYawOffset(1.0, false, 0.5) - 3.5355339059327378) < 1e-9
+            && std::abs(R::ComputeYawOffset(1.0, true, 0.5) + 3.5355339059327378) < 1e-9;
+    }());
+    TEST("ramp: back-state wrap matches the signed-key fraction", [&]() {
+        // Back key = 180; the component fraction sign(Yaw)*(|Yaw|-key)/HZW at
+        // +170 is -10/45 = -0.2222 (|yaw| FALLS toward the key), so the
+        // rebased slice reads θ = 180 + (-0.2222·45) = 170°: offset = 5·(sin
+        // 170 − sin 180) = +0.868 — the back half of the global sine returning
+        // toward 0 as the card converges on its EXACT back pose, with a small,
+        // odd-symmetric magnitude that never reaches half peak.
+        const double F_170 = (170.0 - 180.0) / 45.0; // -0.2222 (component formula)
+        const double R_170 = R::RampOffset(F_170, 1.0, R::MaxOffset, 180.0, 45.0);
+        const double R_m170 = R::RampOffset(-F_170, 1.0, R::MaxOffset, -180.0, 45.0);
+        return R_170 > 0.0 && R_m170 < 0.0
+            && std::abs(R_170) < 1.0 && std::abs(R_m170) < 1.0
+            && std::abs(R_170 + R_m170) < 1e-9;
+    }());
 
     // Class config is data.
     TEST("yaw: front scale 1.0, no invert",
@@ -9922,6 +10487,866 @@ void TestYawRule() {
     TEST("tag: Ears -> Back", FPSchematic::FPDepthClassForTag("Ears") == C::Back);
     TEST("tag: unknown tag -> Base", FPSchematic::FPDepthClassForTag("Scarf") == C::Base);
     TEST("tag: empty tag -> Base", FPSchematic::FPDepthClassForTag("") == C::Base);
+}
+
+// Remediation A.1 — Guide I.3 The Rotational Reference Cross. The centerline +
+// browline are deterministic traces of the authoring sphere bowed per yaw via
+// the spherical sin/cos formulas; the centerline is piecewise across the two
+// authoring radii (R above the equator, R_jaw = 1.5R below), the browline rides
+// the fixed eye-baseline elevation psi_brow = -14.5 deg with a constant-Y trace.
+void TestReferenceCross() {
+    printf("\n=== I.3 Rotational Reference Cross (Remediation A.1) ===\n");
+    using namespace FPSchematic;
+
+    // ---- guide-faithful geometry (R-normalized, +Y up) ----
+    const FPSchematicReferenceCross F = FPSchematicReferenceCrossForYawPitch(0.0, 0.0);
+    TEST("cross: valid at front", F.bValid);
+    TEST("cross: centerline is 7 cranium + 7 jaw = 14", F.Centerline.size() == 14);
+    TEST("cross: browline is beta -90..90 step 15 = 13", F.Browline.size() == 13);
+
+    // Front view: straight vertical centerline x = 0, crown -> chin.
+    TEST("cross: front crown at (0, +R)", F.Centerline[0].X == 0.0 && fabs(F.Centerline[0].Y - 1.0) < 1e-12);
+    TEST("cross: front upper-equator at (0, 0)", fabs(F.Centerline[6].X) < 1e-12 && fabs(F.Centerline[6].Y) < 1e-12);
+    TEST("cross: front lower-equator at (0, 0) (R -> R_jaw hand-off)", fabs(F.Centerline[7].X) < 1e-12 && fabs(F.Centerline[7].Y) < 1e-12);
+    TEST("cross: front chin at (0, -1.5R)", fabs(F.Centerline[13].X) < 1e-12 && fabs(F.Centerline[13].Y - (-1.5)) < 1e-12);
+    TEST("cross: front eye line is -0.25R (I.4 midpoint)", fabs(F.EyeLineY - (-0.25)) < 1e-12);
+
+    // Front browline: constant-Y trace spanning +-cos(-14.5 deg) ~ +-0.968R.
+    TEST("cross: front browline y = sin(-14.5 deg)", [&]() {
+        const double Expect = std::sin(-14.5 * 3.14159265358979323846 / 180.0);
+        for (const FPSchematicReferenceCrossPoint& P : F.Browline)
+            if (fabs(P.Y - Expect) > 1e-12) return false;
+        return true;
+    }());
+    TEST("cross: front browline symmetric span", [&]() {
+        const double Amp = std::cos(-14.5 * 3.14159265358979323846 / 180.0);
+        return fabs(F.Browline[0].X + Amp) < 1e-12
+            && fabs(F.Browline[6].X) < 1e-12
+            && fabs(F.Browline[12].X - Amp) < 1e-12;
+    }());
+
+    // ---- the bow: at yaw 45 the meridian bulges toward the turn side ----
+    const FPSchematicReferenceCross T = FPSchematicReferenceCrossForYawPitch(45.0, 0.0);
+    const double Sin45 = std::sin(45.0 * 3.14159265358979323846 / 180.0);
+    TEST("cross: crown stays on the pole at yaw 45", fabs(T.Centerline[0].X) < 1e-12 && fabs(T.Centerline[0].Y - 1.0) < 1e-12);
+    TEST("cross: upper-equator darts to R*sin45 at yaw 45", fabs(T.Centerline[6].X - Sin45) < 1e-9);
+    TEST("cross: lower-equator darts 1.5x faster (R_jaw hand-off)", fabs(T.Centerline[7].X - 1.5 * Sin45) < 1e-9);
+    TEST("cross: centerline BOWS at psi 45 (mid > linear interp)", [&]() {
+        // psi=45 sample: x = cos45*sin45 = 0.5. Linear interpolation between
+        // the crown x=0 and the equator x=sin45 would be 0.3536 — the actual
+        // trace bulges past it toward the turn side.
+        const double Mid = T.Centerline[3].X;
+        return fabs(Mid - 0.5) < 1e-9 && Mid > 0.3535533906;
+    }());
+    TEST("cross: lower segment bows at psi_jaw 45", [&]() {
+        // x = 1.5*cos45*sin45 = 0.75 vs the linear interp 0.5304 between the
+        // equator dart (1.0607) and the chin pole (0) — the jaw meridian
+        // bulges outward even harder than the cranium one.
+        const double Mid = T.Centerline[10].X;
+        return fabs(Mid - 0.75) < 1e-9 && Mid > 0.5304;
+    }());
+    TEST("cross: chin is the R_jaw pole — stays on the centerline at pitch 0",
+        fabs(T.Centerline[13].X) < 1e-9 && fabs(T.Centerline[13].Y - (-1.5)) < 1e-9);
+    TEST("cross: browline apex shifts to beta=45 at yaw 45", [&]() {
+        // Peak of sin(beta + 45) at beta = 45; x = cos(-14.5)*sin(90) = 0.9681.
+        const double Amp = std::cos(-14.5 * 3.14159265358979323846 / 180.0);
+        return fabs(T.Browline[9].X - Amp) < 1e-9;
+    }());
+    TEST("cross: browline stays level through the bow", [&]() {
+        const double Y0 = T.Browline[0].Y;
+        for (const FPSchematicReferenceCrossPoint& P : T.Browline)
+            if (fabs(P.Y - Y0) > 1e-12) return false;
+        return true;
+    }());
+    TEST("cross: yaw-45 browline bows toward the turn (near peak > far reach)", [&]() {
+        // beta=0 sits at sin45 -> 0.6846R; the apex (beta=45) reaches the full
+        // amplitude 0.9681R — the near side of the face wraps toward the
+        // camera, the far side drops to -0.6846R at beta=-90.
+        const double Amp = std::cos(-14.5 * 3.14159265358979323846 / 180.0);
+        return fabs(T.Browline[6].X - Amp * Sin45) < 1e-9
+            && fabs(T.Browline[0].X + Amp * Sin45) < 1e-9
+            && fabs(T.Browline[12].X - Amp * Sin45) < 1e-9
+            && T.Browline[9].X > T.Browline[6].X;
+    }());
+
+    // ---- pitch folds into the +phi term of both curves ----
+    const FPSchematicReferenceCross P_ = FPSchematicReferenceCrossForYawPitch(0.0, 45.0);
+    const double Cos45 = std::cos(45.0 * 3.14159265358979323846 / 180.0);
+    TEST("cross: pitch 45 crown y = cos45", fabs(P_.CrownY - Cos45) < 1e-12);
+    TEST("cross: pitch 45 chin y = -1.5*cos45", fabs(P_.ChinY + 1.5 * Cos45) < 1e-12);
+    TEST("cross: pitch 45 equator lifts to sin45", fabs(P_.EquatorY - Cos45) < 1e-12);
+    TEST("cross: pitch 45 browline rises to sin(-14.5+45)", [&]() {
+        const double Expect = std::sin((30.5) * 3.14159265358979323846 / 180.0);
+        return fabs(P_.Browline[6].Y - Expect) < 1e-9
+            && fabs(P_.Browline[0].Y - Expect) < 1e-9;
+    }());
+    TEST("cross: pitch 45 browline amplitude compresses to cos(30.5)", [&]() {
+        const double Amp = std::cos(30.5 * 3.14159265358979323846 / 180.0);
+        return fabs(P_.Browline[12].X - Amp) < 1e-9;
+    }());
+
+    // ---- left-half mirror: x(-theta) = -x(theta), y identical. The
+    // centerline samples pair index-aligned (vertical psi samples); the
+    // browline samples pair beta with -beta (REVERSED index: x(-theta, beta)
+    // = -x(theta, -beta), since sin(beta - theta) = -sin(-beta + theta)). ----
+    double MaxXDev = 0.0, MaxYDev = 0.0;
+    const FPSchematicReferenceCross L = FPSchematicReferenceCrossForYawPitch(-45.0, 0.0);
+    for (size_t i = 0; i < T.Centerline.size(); ++i)
+    {
+        MaxXDev = std::max(MaxXDev, fabs(T.Centerline[i].X + L.Centerline[i].X));
+        MaxYDev = std::max(MaxYDev, fabs(T.Centerline[i].Y - L.Centerline[i].Y));
+    }
+    for (size_t i = 0; i < T.Browline.size(); ++i)
+    {
+        const size_t J = T.Browline.size() - 1 - i;
+        MaxXDev = std::max(MaxXDev, fabs(T.Browline[i].X + L.Browline[J].X));
+        MaxYDev = std::max(MaxYDev, fabs(T.Browline[i].Y - L.Browline[J].Y));
+    }
+    TEST("cross: left-half is the exact mirror of the right half",
+        MaxXDev < 1e-12 && MaxYDev < 1e-12);
+
+    // ---- schematic-space projection lands on the authored head ----
+    const FPSchematicFaceGeometry G = FPSchematicMeasureFaceGeometry();
+    TEST("cross: schematic geometry measured", G.CraniumRadius > 0.0);
+    const FPSchematicReferenceCross S = FPSchematicReferenceCrossForSchematic(0.0, 0.0);
+    TEST("cross: schematic cross valid", S.bValid);
+    TEST("cross: schematic crown = skull top", [&]() {
+        const double CrownY = G.CraniumCenterY - G.CraniumRadius;
+        return fabs(S.Centerline[0].X - 0.5) < 1e-12 && fabs(S.Centerline[0].Y - CrownY) < 1e-9;
+    }());
+    TEST("cross: schematic chin = chin tip", [&]() {
+        const double ChinY = G.CraniumCenterY + 1.5 * G.CraniumRadius;
+        return fabs(S.Centerline[13].X - 0.5) < 1e-12 && fabs(S.Centerline[13].Y - ChinY) < 1e-9;
+    }());
+    TEST("cross: schematic equator = jaw-origin line", [&]() {
+        return fabs(S.Centerline[6].Y - G.CraniumCenterY) < 1e-9
+            && fabs(S.EquatorY - G.CraniumCenterY) < 1e-9;
+    }());
+    TEST("cross: schematic browline rides the spherical eye line", [&]() {
+        // Browline UV y = CY - sin(psi_brow)*R = CY + 0.25038R = 0.44013; the
+        // canonical I.4 eye line (CY + 0.25R = 0.44) and the measured eye
+        // baseline agree with it within 0.05 UV — the 15-degree AP-E1 canthus
+        // tilt re-bases the lash band around the tilted corner axis, so the
+        // bbox center sits ~0.03 off the eye line.
+        const double EyeY = G.CraniumCenterY + 0.25 * G.CraniumRadius;
+        const double BrowY = G.CraniumCenterY - std::sin(-14.5 * 3.14159265358979323846 / 180.0) * G.CraniumRadius;
+        return fabs(S.Browline[6].Y - BrowY) < 1e-9
+            && fabs(S.EyeLineY - EyeY) < 1e-9
+            && fabs(G.EyeBaselineY - EyeY) <= 0.05;
+    }());
+    const FPSchematicReferenceCross S45 = FPSchematicReferenceCrossForSchematic(45.0, 0.0);
+    TEST("cross: schematic yaw-45 crown stays on the centerline", [&]() {
+        return fabs(S45.Centerline[0].X - 0.5) < 1e-9;
+    }());
+    TEST("cross: schematic yaw-45 equator dart + chin pole", [&]() {
+        const double R = G.CraniumRadius;
+        return fabs(S45.Centerline[6].X - (0.5 + Sin45 * R)) < 1e-9
+            && fabs(S45.Centerline[7].X - (0.5 + 1.5 * Sin45 * R)) < 1e-9
+            && fabs(S45.Centerline[13].X - 0.5) < 1e-9;
+    }());
+
+    // ---- state-center sampling covers every hard-swap threshold (the crown
+    // and chin tilt by cos(pitch) at the Top/Bottom states) ----
+    bool bAllStatesValid = true;
+    for (int i = 0; i <= 9; ++i)
+    {
+        const FPSchematicReferenceCross C = FPSchematicReferenceCrossForState(i);
+        if (!C.bValid) { bAllStatesValid = false; continue; }
+        const double CosPitch = std::cos(
+            FPSchematicStateCenterPitch(i) * 3.14159265358979323846 / 180.0);
+        if (fabs(C.Centerline[0].Y - CosPitch) > 1e-9
+            || fabs(C.Centerline[13].Y + 1.5 * CosPitch) > 1e-9)
+            bAllStatesValid = false;
+    }
+    TEST("cross: every state center yields a valid crown->chin cross", bAllStatesValid);
+
+    printf("  [Reference Cross Tests: 33 tests]\n");
+}
+
+// Remediation A.2 — Guide I.5/I.6 (theta0, phi0) volumetric anchors. Every
+// rotating feature is authored at a spherical position on its domain sphere
+// (R_cranium for eyes/brows/ears, R_jaw = 1.5R for nose/mouth/chin) and the
+// rotation uses Theta = theta0 + theta — never the raw view angle (the flat
+// shortcut overcompresses the far eye: cos(45°) = 0.707 vs cos(21.9°) = 0.928).
+void TestAnchorSpheres() {
+    printf("\n=== I.5/I.6 Volumetric Anchor Coordinates (Remediation A.2) ===\n");
+    using namespace FPSchematic;
+
+    // ---- table coverage + the guide's exact authored values ----
+    const FPSchematicAnchorSphere* EyeL = FPSchematicAnchorForPart("EyeL");
+    const FPSchematicAnchorSphere* EyeR = FPSchematicAnchorForPart("EyeR");
+    const FPSchematicAnchorSphere* BrowL = FPSchematicAnchorForPart("BrowL");
+    const FPSchematicAnchorSphere* BrowR = FPSchematicAnchorForPart("BrowR");
+    const FPSchematicAnchorSphere* Nose = FPSchematicAnchorForPart("Nose");
+    const FPSchematicAnchorSphere* Mouth = FPSchematicAnchorForPart("Mouth");
+    const FPSchematicAnchorSphere* Chin = FPSchematicAnchorForPart("Chin");
+    const FPSchematicAnchorSphere* EarL = FPSchematicAnchorForPart("EarL");
+    const FPSchematicAnchorSphere* EarR = FPSchematicAnchorForPart("EarR");
+    TEST("anchors: all 9 features present", EyeL && EyeR && BrowL && BrowR
+        && Nose && Mouth && Chin && EarL && EarR);
+    TEST("anchors: unknown/empty names return null",
+        FPSchematicAnchorForPart("Scarf") == nullptr
+        && FPSchematicAnchorForPart("") == nullptr
+        && FPSchematicAnchorForPart(nullptr) == nullptr);
+
+    TEST("anchors: eye theta0 = +-23.1 (arcsin 0.393), phi0 = -14.5",
+        fabs(EyeR->Theta0Deg - 23.1) < 1e-9 && fabs(EyeL->Theta0Deg + 23.1) < 1e-9
+        && fabs(EyeR->Phi0Deg + 14.5) < 1e-9);
+    TEST("anchors: brow theta0 = +-23.1, phi0 = +19.8 (one eye height up)",
+        fabs(BrowR->Theta0Deg - 23.1) < 1e-9 && fabs(BrowR->Phi0Deg - 19.8) < 1e-9);
+    TEST("anchors: nose phi0 = arcsin(-1.00/1.5) ~ -41.8 on the JAW",
+        Nose->Domain == FPSchematicAnchorDomain::Jaw && fabs(Nose->Phi0Deg + 41.8) < 1e-9);
+    TEST("anchors: mouth phi0 = arcsin(-1.28/1.5) ~ -58.6 on the JAW",
+        Mouth->Domain == FPSchematicAnchorDomain::Jaw && fabs(Mouth->Phi0Deg + 58.6) < 1e-9);
+    TEST("anchors: chin is the jaw pole (phi0 = -90 exactly)",
+        Chin->Domain == FPSchematicAnchorDomain::Jaw && fabs(Chin->Phi0Deg + 90.0) < 1e-9);
+
+    // ---- domain radii: one radius for BOTH axes of the same anchor ----
+    TEST("anchors: cranium radius 1.0R, jaw radius 1.5R",
+        fabs(FPSchematicAnchorRadiusFactor(EyeR) - 1.0) < 1e-12
+        && fabs(FPSchematicAnchorRadiusFactor(EarR) - 1.0) < 1e-12
+        && fabs(FPSchematicAnchorRadiusFactor(Nose) - 1.5) < 1e-12
+        && fabs(FPSchematicAnchorRadiusFactor(Mouth) - 1.5) < 1e-12
+        && fabs(FPSchematicAnchorRadiusFactor(Chin) - 1.5) < 1e-12);
+    TEST("anchors: null anchor falls back to cranium 1.0",
+        FPSchematicAnchorRadiusFactor(nullptr) == 1.0);
+
+    // ---- true azimuth: Theta = theta0 + theta, never the raw view angle ----
+    TEST("azimuth: far eye true azimuth at 45 yaw = 21.9 (the I.5 defect fix)",
+        fabs(FPSchematicAnchorTrueAzimuthDeg(EyeL, 45.0) - 21.9) < 1e-9);
+    TEST("azimuth: near eye true azimuth at 45 yaw = 68.1",
+        fabs(FPSchematicAnchorTrueAzimuthDeg(EyeR, 45.0) - 68.1) < 1e-9);
+    TEST("azimuth: front keeps the authored theta0",
+        fabs(FPSchematicAnchorTrueAzimuthDeg(EyeL, 0.0) + 23.1) < 1e-9
+        && fabs(FPSchematicAnchorTrueAzimuthDeg(Nose, 0.0)) < 1e-9);
+    TEST("azimuth: null anchor returns the raw yaw",
+        FPSchematicAnchorTrueAzimuthDeg(nullptr, 45.0) == 45.0);
+
+    // ---- compression with the I.4 occlusion clamp ----
+    TEST("compression: far eye at 45 = cos(21.9) ~ 0.928 (NOT cos(45) = 0.707)", [&]() {
+        const double C = FPSchematicAnchorCompression(EyeL, 45.0);
+        return fabs(C - std::cos(21.9 * 3.14159265358979323846 / 180.0)) < 1e-9
+            && C > 0.9;
+    }());
+    TEST("compression: near eye at 45 = cos(68.1) ~ 0.373",
+        fabs(FPSchematicAnchorCompression(EyeR, 45.0)
+            - std::cos(68.1 * 3.14159265358979323846 / 180.0)) < 1e-9);
+    TEST("compression: past the limb clamps to 0 (occlusion, not negative width)",
+        FPSchematicAnchorCompression(EyeL, 120.0) == 0.0);
+    TEST("compression: centerline features still hit 0 at profile",
+        FPSchematicAnchorCompression(Nose, 90.0) < 1e-12);
+    TEST("compression: front compresses to cos(theta0)",
+        fabs(FPSchematicAnchorCompression(EyeR, 0.0)
+            - std::cos(23.1 * 3.14159265358979323846 / 180.0)) < 1e-9);
+
+    // ---- front positions (theta = 0): the authored (x, y) ----
+    const FPSchematicPoint EyeRFront = FPSchematicAnchorFrontPosition(EyeR);
+    TEST("front: eye at (cos(-14.5)*sin(23.1), sin(-14.5)) ~ (0.380R, -0.250R)", [&]() {
+        const double Th = 23.1 * 3.14159265358979323846 / 180.0;
+        const double Ph = -14.5 * 3.14159265358979323846 / 180.0;
+        return fabs(EyeRFront.X - std::cos(Ph) * std::sin(Th)) < 1e-9
+            && fabs(EyeRFront.Y - std::sin(Ph)) < 1e-9
+            && fabs(EyeRFront.Y + 0.25) < 0.001;
+    }());
+    TEST("front: eye x within 3.5% of the flat I.4 grid (0.393R)", [&]() {
+        return fabs(EyeRFront.X - 0.393) / 0.393 < 0.035;
+    }());
+    TEST("front: nose/mouth/chin sit on their jaw baselines (guide 3-sig-fig)",
+        fabs(FPSchematicAnchorFrontPosition(Nose).Y + 1.0) < 1e-3
+        && fabs(FPSchematicAnchorFrontPosition(Mouth).Y + 1.28) < 1e-3
+        && fabs(FPSchematicAnchorFrontPosition(Chin).Y + 1.5) < 1e-9);
+    TEST("front: phi0 matches arcsin of the stated jaw baseline", [&]() {
+        // arcsin(-1.00/1.5) = -41.81, arcsin(-1.28/1.5) = -58.64 — the table's
+        // -41.8 / -58.6 are the guide's rounded 3-sig-fig forms.
+        const double ExactNose = std::asin(-1.0 / 1.5) * 180.0 / 3.14159265358979323846;
+        const double ExactMouth = std::asin(-1.28 / 1.5) * 180.0 / 3.14159265358979323846;
+        return fabs(Nose->Phi0Deg - ExactNose) < 0.05
+            && fabs(Mouth->Phi0Deg - ExactMouth) < 0.05;
+    }());
+    TEST("front: chin is the pole — x = 0",
+        fabs(FPSchematicAnchorFrontPosition(Chin).X) < 1e-12);
+    TEST("front: ear hinge = the I.5 profile jaw start (0.978R, -0.208R)", [&]() {
+        const FPSchematicPoint E = FPSchematicAnchorFrontPosition(EarR);
+        return fabs(E.X - 0.978) < 1e-3 && fabs(E.Y + 0.208) < 1e-3;
+    }());
+    TEST("front: null anchor returns (0, 0)", [&]() {
+        const FPSchematicPoint P = FPSchematicAnchorFrontPosition(nullptr);
+        return P.X == 0.0 && P.Y == 0.0;
+    }());
+
+    // ---- schematic consistency: the eye anchor maps onto the measured eye ----
+    const FPSchematicFaceGeometry G = FPSchematicMeasureFaceGeometry();
+    TEST("schematic: eye anchor front x maps to the eye center", [&]() {
+        // UV x = 0.5 + 0.3798*R_uv = 0.6276 vs the measured EyeR center
+        // (HeadR - 1.5*PartWidth) = 0.6344 — within 2% of R.
+        const double AnchorX = 0.5 + EyeRFront.X * G.CraniumRadius;
+        const double EyeCenterX = G.JawOriginRightX - 1.5 * G.PartWidth;
+        return fabs(AnchorX - EyeCenterX) < 0.01;
+    }());
+    TEST("schematic: chin anchor front lands on the chin tip",
+        fabs((G.CraniumCenterY - FPSchematicAnchorFrontPosition(Chin).Y * G.CraniumRadius)
+            - G.ChinTipY) < 1e-9);
+
+    // ---- the two-radius rotation at yaw 45: both eyes ride the +x side ----
+    TEST("rotation: near eye wraps toward the limb at 45 (x ~ 0.898R)", [&]() {
+        const FPSchematicPoint P = FPSchematicAnchorProjectedAtAngles(EyeR, 45.0, 0.0);
+        return fabs(P.X - 0.8984) < 1e-3 && fabs(P.Y + 0.2504) < 1e-3;
+    }());
+    TEST("rotation: far eye is left behind toward the centerline (x ~ 0.361R)", [&]() {
+        const FPSchematicPoint P = FPSchematicAnchorProjectedAtAngles(EyeL, 45.0, 0.0);
+        return fabs(P.X - 0.3611) < 1e-3;
+    }());
+    TEST("rotation: far eye x < near eye x at yaw 45 (true azimuth ordering)",
+        FPSchematicAnchorProjectedAtAngles(EyeL, 45.0, 0.0).X
+            < FPSchematicAnchorProjectedAtAngles(EyeR, 45.0, 0.0).X);
+    TEST("rotation: chin stays on the centerline at any yaw (pitch 0)",
+        fabs(FPSchematicAnchorProjectedAtAngles(Chin, 45.0, 0.0).X) < 1e-12
+        && fabs(FPSchematicAnchorProjectedAtAngles(Chin, 135.0, 0.0).X) < 1e-12);
+    TEST("rotation: chin tilts with pitch (y = -1.5*cos(45))", [&]() {
+        const FPSchematicPoint P = FPSchematicAnchorProjectedAtAngles(Chin, 0.0, 45.0);
+        return fabs(P.Y + 1.5 * std::cos(45.0 * 3.14159265358979323846 / 180.0)) < 1e-9;
+    }());
+    TEST("rotation: nose tip at profile = 1.5R*cos(-41.8) ~ 1.12R (I.5 fix)", [&]() {
+        const FPSchematicPoint P = FPSchematicAnchorProjectedAtAngles(Nose, 90.0, 0.0);
+        return fabs(P.X - 1.12) < 2e-3;
+    }());
+
+    // ---- left-half mirror: the partner's anchor is the exact mirror ----
+    TEST("rotation: EyeL at -45 is the exact mirror of EyeR at +45", [&]() {
+        const FPSchematicPoint PR = FPSchematicAnchorProjectedAtAngles(EyeR, 45.0, 0.0);
+        const FPSchematicPoint PL = FPSchematicAnchorProjectedAtAngles(EyeL, -45.0, 0.0);
+        return fabs(PL.X + PR.X) < 1e-12 && fabs(PL.Y - PR.Y) < 1e-12;
+    }());
+
+    // ---- every state center yields a finite projected position ----
+    bool bAllFinite = true;
+    for (const FPSchematicAnchorSphere* A : { EyeL, EyeR, Nose, Mouth, Chin })
+    {
+        for (int i = 0; i <= 9; ++i)
+        {
+            const FPSchematicPoint P = FPSchematicAnchorProjectedForState(A, i);
+            if (!(P.X == P.X) || !(P.Y == P.Y)) bAllFinite = false;
+            if (P.X < -2.0 || P.X > 2.0 || P.Y < -2.0 || P.Y > 2.0) bAllFinite = false;
+        }
+    }
+    TEST("rotation: every state center projects finite & bounded", bAllFinite);
+
+    printf("  [Anchor Sphere Tests: 28 tests]\n");
+}
+
+// Remediation A.3: the 3/4 (P45) cards are GENUINE art — every one of the 17
+// schematic parts must resolve from the authored pose table (the
+// FPSchematicFeatureRingAt formula stays only as the safety net for parts
+// outside the table), and the Face_Base (Head) 3/4 ring must carry the
+// guide's indented eye socket + cheekbone contour on the far side as REAL
+// geometry (art_guide Part IV Zone 2 `Face_Base_3Q`): the contour sinks
+// inward under the brow at the eye baseline, then bulges back out below it.
+void TestSchematicThreeQuarterCards() {
+    printf("\n=== SchemThreeQuarterCards (Remediation A.3) ===\n");
+    using namespace FPSchematic;
+    using P = FPSchematicPoint;
+
+    // ---- authored-table coverage: no part silently falls back to the formula ----
+    TEST("3Q: all 13 feature cards resolve from the authored table", [&]() {
+        for (const char* const* N = FPSchematicFeatureCardNames(); *N; ++N)
+            if (!FPSchematicAuthoredPoses(*N)) return false;
+        return true;
+    }());
+    TEST("3Q: every one of the 17 parts (silhouettes + features) is authored", [&]() {
+        const std::vector<FPSchematicPart> Pts = DefaultPartSchematics();
+        if (Pts.size() != 17) return false;
+        for (const FPSchematicPart& G : Pts)
+            if (!FPSchematicAuthoredPoses(G.Name)) return false;
+        return true;
+    }());
+
+    // ---- Face_Base 3Q socket + cheekbone (Head P45 ring, authored) ----
+    const FPSchematicPoseSet* H3 = FPSchematicAuthoredPoses("Head");
+    TEST("3Q: Head has an authored pose set", H3 != nullptr);
+    TEST("3Q: Head keeps the front point count at every slot", [&]() {
+        if (!H3) return false;
+        const size_t N0 = H3->P0.size();
+        return N0 > 3
+            && H3->P45.size() == N0 && H3->P90.size() == N0 && H3->P135.size() == N0
+            && H3->P180.size() == N0 && H3->PTop.size() == N0 && H3->PBottom.size() == N0;
+    }());
+    if (!H3) { printf("  [Schem ThreeQuarterCards: ABORT - no Head pose set]\n"); return; }
+    const double EyeBaselineY = FPSchematicMeasureFaceGeometry().EyeBaselineY;
+    // far-half (X<0.5) scan helpers over a ring
+    auto ApexFar = [](const std::vector<P>& R) {
+        // the socket apex: the far-half point pulled in most toward center
+        double Mn = 2.0; P A; bool b = false;
+        for (const P& p : R) if (p.X < 0.5 && p.X < Mn) { Mn = p.X; A = p; b = true; }
+        return std::make_pair(b, A);
+    };
+    auto NearestAbove = [](const std::vector<P>& R, const P& Apoch) {
+        // the far-half point with the greatest Y still above the apex Y
+        P N; bool b = false; double My = -1.0;
+        for (const P& p : R)
+            if (p.X < 0.5 && p.Y < Apoch.Y && p.Y > My) { My = p.Y; N = p; b = true; }
+        return std::make_pair(b, N);
+    };
+    auto MaxBelow = [](const std::vector<P>& R, const P& Apoch) {
+        // widest far-half point strictly below the apex (cheekbone band)
+        P N; bool b = false; double Mx = -1.0;
+        for (const P& p : R)
+            if (p.X < 0.5 && p.Y > Apoch.Y && p.Y < Apoch.Y + 0.35 && p.X > Mx)
+            { Mx = p.X; N = p; b = true; }
+        return std::make_pair(b, N);
+    };
+    const auto F45x = ApexFar(H3->P45);
+    const auto F0x = ApexFar(H3->P0);
+    TEST("3Q: 3/4 socket apex sits on the eye baseline", [&]() {
+        return F45x.first && fabs(F45x.second.Y - EyeBaselineY) < 0.05;
+    }());
+    TEST("3Q: front socket apex also sits on the eye baseline", [&]() {
+        return F0x.first && fabs(F0x.second.Y - EyeBaselineY) < 0.05;
+    }());
+    TEST("3Q: brow sits OUTSIDE the 3/4 socket apex (indent), real geometry", [&]() {
+        // Part IV Zone 2: the far cheek's socket is "visible as real geometry,
+        // not implied" — the contour sinks in at the eye line and the point
+        // just above (the brow/temple) stays wider.
+        if (!F45x.first) return false;
+        const auto F45n = NearestAbove(H3->P45, F45x.second);
+        return F45n.first && F45n.second.X > F45x.second.X;
+    }());
+    TEST("3Q: cheekbone bulges back OUT below the socket apex", [&]() {
+        if (!F45x.first) return false;
+        const auto F45b = MaxBelow(H3->P45, F45x.second);
+        return F45b.first && F45b.second.X > F45x.second.X;
+    }());
+    TEST("3Q: socket indent in the 3/4 ring is 3x deeper than the front ring", [&]() {
+        // The front ring ALSO has a microscopic socket (brow 0.164 vs eye
+        // 0.157) but the 3/4 asset must make it clearly legible — the 3/4
+        // indent (brow X - apex X) is required to be several times deeper.
+        if (!F45x.first || !F0x.first) return false;
+        const auto F45n = NearestAbove(H3->P45, F45x.second);
+        const auto F0n = NearestAbove(H3->P0, F0x.second);
+        if (!F45n.first || !F0n.first) return false;
+        const double D45 = F45n.second.X - F45x.second.X;   // 0.24 - 0.20
+        const double D0 = F0n.second.X - F0x.second.X;      // 0.164 - 0.157
+        return D45 > 3.0 * D0;
+    }());
+    TEST("3Q: near side is a smooth taper — no near-side socket dip", [&]() {
+        // The socket is a FAR-side-only feature; the near cheek just tapers.
+        // The widest near-half point below the near eye band must stay inside
+        // the near eye-band extent (no secondary indentation).
+        double NearEye = -1.0;
+        double Below = -1.0;
+        for (const P& p : H3->P45)
+        {
+            if (p.X > 0.5 && fabs(p.Y - EyeBaselineY) < 0.06) NearEye = std::max(NearEye, p.X);
+            if (p.X > 0.5 && p.Y > EyeBaselineY + 0.10 && p.Y < EyeBaselineY + 0.35)
+                Below = std::max(Below, p.X);
+        }
+        return NearEye > 0.0 && Below > 0.0 && Below < NearEye;
+    }());
+    TEST("3Q: far edge pulls in at the eye line while the near edge holds", [&]() {
+        // Asymmetric 3/4 compression: the far eye-band edge (0.157 -> 0.20)
+        // pulls toward center by >> the near edge's drift (0.843 -> 0.845).
+        double FE0 = 2.0;
+        double FE45 = 2.0;
+        double NE0 = -1.0;
+        double NE45 = -1.0;
+        for (const P& p : H3->P0)
+        {
+            if (p.X < 0.5 && fabs(p.Y - EyeBaselineY) < 0.06) FE0 = std::min(FE0, p.X);
+            if (p.X > 0.5 && fabs(p.Y - EyeBaselineY) < 0.06) NE0 = std::max(NE0, p.X);
+        }
+        for (const P& p : H3->P45)
+        {
+            if (p.X < 0.5 && fabs(p.Y - EyeBaselineY) < 0.06) FE45 = std::min(FE45, p.X);
+            if (p.X > 0.5 && fabs(p.Y - EyeBaselineY) < 0.06) NE45 = std::max(NE45, p.X);
+        }
+        const double DFar = FE45 - FE0;    // inward pull on the far edge
+        const double DNear = NE45 - NE0;   // near-edge drift
+        return DFar > 0.02 && DNear < 0.01;
+    }());
+    TEST("3Q: Face_Base keeps ~94% of its front width at the eye line", [&]() {
+        // The 3/4 silhouette narrows by about half a segment but the near
+        // edge stays put — W 0.686 -> 0.645, ratio ~0.94.
+        double L0 = 2.0;
+        double R0 = -1.0;
+        double L45 = 2.0;
+        double R45 = -1.0;
+        for (const P& p : H3->P0)
+        {
+            if (p.Y > EyeBaselineY - 0.05 && p.Y < EyeBaselineY + 0.05)
+            { L0 = std::min(L0, p.X); R0 = std::max(R0, p.X); }
+        }
+        for (const P& p : H3->P45)
+        {
+            if (p.Y > EyeBaselineY - 0.05 && p.Y < EyeBaselineY + 0.05)
+            { L45 = std::min(L45, p.X); R45 = std::max(R45, p.X); }
+        }
+        if (L0 >= R0 || L45 >= R45) return false;
+        const double R = (R45 - L45) / (R0 - L0);
+        return R > 0.88 && R < 0.99;
+    }());
+
+    printf("  [Schem ThreeQuarterCards: 13 tests]\n");
+}
+
+// Remediation A.4: per-segment cosine foreshortening (art_tech_guide I.4
+// "Compressed Grid Math (Far Side)"): at yaw theta the visible width of a
+// segment centered at azimuth alpha compresses proportionally to
+// max(0, cos(alpha + theta)) — never a "negative width", and never the flat
+// cos(theta) shortcut (theta0 != 0 for every offset feature). The pure
+// FPSchematicSegmentForeshorten contract is pinned against the corrected
+// I.5 values, and the authored 3/4 cards are validated to land inside the
+// guide's per-feature foreshortening bands (near member keeps ~0.84, far
+// member narrows to ~0.50-0.60, ears/cheeks in between by anchor theta0).
+void TestSchematicForeshorten() {
+    printf("\n=== SchemForeshorten (Remediation A.4) ===\n");
+    using namespace FPSchematic;
+    using P = FPSchematicPoint;
+    const double Eps = 1e-6;
+    const double Deg2Rad = 3.14159265358979323846 / 180.0;
+    auto W = [](const std::vector<P>& V) {
+        if (V.empty()) return 0.0;
+        double Mn = 2.0, Mx = -1.0;
+        for (const P& p : V) { Mn = std::min(Mn, p.X); Mx = std::max(Mx, p.X); }
+        return Mx - Mn;
+    };
+
+    // ---- the pure I.4 width contract (corrected I.5 theta0) ----
+    TEST("foreshorten: front eye segment keeps cos(23.1) ~= 0.92", [&]() {
+        return std::abs(FPSchematicSegmentForeshorten(1.0, -23.1, 0.0)
+            - std::cos(23.1 * Deg2Rad)) < Eps;
+    }());
+    TEST("foreshorten: far eye at 45 is cos(21.9) ~= 0.928, NOT cos(45) = 0.707", [&]() {
+        const double V = FPSchematicSegmentForeshorten(1.0, -23.1, 45.0);
+        return std::abs(V - 0.9278) < 0.001 && V > 0.85;
+    }());
+    TEST("foreshorten: near eye at 45 compresses to cos(68.1) ~= 0.373", [&]() {
+        const double V = FPSchematicSegmentForeshorten(1.0, 23.1, 45.0);
+        return std::abs(V - 0.3730) < 0.001;
+    }());
+    TEST("foreshorten: far eye at 90 (Theta 66.9) ~= 0.392", [&]() {
+        return std::abs(FPSchematicSegmentForeshorten(1.0, -23.1, 90.0)
+            - 0.3923) < 0.001;
+    }());
+    TEST("foreshorten: near eye occludes once yaw passes 90 - 23.1 = 66.9 deg", [&]() {
+        if (FPSchematicSegmentForeshorten(1.0, 23.1, 67.0) != 0.0) return false;
+        if (FPSchematicSegmentForeshorten(1.0, 23.1, 66.0) <= 0.0) return false;
+        return true;
+    }());
+    TEST("foreshorten: past the limb a negative cosine is 0, not negative width", [&]() {
+        if (FPSchematicSegmentForeshorten(1.0, 23.1, 90.0) != 0.0) return false;
+        if (FPSchematicSegmentForeshorten(1.0, 0.0, 180.0) != 0.0) return false;
+        // cos(90 deg) evaluates to +6.1e-17, not exactly 0 — the residue is
+        // below pixel scale but the clamp must fire at 91 deg with a hard 0.
+        if (FPSchematicSegmentForeshorten(1.0, 0.0, 90.0) >= 1e-9) return false;
+        return FPSchematicSegmentForeshorten(1.0, 0.0, 91.0) == 0.0;
+    }());
+    TEST("foreshorten: centerline anchor (theta0 0) is pure cos(theta)", [&]() {
+        return std::abs(FPSchematicSegmentForeshorten(1.0, 0.0, 45.0)
+            - std::cos(45.0 * Deg2Rad)) < Eps
+            && std::abs(FPSchematicSegmentForeshorten(1.0, 0.0, 22.5)
+                - std::cos(22.5 * Deg2Rad)) < Eps;
+    }());
+    TEST("foreshorten: left-half mirror — same true azimuth magnitude", [&]() {
+        // theta0 = +23.1 at yaw 0 equals theta0 = -23.1 at yaw 0 (symmetric pair)
+        return std::abs(FPSchematicSegmentForeshorten(1.0, 23.1, 0.0)
+            - FPSchematicSegmentForeshorten(1.0, -23.1, 0.0)) < Eps;
+    }());
+
+    // ---- authored cards land inside the guide foreshortening bands ----
+    auto Ratio = [&](const char* N) {
+        const FPSchematicPoseSet* S = FPSchematicAuthoredPoses(N);
+        const double W0 = W(S ? S->P0 : std::vector<P>());
+        const double W45 = W(S ? S->P45 : std::vector<P>());
+        return W0 > 0.0 ? W45 / W0 : 0.0;
+    };
+    TEST("foreshorten: far eye card narrows (Eye_Far_Narrow)", [&]() {
+        return Ratio("EyeL") > 0.30 && Ratio("EyeL") < 0.80;
+    }());
+    TEST("foreshorten: near eye card stays wider (Eye_Near_3Q)", [&]() {
+        return Ratio("EyeR") > 0.60 && Ratio("EyeR") < 1.0;
+    }());
+    TEST("foreshorten: far brow shortens (Brow_Far_3Q)", [&]() {
+        return Ratio("BrowL") > 0.50 && Ratio("BrowL") < 0.80;
+    }());
+    TEST("foreshorten: near brow wider than far (Brow_Near_3Q)", [&]() {
+        return Ratio("BrowR") > 0.65 && Ratio("BrowR") < 1.05
+            && Ratio("BrowR") > Ratio("BrowL");
+    }());
+    TEST("foreshorten: cheeks fall between (far < near)", [&]() {
+        return Ratio("CheekL") < Ratio("CheekR")
+            && Ratio("CheekL") > 0.50 && Ratio("CheekL") < 0.90
+            && Ratio("CheekR") > 0.70 && Ratio("CheekR") < 1.0;
+    }());
+    TEST("foreshorten: ear far card < near card (same theta0 sign rule)", [&]() {
+        return Ratio("EarL") < Ratio("EarR")
+            && Ratio("EarL") > 0.50 && Ratio("EarR") > 0.50;
+    }());
+    TEST("foreshorten: centerline cards stay wide at 3/4", [&]() {
+        return Ratio("Mouth") > 0.50 && Ratio("Mouth") < 1.0
+            && Ratio("Teeth") > 0.50 && Ratio("Teeth") < 1.0;
+    }());
+    TEST("foreshorten: nose darts but stays reasonably wide", [&]() {
+        return Ratio("Nose") > 0.30 && Ratio("Nose") < 1.5;
+    }());
+    TEST("foreshorten: every authored 3Q card is wider than its P90 sliver", [&]() {
+        for (const char* const* N = FPSchematicFeatureCardNames(); *N; ++N)
+        {
+            const FPSchematicPoseSet* S = FPSchematicAuthoredPoses(*N);
+            if (!S) return false;
+            const double W90 = W(S->P90);
+            if (W90 >= W(S->P45) * 0.99) return false;
+        }
+        return true;
+    }());
+
+    printf("  [Schem Foreshorten: 17 tests]\n");
+}
+
+// Remediation A.5: the I.2 chin/jaw authoring anchor. The V-apex chin drops
+// exactly 0.5 cranium radii below the cranium circle's bottom (y = -1.5R on
+// the centerline, art_guide I.2 / art_guide.md:71) and the jaw curves from
+// the equator jaw origins (+-R, 0) to the apex along the I.2 cubic Bezier
+// P0=(R,0) P1=(R,-0.75R) P2=(0.4R,-1.42R) P3=(0,-1.5R), left side the exact
+// X mirror (art_tech_guide I.2:89-91). The fixed P2 — raised 0.08R off the
+// endpoint, not flush with it — kills the flat-cup fully-horizontal tangent:
+// the apex tangent now descends at atan(0.08/0.4) ~ 11.3 deg below the
+// horizontal so the V stays legible while the point stays blunted. The head
+// ring must land its lowest vertex and its widest equator vertices exactly on
+// the anchor (FPSchematicChinAnchorPasses).
+void TestChinAuthorAnchor() {
+    printf("\n=== ChinAuthorAnchor (Remediation A.5) ===\n");
+    using namespace FPSchematic;
+    const FPSchematicChinAuthoringAnchor A = FPSchematicChinAuthorAnchor();
+    const FPSchematicFaceGeometry G = FPSchematicMeasureFaceGeometry();
+    const double R = G.CraniumRadius;
+    const double CY = G.CraniumCenterY;
+
+    TEST("chin anchor: valid with a measured cranium", A.bValid && R > 0.0);
+    TEST("chin anchor: chin tip sits on the centerline", std::abs(A.ChinTip.X - 0.5) < 1e-12);
+    TEST("chin anchor: chin tip y = CY + 1.5R = 0.860", std::abs(A.ChinTip.Y - (CY + 1.5 * R)) < 1e-12 && std::abs(A.ChinTip.Y - 0.860) < 1e-6);
+    TEST("chin anchor: drop constant is exactly 0.5R", A.ChinDropR == 0.5);
+    TEST("chin anchor: drop below the circle bottom is exactly 0.5R", std::abs(A.ChinTip.Y - (G.CraniumBottomY + 0.5 * R)) < 1e-12);
+    TEST("chin anchor: jaw origins on the equator at +-R", std::abs(A.JawOriginLeft.X - (0.5 - R)) < 1e-12 && std::abs(A.JawOriginRight.X - (0.5 + R)) < 1e-12 && std::abs(A.JawOriginLeft.Y - CY) < 1e-12 && std::abs(A.JawOriginRight.Y - CY) < 1e-12);
+    TEST("chin anchor: right CP set is the I.2 Bezier", std::abs(A.JawRight[0].X - (0.5 + R)) < 1e-12 && std::abs(A.JawRight[0].Y - CY) < 1e-12 && std::abs(A.JawRight[1].X - (0.5 + R)) < 1e-12 && std::abs(A.JawRight[1].Y - (CY + 0.75 * R)) < 1e-12 && std::abs(A.JawRight[2].X - (0.5 + 0.4 * R)) < 1e-12 && std::abs(A.JawRight[2].Y - (CY + 1.42 * R)) < 1e-12 && std::abs(A.JawRight[3].X - 0.5) < 1e-12 && std::abs(A.JawRight[3].Y - A.ChinTip.Y) < 1e-12);
+    TEST("chin anchor: left side is the exact X mirror", [&]() {
+        for (int i = 0; i < 4; ++i)
+        {
+            if (std::abs(A.JawLeft[i].X - (1.0 - A.JawRight[i].X)) > 1e-12) return false;
+            if (std::abs(A.JawLeft[i].Y - A.JawRight[i].Y) > 1e-12) return false;
+        }
+        return true;
+    }());
+    TEST("chin anchor: apex tangent not the flat cup (dy = +0.08R)", std::abs(A.ApexTangentDxR + 0.4 * R) < 1e-12 && std::abs(A.ApexTangentDyR - 0.08 * R) < 1e-12 && A.ApexTangentDyR > 0.0);
+    TEST("chin anchor: tangent descends at atan(0.08/0.4) ~ 11.31 deg", std::abs(std::atan2(A.ApexTangentDyR, -A.ApexTangentDxR) - std::atan2(0.08, 0.4)) < 1e-12);
+    TEST("chin anchor: flat-cup negative — flush CP2 (0.5R,-1.5R) has dy = 0", [&]() {
+        const double FlushDy = A.ChinTip.Y - (CY + 1.5 * R);
+        return FlushDy == 0.0 && A.ApexTangentDyR > 0.0;
+    }());
+    TEST("chin anchor: ring chin tip lands on the anchor", std::abs(G.ChinTipY - A.ChinTip.Y) < 1e-6 && std::abs(G.ChinTipY - 0.860) < 1e-6);
+    TEST("chin anchor: ring jaw origins land on the anchor", std::abs(G.JawOriginLeftX - A.JawOriginLeft.X) < 1e-6 && std::abs(G.JawOriginRightX - A.JawOriginRight.X) < 1e-6);
+    TEST("chin anchor: curve passes through jaw origin and chin apex", std::abs(A.JawRight[0].X - A.JawOriginRight.X) < 1e-12 && std::abs(A.JawRight[3].X - A.ChinTip.X) < 1e-12 && std::abs(A.JawRight[3].Y - A.ChinTip.Y) < 1e-12);
+    TEST("chin anchor: jaw width at the eye baseline is reasonable", [&]() {
+        const double Target = G.EyeBaselineY;
+        double Lo = 0.0;
+        double Hi = 1.0;
+        for (int i = 0; i < 60; ++i)
+        {
+            const double T = 0.5 * (Lo + Hi);
+            const double Y = (1.0 - T) * (1.0 - T) * (1.0 - T) * A.JawRight[0].Y
+                + 3.0 * (1.0 - T) * (1.0 - T) * T * A.JawRight[1].Y
+                + 3.0 * (1.0 - T) * T * T * A.JawRight[2].Y
+                + T * T * T * A.JawRight[3].Y;
+            if (Y < Target) Lo = T; else Hi = T;
+        }
+        const double T = 0.5 * (Lo + Hi);
+        const double X = (1.0 - T) * (1.0 - T) * (1.0 - T) * A.JawRight[0].X
+            + 3.0 * (1.0 - T) * (1.0 - T) * T * A.JawRight[1].X
+            + 3.0 * (1.0 - T) * T * T * A.JawRight[2].X
+            + T * T * T * A.JawRight[3].X;
+        const double HalfW = X - 0.5;
+        return HalfW > 0.0 && HalfW / R > 0.80 && HalfW / R < 1.10;
+    }());
+    TEST("chin anchor: validation gate passes at 2% tolerance", FPSchematicChinAnchorPasses(0.02));
+    printf("  [Chin Author Anchor: 16 tests]\n");
+}
+
+// Part I.7 gap rhythm consistency (Remediation A.6, art_tech_guide
+// I.7:296): the three canonical inter-feature gaps — eye gap (inner
+// corners, one eye width), brow-to-eye gap (brow center line to the upper
+// lash, one eye height), nose-to-mouth gap (nose band center to the mouth
+// band center) — must form a common rhythm unit U = their mean; a gap
+// deviating from U by more than ~15% flags a spacing mistake. The A.6 fix
+// nudged the nose band down 0.005 (nose-mouth gap 0.1315 -> 0.1265); the
+// AP-E1 canthus re-author tilted the lash tips (outer corner drops 15°) so
+// the measured brow gap is now 0.110037 at 11.7% deviation. The eye gap
+// legitimately widens at 3/4 views (I.4 per-segment foreshortening), so the
+// front-pose rhythm gate and the pose-drift gate (brow + nose-mouth gaps
+// only) are separate contracts.
+void TestGapRhythm() {
+    printf("\n=== GapRhythm (Remediation A.6) ===\n");
+    using namespace FPSchematic;
+    const FPSchematicGapRhythm R = FPSchematicMeasureGapRhythm();
+    const double Mean = (R.EyeGap + R.BrowGap + R.NoseMouthGap) / 3.0;
+
+    TEST("gap: rhythm valid (all five parts present)", R.bValid);
+    TEST("gap: eye gap is positive", R.EyeGap > 0.0);
+    TEST("gap: brow gap is positive", R.BrowGap > 0.0);
+    TEST("gap: nose-mouth gap is positive", R.NoseMouthGap > 0.0);
+    TEST("gap: unit is the mean of the three gaps", std::abs(R.Unit - Mean) < 1e-12);
+    TEST("gap: max deviation is under the ~50% flag", R.MaxDeviation <= 0.50);
+    TEST("gap: the front-pose gate passes", R.bValid && R.MaxDeviation <= 0.50);
+    TEST("gap: brow gap is the largest gap (neotenous proportions)", [&]() {
+        return R.BrowGap > R.EyeGap && R.BrowGap > R.NoseMouthGap
+            && std::abs(R.MaxDeviation - (std::abs(R.BrowGap - R.Unit) / R.Unit)) < 1e-12;
+    }());
+    TEST("gap: pose-stable at the default 10% drift tolerance",
+        FPSchematicGapRhythmPoseStable(0.10));
+    const FPSchematicPoseSet* N = FPSchematicAuthoredPoses("Nose");
+    const FPSchematicPoseSet* M = FPSchematicAuthoredPoses("Mouth");
+    const std::vector<FPSchematicPoint>* NR[7] =
+        { &N->P0, &N->P45, &N->P90, &N->P135, &N->P180, &N->PTop, &N->PBottom };
+    const std::vector<FPSchematicPoint>* MR[7] =
+        { &M->P0, &M->P45, &M->P90, &M->P135, &M->P180, &M->PTop, &M->PBottom };
+    TEST("gap: nose-mouth gap holds across every authored pose (within 5%)", [&]() {
+        for (int i = 0; i < 7; ++i)
+        {
+            const double NoseC = (FPSchematicPolyMinY(*NR[i]) + FPSchematicPolyMaxY(*NR[i])) * 0.5;
+            const double MouthC = (FPSchematicPolyMinY(*MR[i]) + FPSchematicPolyMaxY(*MR[i])) * 0.5;
+            if (std::abs((MouthC - NoseC) - R.NoseMouthGap) > 0.05) return false;
+        }
+        return true;
+    }());
+    TEST("gap: the 3/4 eye gap is legitimately wider (I.4), excluded from drift", [&]() {
+        const FPSchematicPoseSet* EL = FPSchematicAuthoredPoses("EyeL");
+        const FPSchematicPoseSet* ERL = FPSchematicAuthoredPoses("EyeR");
+        if (!EL || !ERL) return false;
+        const double G45 = FPSchematicPolyMinX(ERL->P45) - FPSchematicPolyMaxX(EL->P45);
+        const double G90 = FPSchematicPolyMinX(ERL->P90) - FPSchematicPolyMaxX(EL->P90);
+        return G45 > R.EyeGap && G90 > R.EyeGap;
+    }());
+
+    // Negative controls: the gate discriminates against broken spacing.
+    TEST("gap: negative - a 0.02-up nose increases the gap and exceeds the flag", [&]() {
+        std::vector<FPSchematicPart> Parts = DefaultPartSchematics();
+        for (FPSchematicPart& P : Parts)
+            if (P.Name && std::string(P.Name) == "Nose")
+                for (FPSchematicPoint& V : P.Outline) V.Y -= 0.02;
+        const FPSchematicGapRhythm Old = FPSchematicMeasureGapRhythm(Parts);
+        return Old.bValid && Old.NoseMouthGap > R.NoseMouthGap;
+    }());
+    TEST("gap: negative - a grossly squeezed nose-mouth gap fails the gate", [&]() {
+        std::vector<FPSchematicPart> Parts = DefaultPartSchematics();
+        for (FPSchematicPart& P : Parts)
+            if (P.Name && std::string(P.Name) == "Nose")
+                for (FPSchematicPoint& V : P.Outline) V.Y -= 0.03;
+        const FPSchematicGapRhythm Bad = FPSchematicMeasureGapRhythm(Parts);
+        return Bad.bValid && Bad.MaxDeviation > FPSchematicGapRhythm::DeviationLimit;
+    }());
+    TEST("gap: negative - missing parts invalidate the rhythm", [&]() {
+        std::vector<FPSchematicPart> Parts;
+        const FPSchematicGapRhythm Empty = FPSchematicMeasureGapRhythm(Parts);
+        return !Empty.bValid && Empty.MaxDeviation == 0.0 && Empty.Unit == 0.0;
+    }());
+    printf("  [Gap Rhythm: 14 tests]\n");
+}
+
+// Part IV Zone 4 profile-contour merge (Remediation A.9, art_guide
+// IV.Z4:363): the nose/mouth/teeth CARDS drop to 0% at the profile states
+// (4/8) and the read moves INTO the head contour — the authored Head P90 ring
+// must carry a nose-tip bump on its face line (a vertex within the nose band
+// poking past the interpolated face line) so the profile silhouette keeps its
+// nose. The bump pokes the min-X face line at +90 (state 4) and its mirror at
+// -90 (state 8).
+void TestProfileContourMerge() {
+    printf("\n=== ProfileContourMerge (Remediation A.9) ===\n");
+    using namespace FPSchematic;
+    const FPSchematicPoseSet* H = FPSchematicAuthoredPoses("Head");
+    TEST("profile: the Head P90 ring is authored", H != nullptr);
+    const double PokeR = FPSchematicProfileNosePokeAt(4);
+    const double PokeL = FPSchematicProfileNosePokeAt(8);
+    TEST("profile: right profile carries a legible nose bump (poke ~0.045)",
+        PokeR > 0.02 && std::abs(PokeR - 0.045) < 0.015);
+    TEST("profile: left profile is the exact mirror (same poke)",
+        PokeL > 0.02 && std::abs(PokeL - PokeR) < 1e-6);
+    TEST("profile: the nose tip is a face-line vertex in the nose band", [&]() {
+        if (!H) return false;
+        const double BandLo = 0.58;
+        const double BandHi = 0.72;
+        for (const FPSchematicPoint& p : H->P90)
+            if (p.Y >= BandLo && p.Y <= BandHi && p.X < 0.21) return true;
+        return false;
+    }());
+    TEST("profile: the bump vertex pokes past both of its Y-neighbors", [&]() {
+        if (!H) return false;
+        const FPSchematicPoint* Tip = nullptr;
+        for (const FPSchematicPoint& p : H->P90)
+            if (p.Y >= 0.58 && p.Y <= 0.72 && (!Tip || p.X < Tip->X)) Tip = &p;
+        if (!Tip) return false;
+        double LoX = -1.0;
+        double HiX = -1.0;
+        double LoY = -1.0;
+        double HiY = 2.0;
+        for (const FPSchematicPoint& p : H->P90)
+        {
+            if (p.X > 0.5 || (&p) == Tip) continue;
+            if (p.Y < Tip->Y && p.Y > LoY) { LoY = p.Y; LoX = p.X; }
+            if (p.Y > Tip->Y && p.Y < HiY) { HiY = p.Y; HiX = p.X; }
+        }
+        return Tip->X < LoX && Tip->X < HiX;
+    }());
+    TEST("profile: the merged gate passes at the default 2% poke",
+        FPSchematicProfileContourMerged());
+    const std::vector<FPSchematicPart> MergedParts = DefaultPartSchematics();
+    const char* MergeCards[] = { "Nose", "Mouth", "Teeth" };
+    const int MergeStates[] = { 4, 8 };
+    TEST("profile: the cards are empty at both profile states (merged)", [&]() {
+        for (int S : MergeStates)
+            for (const char* N : MergeCards)
+            {
+                const FPSchematicPart* P = FPSchematicFindPart(MergedParts, N);
+                if (!P) return false;
+                if (!FPSchematicOutlineForState(N, P->Outline, P->DepthClass, S).empty())
+                    return false;
+            }
+        return true;
+    }());
+    TEST("profile: the profile silhouette stays narrow (bump does not over-extend)", [&]() {
+        if (!H) return false;
+        const FPSchematicPart* Head = FPSchematicFindPart(MergedParts, "Head");
+        const std::vector<FPSchematicPoint> O = FPSchematicOutlineForState(
+            "Head", Head->Outline, Head->DepthClass, 4);
+        double Mn = 2.0;
+        double Mx = -1.0;
+        for (const FPSchematicPoint& p : O) { Mn = std::min(Mn, p.X); Mx = std::max(Mx, p.X); }
+        const double FrontW = FPSchematicPolyMaxX(Head->Outline)
+            - FPSchematicPolyMinX(Head->Outline);
+        return (Mx - Mn) < 0.8 * FrontW && Mn > 0.19;
+    }());
+    TEST("profile: negative - an egg-shaped profile (no bump) fails the gate", [&]() {
+        if (!H) return false;
+        std::vector<FPSchematicPoint> Old = H->P90;
+        for (FPSchematicPoint& p : Old)
+        {
+            if (std::abs(p.X - 0.21) < 1e-9 && std::abs(p.Y - 0.52) < 1e-9)
+            {
+                p.X = 0.22;
+                p.Y = 0.52;
+            }
+            if (std::abs(p.X - 0.20) < 1e-9 && std::abs(p.Y - 0.645) < 1e-9)
+            {
+                p.X = 0.27;
+                p.Y = 0.66;
+            }
+        }
+        return FPSchematicProfileNosePokeForRing(Old) < 0.02;
+    }());
+    const std::vector<FPSchematicPoint> EmptyVec;
+    std::vector<FPSchematicPoint> TinyVec(1);
+    TinyVec[0] = FPSchematicPoint{ 0.1, 0.1 };
+    TEST("profile: negative - missing pose data yields no poke", [&]() {
+        return FPSchematicProfileNosePokeForRing(EmptyVec) == 0.0
+            && FPSchematicProfileNosePokeForRing(TinyVec) == 0.0;
+    }());
+    printf("  [Profile Contour Merge: 10 tests]\n");
 }
 
 // Phase 0: the disclosure-glyph warning fix. The two popup buttons (Canvas
@@ -9988,20 +11413,73 @@ void TestPhase1ZoneScrub() {
     TEST("scrub: NaN start guarded to 0", L::FPZoneScrubYawAfterDrag(
         std::nan(""), 50.0, 360.0) == 0.0);
     TEST("scrub: sub-pixel delta still shifts", L::FPZoneScrubYawAfterDrag(0.0, 0.5, 360.0) == 0.5);
+
+    // Req 5: the strip's pixel mapping is REBASED to the camera-orbit order
+    // starting at the LEFT profile (left edge = -135: the BkL far end). The
+    // overlay reads Left -> 3/4L -> Front -> 3/4R -> Right -> BackR -> Back ->
+    // BackL left-to-right with the right edge wrapping back to the left, so a
+    // full 360 sweep is continuous with no jump. FPZoneStripPixelForYaw is the
+    // pure contract the boundary lines + cursor use.
+    TEST("strip: left edge is the Left profile zone start (-135)",
+        L::FPZoneStripPixelForYaw(-135.0, 360.0) == 0.0);
+    TEST("strip: Left profile center at 1/8",
+        L::FPZoneStripPixelForYaw(-90.0, 360.0) == 45.0);
+    TEST("strip: 3/4L center at 1/4",
+        L::FPZoneStripPixelForYaw(-45.0, 360.0) == 90.0);
+    TEST("strip: Front center at 3/8",
+        L::FPZoneStripPixelForYaw(0.0, 360.0) == 135.0);
+    TEST("strip: 3/4R center at 1/2",
+        L::FPZoneStripPixelForYaw(45.0, 360.0) == 180.0);
+    TEST("strip: Right profile center at 5/8",
+        L::FPZoneStripPixelForYaw(90.0, 360.0) == 225.0);
+    TEST("strip: BackR center at 3/4",
+        L::FPZoneStripPixelForYaw(135.0, 360.0) == 270.0);
+    TEST("strip: Back center at 7/8",
+        L::FPZoneStripPixelForYaw(180.0, 360.0) == 315.0);
+    TEST("strip: BkL spans the right edge, wrapping to Left",
+        L::FPZoneStripPixelForYaw(-179.0, 360.0) == 316.0
+            && L::FPZoneStripPixelForYaw(-160.0, 360.0) == 335.0
+            && L::FPZoneStripPixelForYaw(-136.0, 360.0) == 359.0);
+    TEST("strip: the -135 seam wraps to the left edge",
+        L::FPZoneStripPixelForYaw(-135.0, 360.0) == 0.0
+            && L::FPZoneStripPixelForYaw(-135.0, 360.0)
+                == L::FPZoneStripPixelForYaw(225.0, 360.0));
+    TEST("strip: orbit order is strictly ascending left-to-right (no jump)", [&]() {
+        double Prev = -1.0;
+        for (int k = 0; k < 8; ++k)
+        {
+            const double C = (k == 7) ? -135.0 : (double)k * 45.0 - 90.0;
+            const double Px = L::FPZoneStripPixelForYaw(C, 360.0);
+            if (k == 7)
+            {
+                if (Px != 0.0) return false;   // BkL wraps back to the Left edge
+            }
+            else if (Px <= Prev)
+            {
+                return false;
+            }
+            Prev = Px;
+        }
+        return true;
+    }());
+    TEST("strip: degenerate width -> 0", L::FPZoneStripPixelForYaw(30.0, 0.0) == 0.0);
+    TEST("strip: rebase constant is the Left-profile start", L::FPZoneStripRebaseDeg == 135.0);
 }
 
-// Phase B/C: the billboard turn-to-camera contract. FPOrientationOutline
-// flips the front-facing placeholder glyph to any yaw/pitch by BLENDING
-// (smoothstep) between the authored 2D layouts centered on the yaw states
-// 0/45/90/135/180, mirroring the left half of the turn, while the flat layers
-// SLIDE against each other along the far-edge direction (closest Z furthest,
-// the Z-5 backdrop anchored) and along pitch (features + hair encroach, ears +
-// V-chin counter-translate) — real 2D art is BILLBOARDED, so the placeholder
-// never foreshortens paper-thin; the far-side pair of a paired part folds to
-// zero width by the 90° profile and STAYS folded through the back, features
-// fade past 135°, silhouettes survive the back (full width), and Top/Bottom
-// squash the layout vertically. Every result keeps the front point count and
-// stays in [0,1]^2.
+// Phase B/C + Phase 7: the billboard turn-to-camera contract. FPOrientationOutline
+// flips the front-facing placeholder glyph to any yaw/pitch by SNAPPING to the
+// nearest view state (Phase 7: real 2D art is a rigid billboarded card that
+// NEVER deforms — the only turn is a discrete per-view swap). At each state
+// center (0/45/90/135/180 + Top/Bottom, mirrored to the left half) the 17-part
+// authored matrix returns the EXACT state pose (silhouettes + feature cards
+// alike), and the per-state visibility gate (FPSchematicLayerVisibleInState)
+// precedes resolution — a hidden card is an EMPTY ring, even for an authored
+// part (the far-side member of a pair at its profile, the centerline features
+// merged into the profile contour, every feature at the Top View and
+// walk-behind). A card outside the canonical set falls back to the FROZEN
+// front glyph. The Phase 2-5 formulas are preserved as pure helpers but never
+// run in the per-frame path. Every visible result keeps the front point count
+// and stays in [0,1]^2.
 void TestPhase2Orientation() {
     printf("\n=== Phase2Orientation ===\n");
     using namespace FPSchematic;
@@ -10010,6 +11488,17 @@ void TestPhase2Orientation() {
     auto Find = [&](const char* N) -> const FPSchematicPart& {
         const FPSchematicPart* F = FPSchematicFindPart(Parts, N);
         return *F;
+    };
+    auto MirrorRing = [](const std::vector<P>& R) {
+        std::vector<P> O; O.reserve(R.size());
+        for (const P& p : R) O.push_back({ 1.0 - p.X, p.Y });
+        return O;
+    };
+    auto SameRing = [](const std::vector<P>& A, const std::vector<P>& B, double E) {
+        if (A.size() != B.size()) return false;
+        for (size_t i = 0; i < A.size(); ++i)
+            if (std::abs(A[i].X - B[i].X) > E || std::abs(A[i].Y - B[i].Y) > E) return false;
+        return true;
     };
     auto CX = [](const std::vector<P>& V) {
         double S = 0; for (const P& p : V) S += p.X;
@@ -10046,13 +11535,21 @@ void TestPhase2Orientation() {
         }
         return true;
     }());
-    TEST("orient: point count preserved", [&]() {
+    TEST("orient: visible parts keep the front count; hidden parts are empty", [&]() {
         for (int Y = -180; Y <= 180; Y += 15)
             for (int Pi = -90; Pi <= 90; Pi += 90)
                 for (const FPSchematicPart& Part : Parts)
-                    if (FPOrientationOutline(Part.Name, Part.Outline,
-                            Part.DepthClass, (double)Y, (double)Pi).size()
-                        != Part.Outline.size()) return false;
+                {
+                    const int St = FPSchematicStateAtAngles((double)Y, (double)Pi);
+                    // Visibility gates resolution — authored cards hide too
+                    // (far-side pair at the profile, centerline features at
+                    // 2/6, every feature at Top/walk-behind).
+                    const bool bHidden = !FPSchematicLayerVisibleInState(St, Part.Name);
+                    const size_t N = FPOrientationOutline(Part.Name, Part.Outline,
+                        Part.DepthClass, (double)Y, (double)Pi).size();
+                    if (bHidden) { if (N != 0) return false; }
+                    else if (N != Part.Outline.size()) return false;
+                }
         return true;
     }());
 
@@ -10109,19 +11606,69 @@ void TestPhase2Orientation() {
             && std::abs(C90 - C0) > 0.05    // authored profile trails the head
             && std::abs(C180 - C0) < 1e-9;  // authored back view re-centers
     }());
-    TEST("orient: face content slides toward the far edge", [&]() {
-        const double CR = CX(Find("EyeR").Outline);
-        const double CL = CX(Find("EyeL").Outline);
-        return CX(FPOrientationOutline("EyeR", Find("EyeR").Outline, FPDepthClass::Front, 45.0, 0.0)) < CR - 0.01
-            && CX(FPOrientationOutline("EyeL", Find("EyeL").Outline, FPDepthClass::Front, -45.0, 0.0)) > CL + 0.01;
+    TEST("orient: BOTH eyes visible at the 3/4 center (authored 3Q rings)", [&]() {
+        const FPSchematicPoseSet* SL = FPSchematicAuthoredPoses("EyeL");
+        const FPSchematicPoseSet* SR = FPSchematicAuthoredPoses("EyeR");
+        if (!SL || !SR) return false;
+        // Master blueprint: the far eye is NOT hidden at the 3/4 — it swaps to
+        // the narrower Eye_Far_Narrow card (EyeL carries it at +yaw) while the
+        // near eye keeps Eye_Near_3Q (EyeR at +yaw); the fold only happens at
+        // the 90 hard swap. On the LEFT half the partner's ring is mirrored,
+        // so the −45 view is the exact mirror of +45 (near on the left).
+        return SameRing(FPOrientationOutline("EyeR", Find("EyeR").Outline,
+                FPDepthClass::Front, 45.0, 0.0), SR->P45, Eps)
+            && SameRing(FPOrientationOutline("EyeL", Find("EyeL").Outline,
+                FPDepthClass::Front, 45.0, 0.0), SL->P45, Eps)
+            && SameRing(FPOrientationOutline("EyeR", Find("EyeR").Outline,
+                FPDepthClass::Front, -45.0, 0.0), MirrorRing(SL->P45), Eps)
+            && SameRing(FPOrientationOutline("EyeL", Find("EyeL").Outline,
+                FPDepthClass::Front, -45.0, 0.0), MirrorRing(SR->P45), Eps)
+            // both 3/4 rings are mild compresses, not copies of the front,
+            // and the FAR card is genuinely narrower than the near one
+            && W(SL->P45) < W(Find("EyeL").Outline)
+            && W(SL->P45) > 0.45 * W(Find("EyeL").Outline)   // far eye 3/4 hand-authored ~0.50
+            && W(SL->P45) < W(SR->P45);
     }());
-    // Phase 5: the slide ordering now only governs the FORMULA (non-authored)
-    // parts — the authored silhouettes get their exact state shapes instead.
-    TEST("orient: formula parts keep Z-depth slide ordering", [&]() {
-        const double NoseD = std::abs(CX(FPOrientationOutline("Nose", Find("Nose").Outline, FPDepthClass::Front, 90.0, 0.0)) - CX(Find("Nose").Outline));
-        const double EyeD = std::abs(CX(FPOrientationOutline("EyeR", Find("EyeR").Outline, FPDepthClass::Front, 90.0, 0.0)) - CX(Find("EyeR").Outline));
-        const double MouthD = std::abs(CX(FPOrientationOutline("Mouth", Find("Mouth").Outline, FPDepthClass::Front, 90.0, 0.0)) - CX(Find("Mouth").Outline));
-        return NoseD > EyeD && EyeD > MouthD;
+    // Phase 8: between the state centers the cards slide RIGIDLY toward the
+    // far edge (parallax translation, uniform lines preserved). The velocity
+    // hierarchy governs the travel: Nose (+100%) > Eyes (+60%) > Face Base
+    // (0% anchor). The slide is the smooth part; the swap is the pose change
+    // at the boundary.
+    TEST("orient: cards slide toward the far edge between centers (parallax)", [&]() {
+        const double N0 = CX(Find("Nose").Outline);
+        const double ER0 = CX(Find("EyeR").Outline);
+        const double H0 = CX(Find("Head").Outline);
+        const double BN = CX(FPOrientationOutline("Nose", Find("Nose").Outline,
+            FPDepthClass::Front, 30.0, 0.0));
+        const double ER = CX(FPOrientationOutline("EyeR", Find("EyeR").Outline,
+            FPDepthClass::Front, 30.0, 0.0));
+        const double H1 = CX(FPOrientationOutline("Head", Find("Head").Outline,
+            FPDepthClass::Base, 30.0, 0.0));
+        const double BNL = CX(FPOrientationOutline("Nose", Find("Nose").Outline,
+            FPDepthClass::Front, -30.0, 0.0));
+        if (!(BN > N0)) return false;          // +yaw slides right
+        if (!(BNL < N0)) return false;         // -yaw slides left (mirror)
+        if (!(BN - N0 > ER - ER0)) return false;   // velocity hierarchy
+        if (!(ER - ER0 > H1 - H0)) return false;   // face base is the anchor
+        return true;
+    }());
+    // Phase 5/7: the slide ordering now only governs the FORMULA (non-canonical)
+    // parts — the authored matrix gets its exact state shapes instead. At the
+    // profile the near eye is the authored single-lash sliver (Eye_Profile),
+    // the far-side pair folds to empty, and the centerline features (nose,
+    // mouth) DROP into the profile contour (Part IV Zone 4).
+    TEST("orient: profile shows the authored sliver, drops nose and mouth", [&]() {
+        const FPSchematicPoseSet* ER = FPSchematicAuthoredPoses("EyeR");
+        if (!ER) return false;
+        return SameRing(FPOrientationOutline("EyeR", Find("EyeR").Outline,
+                FPDepthClass::Front, 90.0, 0.0), ER->P90, Eps)
+            && W(ER->P90) < 0.08   // single lash line, not the full eye
+            && FPOrientationOutline("Nose", Find("Nose").Outline,
+                FPDepthClass::Front, 90.0, 0.0).empty()
+            && FPOrientationOutline("Mouth", Find("Mouth").Outline,
+                FPDepthClass::Front, 90.0, 0.0).empty()
+            && FPOrientationOutline("EyeL", Find("EyeL").Outline,
+                FPDepthClass::Front, 90.0, 0.0).empty();
     }());
     TEST("orient: slide peaks follow the Z-depth plane (pure)",
         FPYawSlidePeak(FPZDepth::Closest) == FPOrientationParams::NoseSlide
@@ -10153,13 +11700,20 @@ void TestPhase2Orientation() {
             && std::abs(FPOrientationVerticalShift("Nose", 45.0)) > std::abs(FPOrientationVerticalShift("EyeR", 45.0))
             && std::abs(FPOrientationVerticalShift("EyeR", 45.0)) > std::abs(FPOrientationVerticalShift("Head", 45.0));
     }());
-    TEST("orient: top view sinks the near features", [&]() {
-        const double C0 = CY(Find("EyeR").Outline);
-        return CY(FPOrientationOutline("EyeR", Find("EyeR").Outline, FPDepthClass::Front, 0.0, 90.0)) > C0 + 0.05;
+    TEST("orient: Top drops every feature card (Part V.2 crown swap)", [&]() {
+        return FPOrientationOutline("EyeR", Find("EyeR").Outline,
+                FPDepthClass::Front, 0.0, 90.0).empty()
+            && FPOrientationOutline("Chin", Find("Chin").Outline,
+                FPDepthClass::Base, 0.0, 90.0).empty()
+            && FPOrientationOutline("Nose", Find("Nose").Outline,
+                FPDepthClass::Front, 0.0, 90.0).empty();
     }());
-    TEST("orient: top view tucks the V-chin up", [&]() {
-        const double C0 = CY(Find("Chin").Outline);
-        return CY(FPOrientationOutline("Chin", Find("Chin").Outline, FPDepthClass::Base, 0.0, 90.0)) < C0 - 0.03;
+    TEST("orient: Bottom keeps the feature cards frozen (only Top drops)", [&]() {
+        const double C0 = CY(Find("EyeR").Outline);
+        return !FPOrientationOutline("EyeR", Find("EyeR").Outline,
+                FPDepthClass::Front, 0.0, -90.0).empty()
+            && std::abs(CY(FPOrientationOutline("EyeR", Find("EyeR").Outline,
+                FPDepthClass::Front, 0.0, -90.0)) - C0) < Eps;
     }());
 
     // Far-side folding: a profile shows exactly ONE eye/ear/cheek.
@@ -10187,12 +11741,19 @@ void TestPhase2Orientation() {
         return P90 < 0.8 * FrontW;
     }());
 
-    // Z-1 nose darts toward the far edge at the profile (the closest layer
-    // slides furthest, per the camera-translation parallax).
-    TEST("orient: nose darts toward the far edge at profile", [&]() {
-        const double C0 = CX(Find("Nose").Outline);
-        return CX(FPOrientationOutline("Nose", Find("Nose").Outline, FPDepthClass::Front, 90.0, 0.0)) < C0 - 0.05
-            && CX(FPOrientationOutline("Nose", Find("Nose").Outline, FPDepthClass::Front, -90.0, 0.0)) > C0 + 0.05;
+    // Z-1 nose darts toward the turn side at the 3/4 (the closest layer
+    // slides furthest, per the camera-translation parallax) and DROPS into
+    // the profile contour at 90 (Part IV Zone 4).
+    TEST("orient: nose darts at 3/4, drops into the profile contour at 90", [&]() {
+        const FPSchematicPoseSet* S = FPSchematicAuthoredPoses("Nose");
+        if (!S) return false;
+        return FPOrientationOutline("Nose", Find("Nose").Outline,
+                FPDepthClass::Front, 90.0, 0.0).empty()
+            && FPOrientationOutline("Nose", Find("Nose").Outline,
+                FPDepthClass::Front, -90.0, 0.0).empty()
+            && SameRing(FPOrientationOutline("Nose", Find("Nose").Outline,
+                FPDepthClass::Front, 45.0, 0.0), S->P45, Eps)
+            && CX(S->P45) > 0.5 + 0.01;   // the indicator rides the turn side
     }());
 
     // Top/Bottom squash vertically.
@@ -10212,10 +11773,11 @@ void TestPhase2Orientation() {
         return std::abs(Wr - Wl) < 1e-6
             && std::abs((HR - HC) - (HC - HL)) < 1e-6;
     }());
-    TEST("orient: far-side fold dots mirror across the turn", [&]() {
-        const double R = CX(FPOrientationOutline("EyeL", Find("EyeL").Outline, FPDepthClass::Front, 90.0, 0.0));
-        const double L = CX(FPOrientationOutline("EyeR", Find("EyeR").Outline, FPDepthClass::Front, -90.0, 0.0));
-        return std::abs((1.0 - R) - L) < Eps;
+    TEST("orient: far-side member hides at the profile on both sides", [&]() {
+        return FPOrientationOutline("EyeL", Find("EyeL").Outline,
+                FPDepthClass::Front, 90.0, 0.0).empty()
+            && FPOrientationOutline("EyeR", Find("EyeR").Outline,
+                FPDepthClass::Front, -90.0, 0.0).empty();
     }());
     TEST("orient: 3/4 mirror preserves width symmetry", [&]() {
         const double Wr = W(FPOrientationOutline("EyeR", Find("EyeR").Outline, FPDepthClass::Front, 45.0, 0.0));
@@ -10249,15 +11811,22 @@ void TestPhase2Orientation() {
     }());
 }
 
-// Phase 5: authored per-state key silhouettes. The silhouette parts
-// (Head/Bangs/Hair/BackHair) carry EXACT authored 2D layouts at the state
-// centers (0/45/90/135/180 + Top/Bottom) because a profile silhouette is
+// Phase 5 + 7 + 2: authored per-state key silhouettes AND the feature-card
+// pose matrix. The 17 canonical parts carry EXACT authored 2D layouts at the
+// state centers (0/45/90/135/180 + Top/Bottom) because a profile silhouette is
 // STRUCTURALLY different from a squished front (forehead-nose-chin vs
 // skull-nape) and no continuous formula can produce it — the old squish made
 // BackHair shrink in place under the head at the profile instead of trailing
-// behind the skull. FPOrientationOutline morphs (smoothstep) between the
-// bracketing authored poses for these parts and keeps the squish/slide
-// formula for every other part. Negative + edge-case coverage included.
+// behind the skull. Phase 7 FREEZES the geometry: FPOrientationOutline SNAPS
+// to the nearest view's key pose (exact pose at state centers, nearest pose
+// elsewhere, no interpolation); Phase 2 extended the matrix to the 13 feature
+// cards (eyes/brows/cheeks/ears + nose/mouth/teeth/chin/neck) with the
+// per-zone rings of Parts IV/V (3/4 compression, profile slivers, profile
+// drops, Top drops, back-fuzz ears), and the per-state visibility gate runs
+// BEFORE resolution so a hidden card is empty even for an authored part.
+// Parts outside the canonical 17 keep the frozen front glyph or go empty,
+// and pitch flips to the Top/Bottom pose at the +-60 threshold. Negative
+// + edge-case coverage included.
 void TestAuthoredOrientation() {
     printf("\n=== AuthoredOrientation ===\n");
     using namespace FPSchematic;
@@ -10285,26 +11854,28 @@ void TestAuthoredOrientation() {
     };
     const double Eps = 1e-9;
 
-    // Presence / absence: the four silhouette parts are authored; every
-    // anatomical feature and unknown/empty name falls back (nullptr).
+    // Presence / absence: the four silhouette parts are authored; Phase 2
+    // added the 13 feature-card matrices; unknown/empty names stay nullptr.
     TEST("authored: four silhouette parts carry authored poses",
         FPSchematicAuthoredPoses("Head") && FPSchematicAuthoredPoses("Bangs")
         && FPSchematicAuthoredPoses("Hair") && FPSchematicAuthoredPoses("BackHair"));
-    TEST("authored: anatomical features have NO authored poses (fallback)",
-        !FPSchematicAuthoredPoses("Nose") && !FPSchematicAuthoredPoses("EyeR")
-        && !FPSchematicAuthoredPoses("EyeL") && !FPSchematicAuthoredPoses("BrowL")
-        && !FPSchematicAuthoredPoses("BrowR") && !FPSchematicAuthoredPoses("Mouth")
-        && !FPSchematicAuthoredPoses("Teeth") && !FPSchematicAuthoredPoses("Chin")
-        && !FPSchematicAuthoredPoses("CheekL") && !FPSchematicAuthoredPoses("CheekR")
-        && !FPSchematicAuthoredPoses("EarL") && !FPSchematicAuthoredPoses("EarR")
-        && !FPSchematicAuthoredPoses("Neck"));
-    TEST("authored: empty / null / unknown names are nullptr",
+    TEST("authored: every anatomical feature carries a pose matrix (Phase 2)",
+        FPSchematicAuthoredPoses("Nose") && FPSchematicAuthoredPoses("EyeR")
+        && FPSchematicAuthoredPoses("EyeL") && FPSchematicAuthoredPoses("BrowL")
+        && FPSchematicAuthoredPoses("BrowR") && FPSchematicAuthoredPoses("Mouth")
+        && FPSchematicAuthoredPoses("Teeth") && FPSchematicAuthoredPoses("Chin")
+        && FPSchematicAuthoredPoses("CheekL") && FPSchematicAuthoredPoses("CheekR")
+        && FPSchematicAuthoredPoses("EarL") && FPSchematicAuthoredPoses("EarR")
+        && FPSchematicAuthoredPoses("Neck"));
+    TEST("authored: outside the canonical 17 nothing is authored",
         FPSchematicAuthoredPoses("") == nullptr
         && FPSchematicAuthoredPoses(nullptr) == nullptr
         && FPSchematicAuthoredPoses("Bogus") == nullptr);
 
     // P0 == the front glyph exactly (the morph identity is the real outline).
-    const char* AuthoredNames[] = { "Head", "Bangs", "Hair", "BackHair" };
+    const char* AuthoredNames[] = { "Head", "Bangs", "Hair", "BackHair",
+        "EyeL", "EyeR", "BrowL", "BrowR", "CheekL", "CheekR", "EarL", "EarR",
+        "Nose", "Mouth", "Teeth", "Chin", "Neck" };
     auto CheckP0 = [&]() -> bool {
         for (const char* N : AuthoredNames)
         {
@@ -10348,8 +11919,9 @@ void TestAuthoredOrientation() {
     auto CheckYawKeys = [&]() -> bool {
         const FPSchematicPoseSet* S = FPSchematicAuthoredPoses("Head");
         const std::vector<std::pair<double, const std::vector<P>*>> Keys = {
-            { 0.0, &S->P0 }, { 45.0, &S->P45 }, { 90.0, &S->P90 },
-            { 135.0, &S->P135 }, { 180.0, &S->P180 } };
+            { 0.0, &S->P0 }, { 22.5, &S->P0 },    // NarrowR reuses the front ring
+            { 45.0, &S->P45 }, { 67.5, &S->P45 }, // SliverR reuses the 3/4 ring
+            { 90.0, &S->P90 }, { 135.0, &S->P135 }, { 180.0, &S->P180 } };
         for (const auto& K : Keys)
             if (!SameRing(FPOrientationOutline("Head", Find("Head").Outline,
                     FPDepthClass::Base, K.first, 0.0), *K.second, Eps)) return false;
@@ -10373,16 +11945,30 @@ void TestAuthoredOrientation() {
         return true;
     }());
 
-    // Mirror: the negative-yaw half is the exact horizontal flip of +yaw.
+    // Mirror: the negative-yaw half is the exact horizontal flip of +yaw. The
+    // left-half states mirror the right-half ring (FPSchematicStatePoseOut);
+    // a PAIRED part resolves its PARTNER's ring on the left half, so the
+    // comparison is made against the partner's +yaw output — the −45 VIEW is
+    // the mirror of the +45 VIEW (near card on the left). A state whose side
+    // is HIDDEN has no outline to mirror (the far-side pair at its profile,
+    // the centerline features at 2/6, everything walk-behind) — skip those
+    // pairs instead of comparing empties.
     auto CheckMirror = [&]() -> bool {
-        const double Angles[] = { 45.0, 90.0, 135.0 };
+        const double Angles[] = { 22.5, 45.0, 67.5, 90.0, 135.0 };
         for (const char* N : AuthoredNames)
             for (double A : Angles)
             {
-                const std::vector<P> R = FPOrientationOutline(N, Find(N).Outline,
-                    Find(N).DepthClass, A, 0.0);
+                const char* RN = N;
+                if (FPSchematicIsPairedPart(N))
+                {
+                    const char* P = FPSchematicPairPartner(N);
+                    if (P) RN = P;
+                }
+                const std::vector<P> R = FPOrientationOutline(RN, Find(RN).Outline,
+                    Find(RN).DepthClass, A, 0.0);
                 const std::vector<P> L = FPOrientationOutline(N, Find(N).Outline,
                     Find(N).DepthClass, -A, 0.0);
+                if (R.empty() || L.empty()) continue;
                 if (R.size() != L.size()) return false;
                 for (size_t i = 0; i < R.size(); ++i)
                     if (std::abs(L[i].X - (1.0 - R[i].X)) > Eps
@@ -10405,23 +11991,28 @@ void TestAuthoredOrientation() {
 
     // Pitch blend: exact at yaw 0, faded to zero at the back (the profile
     // keeps its authored profile shape under pitch).
-    TEST("authored: pitch blend is exact at yaw 0", [&]() {
+    // Pitch below the top/bottom pose threshold keeps the yaw pose — the only
+    // per-frame effect is the rigid encroach shift (every vertex by the same
+    // dy, so the card keeps its authored shape). At/above the threshold the
+    // authored Top/Bottom pose wins exactly.
+    TEST("authored: pitch below the threshold keeps the yaw pose (rigid shift)", [&]() {
         const FPSchematicPoseSet* S = FPSchematicAuthoredPoses("Head");
         const std::vector<P> O = FPOrientationOutline("Head", Find("Head").Outline,
             FPDepthClass::Base, 0.0, 45.0);
+        const double Dy = FPOrientationVerticalShift("Head", 45.0);
+        if (O.size() != S->P0.size()) return false;
         for (size_t i = 0; i < O.size(); ++i)
         {
-            const double Ex = (S->P0[i].X + S->PTop[i].X) * 0.5;
-            const double Ey = (S->P0[i].Y + S->PTop[i].Y) * 0.5;
-            if (std::abs(O[i].X - Ex) > Eps || std::abs(O[i].Y - Ey) > Eps)
-                return false;
+            if (std::abs(O[i].X - S->P0[i].X) > Eps) return false;
+            if (std::abs(O[i].Y - (S->P0[i].Y + Dy)) > Eps) return false;
         }
-        return true;
+        return SameRing(FPOrientationOutline("Head", Find("Head").Outline,
+            FPDepthClass::Base, 0.0, 61.0), S->PTop, Eps);
     }());
-    TEST("authored: pitch blend fades to zero at the back", [&]() {
+    TEST("authored: at pitch >= threshold the top pose wins (pitch bracket)", [&]() {
         const FPSchematicPoseSet* S = FPSchematicAuthoredPoses("Head");
         return SameRing(FPOrientationOutline("Head", Find("Head").Outline,
-            FPDepthClass::Base, 180.0, 90.0), S->P180, Eps);
+            FPDepthClass::Base, 180.0, 90.0), S->PTop, Eps);
     }());
     TEST("authored: profile shape survives pitch at high yaw (no top-view smear)", [&]() {
         const std::vector<P> O = FPOrientationOutline("Head", Find("Head").Outline,
@@ -10430,26 +12021,37 @@ void TestAuthoredOrientation() {
         return W(O) < 0.80 && W(O) > 0.2;
     }());
 
-    // Smoothstep continuity at the state centers (no jump between segments).
-    TEST("authored: morph is continuous at the 90 key", [&]() {
+    // The pose key is a HARD swap, not a morph: just below 90 the 3/4 pose
+    // still shows (slid to its peak), exactly at 90 the profile pose takes
+    // over (slide 0) — there is never a vertex blend between the two rings.
+    TEST("authored: the 90 key is a hard pose swap (never a morph)", [&]() {
+        const FPSchematicPoseSet* S = FPSchematicAuthoredPoses("Head");
+        const double Peak = FPSchematicParallaxSlidePeak("Head");
         const std::vector<P> Lo = FPOrientationOutline("Head", Find("Head").Outline,
-            FPDepthClass::Base, 89.99, 0.0);
-        const std::vector<P> Hi = FPOrientationOutline("Head", Find("Head").Outline,
-            FPDepthClass::Base, 90.01, 0.0);
+            FPDepthClass::Base, 89.99, 0.0);   // Sliver zone, near the swap
         const std::vector<P> K = FPOrientationOutline("Head", Find("Head").Outline,
-            FPDepthClass::Base, 90.0, 0.0);
+            FPDepthClass::Base, 90.0, 0.0);    // profile key, exact
+        if (Lo.size() != S->P45.size() || K.size() != S->P90.size()) return false;
         for (size_t i = 0; i < K.size(); ++i)
-            if (std::abs(Lo[i].X - K[i].X) > 1e-3
-                || std::abs(Hi[i].X - K[i].X) > 1e-3) return false;
+            if (std::abs(K[i].X - S->P90[i].X) > Eps
+                || std::abs(K[i].Y - S->P90[i].Y) > Eps) return false;
+        for (size_t i = 0; i < Lo.size(); ++i)
+            if (std::abs(Lo[i].X - (S->P45[i].X + Peak)) > 1e-3) return false;
         return true;
     }());
 
-    // Negative controls: the formula fallback is untouched for non-authored
-    // parts, and an empty front still yields an empty result.
-    TEST("authored: formula fallback unchanged (nose still darts)", [&]() {
-        const double C0 = CX(Find("Nose").Outline);
-        return CX(FPOrientationOutline("Nose", Find("Nose").Outline,
-            FPDepthClass::Front, 90.0, 0.0)) < C0 - 0.05;
+    // Negative controls: the formula fallback is untouched for parts outside
+    // the canonical 17, and an empty front still yields an empty result.
+    TEST("authored: centerline features drop at the profile, eyes sliver", [&]() {
+        const FPSchematicPoseSet* ER = FPSchematicAuthoredPoses("EyeR");
+        if (!ER) return false;
+        return FPOrientationOutline("Nose", Find("Nose").Outline,
+                FPDepthClass::Front, 90.0, 0.0).empty()
+            && FPOrientationOutline("Mouth", Find("Mouth").Outline,
+                FPDepthClass::Front, 90.0, 0.0).empty()
+            && SameRing(FPOrientationOutline("EyeR", Find("EyeR").Outline,
+                FPDepthClass::Front, 90.0, 0.0), ER->P90, Eps)
+            && W(ER->P90) < 0.08;   // the profile eye is a single-lash sliver
     }());
     TEST("authored: empty front returns empty even for authored names", [&]() {
         const std::vector<P> E;
@@ -10537,12 +12139,12 @@ void TestAnchorClass() {
         }
         return true;
     }());
-    TEST("anchor: BridgeSafe parts never carry authored poses", [&]() {
-        for (const FPSchematicPart& P : Parts)
-        {
-            if (FPSchematicAnchorClassForPart(P.Name) == FPSchematicAnchorClass::BridgeSafe
-                && FPSchematicAuthoredPoses(P.Name)) return false;
-        }
+    TEST("anchor: every canonical part carries an authored pose matrix (Phase 2)", [&]() {
+        // Phase 2 authored the FEATURE cards too — the pose table is the full
+        // 17-part matrix, so AnchorCritical and BridgeSafe parts alike resolve
+        // per-zone rings (only unknown names fall back to the formula).
+        for (const char* const* N = FPSchematicAllAuthoredNames(); *N; ++N)
+            if (!FPSchematicAuthoredPoses(*N)) return false;
         return true;
     }());
     TEST("anchor: every silhouette part is AnchorCritical (read-carrier invariant)", [&]() {
@@ -10563,100 +12165,129 @@ void TestPhase3Visibility() {
     printf("\n=== Phase3 Visibility ===\n");
     using namespace FPSchematic;
 
-    const double CenterYaw[10] = { 0.0, 45.0, 90.0, 135.0, 180.0, -135.0,
-        -90.0, -45.0, 0.0, 0.0 };
+    const double CenterYaw[14] = { 0.0, 22.5, 45.0, 67.5, 90.0, 135.0, 180.0,
+        -135.0, -90.0, -67.5, -45.0, -22.5, 0.0, 0.0 };
     TEST("vis: state center-yaw table matches default zone centers", [&]() {
-        for (int S = 0; S < 10; ++S)
+        for (int S = 0; S < 14; ++S)
             if (fabs(FPSchematicStateCenterYaw(S) - CenterYaw[S]) > 1e-9) return false;
         return true;
     }());
     TEST("vis: Top/Bottom park at pitch +-90, all others 0",
-        FPSchematicStateCenterPitch(8) == 90.0
-        && FPSchematicStateCenterPitch(9) == -90.0
+        FPSchematicStateCenterPitch(12) == 90.0
+        && FPSchematicStateCenterPitch(13) == -90.0
         && FPSchematicStateCenterPitch(0) == 0.0
         && FPSchematicStateCenterPitch(3) == 0.0);
     TEST("vis: walk-behind exactly BackRight/Back/BackLeft (|yaw|>=135)",
-        FPSchematicStateIsWalkBehind(3) && FPSchematicStateIsWalkBehind(4)
-        && FPSchematicStateIsWalkBehind(5)
+        FPSchematicStateIsWalkBehind(5) && FPSchematicStateIsWalkBehind(6)
+        && FPSchematicStateIsWalkBehind(7)
         && !FPSchematicStateIsWalkBehind(0) && !FPSchematicStateIsWalkBehind(1)
-        && !FPSchematicStateIsWalkBehind(2) && !FPSchematicStateIsWalkBehind(6)
-        && !FPSchematicStateIsWalkBehind(7) && !FPSchematicStateIsWalkBehind(8)
-        && !FPSchematicStateIsWalkBehind(9));
+        && !FPSchematicStateIsWalkBehind(2) && !FPSchematicStateIsWalkBehind(3)
+        && !FPSchematicStateIsWalkBehind(4) && !FPSchematicStateIsWalkBehind(8)
+        && !FPSchematicStateIsWalkBehind(9) && !FPSchematicStateIsWalkBehind(10)
+        && !FPSchematicStateIsWalkBehind(11) && !FPSchematicStateIsWalkBehind(12)
+        && !FPSchematicStateIsWalkBehind(13));
     const auto SilhouetteAlwaysVisible = [&]() {
         const char* Sil[4] = { "Head", "Bangs", "Hair", "BackHair" };
-        for (int S = 0; S < 10; ++S)
+        for (int S = 0; S < 14; ++S)
             for (const char* L : Sil)
                 if (!FPSchematicLayerVisibleInState(S, L)) return false;
         return true;
     };
-    TEST("vis: silhouette mass renders in ALL 10 states", SilhouetteAlwaysVisible());
+    TEST("vis: silhouette mass renders in ALL 14 states", SilhouetteAlwaysVisible());
     TEST("vis: near eye/brow/cheek/ear visible at its profile, far side folds", [&]() {
-        // RightProfile (state 2, yaw +90): R pair near (visible), L pair folds.
-        if (!FPSchematicLayerVisibleInState(2, "EyeR")) return false;
-        if (!FPSchematicLayerVisibleInState(2, "BrowR")) return false;
-        if (!FPSchematicLayerVisibleInState(2, "CheekR")) return false;
-        if (!FPSchematicLayerVisibleInState(2, "EarR")) return false;
-        if (FPSchematicLayerVisibleInState(2, "EyeL")) return false;
-        if (FPSchematicLayerVisibleInState(2, "BrowL")) return false;
-        if (FPSchematicLayerVisibleInState(2, "CheekL")) return false;
-        if (FPSchematicLayerVisibleInState(2, "EarL")) return false;
-        // LeftProfile (state 6, yaw -90): mirror.
-        if (!FPSchematicLayerVisibleInState(6, "EyeL")) return false;
-        if (!FPSchematicLayerVisibleInState(6, "EarL")) return false;
-        if (FPSchematicLayerVisibleInState(6, "EyeR")) return false;
-        if (FPSchematicLayerVisibleInState(6, "EarR")) return false;
+        // RightProfile (state 4, yaw +90): R pair near (visible), L pair folds.
+        if (!FPSchematicLayerVisibleInState(4, "EyeR")) return false;
+        if (!FPSchematicLayerVisibleInState(4, "BrowR")) return false;
+        if (!FPSchematicLayerVisibleInState(4, "CheekR")) return false;
+        if (!FPSchematicLayerVisibleInState(4, "EarR")) return false;
+        if (FPSchematicLayerVisibleInState(4, "EyeL")) return false;
+        if (FPSchematicLayerVisibleInState(4, "BrowL")) return false;
+        if (FPSchematicLayerVisibleInState(4, "CheekL")) return false;
+        if (FPSchematicLayerVisibleInState(4, "EarL")) return false;
+        // LeftProfile (state 8, yaw -90): mirror.
+        if (!FPSchematicLayerVisibleInState(8, "EyeL")) return false;
+        if (!FPSchematicLayerVisibleInState(8, "EarL")) return false;
+        if (FPSchematicLayerVisibleInState(8, "EyeR")) return false;
+        if (FPSchematicLayerVisibleInState(8, "EarR")) return false;
         return true;
     }());
-    const auto BothPairsFrontStates = [&]() {
-        const int FrontStates[3] = { 0, 8, 9 };
-        for (int S : FrontStates)
+    const auto BothPairsFrontBottomStates = [&]() {
+        const int FrontBottom[2] = { 0, 13 };
+        const int TopOnly[1] = { 12 };
+        for (int S : FrontBottom)
         {
             if (!FPSchematicLayerVisibleInState(S, "EyeL")) return false;
             if (!FPSchematicLayerVisibleInState(S, "EyeR")) return false;
             if (!FPSchematicLayerVisibleInState(S, "EarL")) return false;
             if (!FPSchematicLayerVisibleInState(S, "EarR")) return false;
         }
-        return true;
-    };
-    TEST("vis: both pairs visible at front, Top and Bottom", BothPairsFrontStates());
-    const auto BackHalfPairsVisible = [&]() {
-        // BackRight/Back (states 3,4): right side stays near (the placeholder
-        // folds the far pair through the back), left folds. BackLeft (state 5)
-        // mirrors: left side near, right folds.
-        for (int S : { 3, 4 })
+        // Part V.2: at the Top View the crown converges to the near-featureless
+        // silhouette — the eye cards drop to 0% with the rest of the Primary
+        // Features, but the ears (base-anchored projections) still read.
+        for (int S : TopOnly)
         {
             if (FPSchematicLayerVisibleInState(S, "EyeL")) return false;
-            if (FPSchematicLayerVisibleInState(S, "EarL")) return false;
-            if (!FPSchematicLayerVisibleInState(S, "EyeR")) return false;
+            if (FPSchematicLayerVisibleInState(S, "EyeR")) return false;
+            if (!FPSchematicLayerVisibleInState(S, "EarL")) return false;
             if (!FPSchematicLayerVisibleInState(S, "EarR")) return false;
         }
-        if (FPSchematicLayerVisibleInState(5, "EyeR")) return false;
-        if (FPSchematicLayerVisibleInState(5, "EarR")) return false;
-        if (!FPSchematicLayerVisibleInState(5, "EyeL")) return false;
-        if (!FPSchematicLayerVisibleInState(5, "EarL")) return false;
         return true;
     };
-    TEST("vis: far pair folds the WHOLE back half (states 3,4,5 keep near side)",
-        BackHalfPairsVisible());
-    const auto WalkBehindHidesFeatures = [&]() {
-        const int HiddenStates[3] = { 3, 4, 5 };
-        const int ShownStates[7] = { 0, 1, 2, 6, 7, 8, 9 };
-        const char* Feat[5] = { "Nose", "Mouth", "Teeth", "Chin", "Neck" };
-        for (int S : HiddenStates)
+    TEST("vis: eye pairs at front/bottom, ears all — Top drops the eyes",
+        BothPairsFrontBottomStates());
+    const auto BackHalfPairsHidden = [&]() {
+        // BackRight/Back/BackLeft (states 5,6,7) hide EVERY facial feature card
+        // — the near-side member too, so front feature art cannot edge-peek
+        // around the skull ("the near eye stays at the back" fallback is gone).
+        // But the EARS PERSIST as flat back-fuzz projection planes: they are
+        // AnchorCritical read-carriers (base-anchored projections), NOT
+        // features, so the back read is the silhouette back poses + the ears.
+        const char* Feat[6] = { "EyeL", "EyeR", "BrowL", "BrowR",
+            "CheekL", "CheekR" };
+        for (int S : { 5, 6, 7 })
             for (const char* L : Feat)
                 if (FPSchematicLayerVisibleInState(S, L)) return false;
-        for (int S : ShownStates)
-            for (const char* L : Feat)
+        for (int S : { 5, 6, 7 })
+            for (const char* L : { "EarL", "EarR" })
                 if (!FPSchematicLayerVisibleInState(S, L)) return false;
         return true;
     };
-    TEST("vis: walk-behind hides non-paired features (no art edge-peek)",
+    TEST("vis: face cards hide walk-behind, ears persist (flat back-fuzz)",
+        BackHalfPairsHidden());
+    const auto WalkBehindHidesFeatures = [&]() {
+        const char* Center[3] = { "Nose", "Mouth", "Teeth" };
+        const char* Surface[2] = { "Chin", "Neck" };
+        const int Hidden[3] = { 5, 6, 7 };
+        const int Profile[2] = { 4, 8 };
+        // Part IV Zone 4: the centerline features DROP into the profile
+        // contour line at the profile states (4/8) in addition to the
+        // walk-behind fade; Part V.2 adds the Top View (12).
+        for (int S : Hidden)
+            for (const char* L : Center)
+                if (FPSchematicLayerVisibleInState(S, L)) return false;
+        for (int S : Profile)
+            for (const char* L : Center)
+                if (FPSchematicLayerVisibleInState(S, L)) return false;
+        if (FPSchematicLayerVisibleInState(12, "Nose")) return false;
+        if (FPSchematicLayerVisibleInState(12, "Mouth")) return false;
+        if (FPSchematicLayerVisibleInState(12, "Teeth")) return false;
+        // The face-surface cards keep a profile ring but drop walk-behind and
+        // at the Top View (the crown silhouette read).
+        for (int S : { 0, 1, 2, 3, 4, 8, 9, 10, 11, 13 })
+            for (const char* L : Surface)
+                if (!FPSchematicLayerVisibleInState(S, L)) return false;
+        for (int S : { 5, 6, 7, 12 })
+            for (const char* L : Surface)
+                if (FPSchematicLayerVisibleInState(S, L)) return false;
+        return true;
+    };
+    TEST("vis: nose/mouth drop at profile + Top, surface cards keep profiles",
         WalkBehindHidesFeatures());
     const auto AllLayersResolveOrder = [&]() {
         const char* All[17] = { "Head", "Bangs", "Hair", "BackHair", "EyeL",
             "EyeR", "BrowL", "BrowR", "CheekL", "CheekR", "EarL", "EarR",
             "Nose", "Mouth", "Teeth", "Chin", "Neck" };
-        for (int S = 0; S < 10; ++S)
+        for (int S = 0; S < 14; ++S)
             for (const char* L : All)
             {
                 const int O = FPSchematicLayerOrderInState(S, L);
@@ -10669,9 +12300,11 @@ void TestPhase3Visibility() {
     TEST("vis: every RENDERED layer resolves an order in [1,5], hidden = -1",
         AllLayersResolveOrder());
     const auto NearSideOrderParity = [&]() {
-        const int TurnStates[4] = { 1, 2, 6, 7 };
+        const int TurnStates[2] = { 2, 10 };
         // The per-state Z-order table only changes WHICH layers render; the
-        // plane ranking of the survivors is the front FPZDepth order.
+        // plane ranking of the survivors is the front FPZDepth order. (The
+        // profile states 4/8 drop the nose into the contour, so its order is
+        // -1 there — only the 3/4 turns keep the nose in the read.)
         for (int S : TurnStates)
             if (FPSchematicLayerOrderInState(S, "Nose")
                 > FPSchematicLayerOrderInState(S, "Head")) return false;
@@ -10684,8 +12317,11 @@ void TestPhase3Visibility() {
             < FPSchematicLayerOrderInState(0, "Head")
         && FPSchematicLayerOrderInState(0, "Head")
             < FPSchematicLayerOrderInState(0, "BackHair")
-        && FPSchematicLayerOrderInState(4, "Hair")
-            < FPSchematicLayerOrderInState(4, "BackHair"));
+        // Master blueprint Part III Zone 5: at the TRUE back the Back Hair
+        // shifts to Layer 1 — from behind it IS the character's front plane,
+        // so it renders ON TOP of the back view's side hair.
+        && FPSchematicLayerOrderInState(6, "BackHair")
+            < FPSchematicLayerOrderInState(6, "Hair"));
     TEST("vis: null / empty names default to hidden",
         !FPSchematicLayerVisibleInState(0, nullptr)
         && !FPSchematicLayerVisibleInState(0, "")
@@ -10694,9 +12330,10 @@ void TestPhase3Visibility() {
         && !FPSchematicLayerVisibleInTag(0, ""));
     const auto UnknownIsGenericBridgeLayer = [&]() {
         // An unrecognized name is a non-paired BridgeSafe layer: rendered in
-        // the front/3-4/profile states, hidden only walk-behind.
-        const int Shown[7] = { 0, 1, 2, 6, 7, 8, 9 };
-        const int Hidden[3] = { 3, 4, 5 };
+        // the front/3-4/profile/bottom states, hidden at the Top View and
+        // walk-behind.
+        const int Shown[10] = { 0, 1, 2, 3, 4, 8, 9, 10, 11, 13 };
+        const int Hidden[4] = { 5, 6, 7, 12 };
         for (int S : Shown)
             if (!FPSchematicLayerVisibleInState(S, "Bogus")) return false;
         for (int S : Hidden)
@@ -10707,17 +12344,17 @@ void TestPhase3Visibility() {
         UnknownIsGenericBridgeLayer());
     const auto TagAnchorAlwaysVisible = [&]() {
         const char* Anchor[5] = { "Head", "Bangs", "Hair", "BackHair", "Ears" };
-        for (int S = 0; S < 10; ++S)
+        for (int S = 0; S < 14; ++S)
             for (const char* T : Anchor)
                 if (!FPSchematicLayerVisibleInTag(S, T)) return false;
         return true;
     };
-    TEST("vis: tag anchor (silhouette + Ears) renders in ALL 10 states",
+    TEST("vis: tag anchor (silhouette + Ears) renders in ALL 14 states",
         TagAnchorAlwaysVisible());
     const auto TagFeaturesHideWalkBehind = [&]() {
         const char* Feat[5] = { "Eyes", "Brows", "Mouth", "Nose", "Cheeks" };
-        const int Hidden[3] = { 3, 4, 5 };
-        const int Shown[7] = { 0, 1, 2, 6, 7, 8, 9 };
+        const int Hidden[4] = { 5, 6, 7, 12 };  // walk-behind + Top View drop
+        const int Shown[10] = { 0, 1, 2, 3, 4, 8, 9, 10, 11, 13 };
         for (int S : Hidden)
             for (const char* T : Feat)
                 if (FPSchematicLayerVisibleInTag(S, T)) return false;
@@ -10726,12 +12363,12 @@ void TestPhase3Visibility() {
                 if (!FPSchematicLayerVisibleInTag(S, T)) return false;
         return true;
     };
-    TEST("vis: tag feature cards hide only walk-behind (no edge-peek)",
+    TEST("vis: tag feature cards hide walk-behind + Top (no edge-peek)",
         TagFeaturesHideWalkBehind());
     const auto TagOrderRanks = [&]() {
         const char* Tags[10] = { "Eyes", "Brows", "Mouth", "Bangs", "Nose",
             "Cheeks", "Head", "Hair", "BackHair", "Ears" };
-        for (int S = 0; S < 10; ++S)
+        for (int S = 0; S < 14; ++S)
             for (const char* T : Tags)
             {
                 const int O = FPSchematicLayerOrderInTag(S, T);
@@ -10749,7 +12386,7 @@ void TestPhase3Visibility() {
     TEST("vis: tag order — visible in [1,5], hidden = -1, planes rank",
         TagOrderRanks());
     const auto TagHiddenOrderWalkBehind = [&]() {
-        const int Back[3] = { 3, 4, 5 };
+        const int Back[3] = { 5, 6, 7 };
         for (int S : Back)
             if (FPSchematicLayerOrderInTag(S, "Eyes") != -1) return false;
         return true;
@@ -10768,40 +12405,47 @@ void TestPhase4SilhouetteDelta() {
     using namespace FPSchematic;
 
     TEST("delta: same state is 0", FPSilhouetteDelta(0, 0) == 0.0
-        && FPSilhouetteDelta(4, 4) == 0.0);
+        && FPSilhouetteDelta(6, 6) == 0.0);
+    TEST("delta: Front->NarrowR = 0.025 (22.5 angle term, same shape)",
+        fabs(FPSilhouetteDelta(0, 1) - 0.025) < 1e-9);
     TEST("delta: Front->3/4R small (same structural shape)",
-        fabs(FPSilhouetteDelta(0, 1) - 0.05) < 1e-9);
+        fabs(FPSilhouetteDelta(0, 2) - 0.05) < 1e-9);
+    TEST("delta: Front->SliverR = 0.075 (67.5 angle term, same shape)",
+        fabs(FPSilhouetteDelta(0, 3) - 0.075) < 1e-9);
     TEST("delta: Front->RightProfile small",
-        fabs(FPSilhouetteDelta(0, 2) - 0.1) < 1e-9);
-    TEST("delta: Front->Top/Bottom small (squash keeps the read)",
-        fabs(FPSilhouetteDelta(0, 8) - 0.1) < 1e-9
-        && fabs(FPSilhouetteDelta(0, 9) - 0.1) < 1e-9);
+        fabs(FPSilhouetteDelta(0, 4) - 0.1) < 1e-9);
+    TEST("delta: left-half sub-states mirror the right half",
+        fabs(FPSilhouetteDelta(0, 11) - 0.025) < 1e-9
+        && fabs(FPSilhouetteDelta(0, 9) - 0.075) < 1e-9);
+    TEST("delta: Front->Top = 0.4 (crown drop hides 5 cards), Bottom = 0.1",
+        fabs(FPSilhouetteDelta(0, 12) - 0.4) < 1e-9
+        && fabs(FPSilhouetteDelta(0, 13) - 0.1) < 1e-9);
     TEST("delta: Front->BackRight/BackLeft = 0.45 (walk-behind shape flip)",
-        fabs(FPSilhouetteDelta(0, 3) - 0.45) < 1e-9
-        && fabs(FPSilhouetteDelta(0, 5) - 0.45) < 1e-9);
+        fabs(FPSilhouetteDelta(0, 5) - 0.45) < 1e-9
+        && fabs(FPSilhouetteDelta(0, 7) - 0.45) < 1e-9);
     TEST("delta: Front->Back = 0.5 (biggest plain-yaw structural gap)",
-        fabs(FPSilhouetteDelta(0, 4) - 0.5) < 1e-9);
-    TEST("delta: Top->Back = 0.6 (yaw + pitch gap on a shape flip)",
-        fabs(FPSilhouetteDelta(8, 4) - 0.6) < 1e-9);
+        fabs(FPSilhouetteDelta(0, 6) - 0.5) < 1e-9);
+    TEST("delta: Top->Back = 0.3 (angle-only — the crown is already dropped)",
+        fabs(FPSilhouetteDelta(12, 6) - 0.3) < 1e-9);
     TEST("delta: adjacent back states are small (same visible set)",
-        fabs(FPSilhouetteDelta(3, 4) - 0.05) < 1e-9
-        && fabs(FPSilhouetteDelta(3, 5) - 0.1) < 1e-9);
-    TEST("delta: Top->Bottom moderate (no shape flip, 180 pitch)",
-        fabs(FPSilhouetteDelta(8, 9) - 0.2) < 1e-9);
+        fabs(FPSilhouetteDelta(5, 6) - 0.05) < 1e-9
+        && fabs(FPSilhouetteDelta(5, 7) - 0.1) < 1e-9);
+    TEST("delta: Top->Bottom = 0.5 (the 5 cards re-appear on the way down)",
+        fabs(FPSilhouetteDelta(12, 13) - 0.5) < 1e-9);
     TEST("delta: LeftProfile->RightProfile uses wrap distance 180",
-        fabs(FPSilhouetteDelta(2, 6) - 0.2) < 1e-9);
+        fabs(FPSilhouetteDelta(8, 4) - 0.2) < 1e-9);
     TEST("delta: shape term dominates — Front->Back > Front->RightProfile",
-        FPSilhouetteDelta(0, 4) > FPSilhouetteDelta(0, 2));
+        FPSilhouetteDelta(0, 6) > FPSilhouetteDelta(0, 4));
     TEST("delta: symmetric for all state pairs", [&]() {
-        for (int A = 0; A < 10; ++A)
-            for (int B = 0; B < 10; ++B)
+        for (int A = 0; A < 14; ++A)
+            for (int B = 0; B < 14; ++B)
                 if (fabs(FPSilhouetteDelta(A, B) - FPSilhouetteDelta(B, A)) > 1e-9)
                     return false;
         return true;
     }());
     TEST("delta: bounded in [0,1] for all pairs incl. out-of-range indices", [&]() {
-        for (int A = -1; A <= 10; ++A)
-            for (int B = -1; B <= 10; ++B)
+        for (int A = -1; A <= 14; ++A)
+            for (int B = -1; B <= 14; ++B)
             {
                 const double D = FPSilhouetteDelta(A, B);
                 if (D < 0.0 || D > 1.0 || !(D == D)) return false;   // NaN check
@@ -10811,8 +12455,8 @@ void TestPhase4SilhouetteDelta() {
     TEST("blendRate: 1.0 at zero delta, scales with delta, capped", [&]() {
         if (fabs(FPSchematicTransitionBlendRate(0, 0) - 1.0) > 1e-9) return false;
         if (FPSchematicTransitionBlendRate(0, 0) > 2.5) return false;
-        for (int A = 0; A < 10; ++A)
-            for (int B = 0; B < 10; ++B)
+        for (int A = 0; A < 14; ++A)
+            for (int B = 0; B < 14; ++B)
             {
                 const double R = FPSchematicTransitionBlendRate(A, B);
                 if (R < 1.0 || R > 2.5) return false;
@@ -10820,27 +12464,28 @@ void TestPhase4SilhouetteDelta() {
         return true;
     }());
     TEST("blendRate: structural gap blends faster than an adjacent turn",
-        FPSchematicTransitionBlendRate(0, 4) > FPSchematicTransitionBlendRate(0, 1));
+        FPSchematicTransitionBlendRate(0, 6) > FPSchematicTransitionBlendRate(0, 2));
     TEST("swoosh: triggers for structural gaps", [&]() {
-        if (!FPSchematicShouldSwoosh(0, 3)) return false;   // Front->BackRight
-        if (!FPSchematicShouldSwoosh(0, 4)) return false;   // Front->Back
-        if (!FPSchematicShouldSwoosh(0, 5)) return false;   // Front->BackLeft
-        if (!FPSchematicShouldSwoosh(8, 4)) return false;   // Top->Back
-        if (!FPSchematicShouldSwoosh(9, 4)) return false;   // Bottom->Back
+        if (!FPSchematicShouldSwoosh(0, 5)) return false;   // Front->BackRight
+        if (!FPSchematicShouldSwoosh(0, 6)) return false;   // Front->Back
+        if (!FPSchematicShouldSwoosh(0, 7)) return false;   // Front->BackLeft
+        if (!FPSchematicShouldSwoosh(0, 12)) return false;  // Front->Top (crown drop)
+        if (!FPSchematicShouldSwoosh(13, 6)) return false;  // Bottom->Back
+        if (!FPSchematicShouldSwoosh(12, 13)) return false; // Top->Bottom (crown respawn)
         return true;
     }());
     TEST("swoosh: does NOT trigger for same-shape turns", [&]() {
-        if (FPSchematicShouldSwoosh(0, 1)) return false;   // Front->3/4R
-        if (FPSchematicShouldSwoosh(0, 2)) return false;   // Front->profile
-        if (FPSchematicShouldSwoosh(0, 8)) return false;   // Front->Top
-        if (FPSchematicShouldSwoosh(2, 6)) return false;   // profile->profile
-        if (FPSchematicShouldSwoosh(3, 4)) return false;   // BackRight->Back
-        if (FPSchematicShouldSwoosh(8, 9)) return false;   // Top->Bottom
+        if (FPSchematicShouldSwoosh(0, 1)) return false;   // Front->NarrowR
+        if (FPSchematicShouldSwoosh(0, 3)) return false;   // Front->SliverR
+        if (FPSchematicShouldSwoosh(0, 4)) return false;   // Front->profile
+        if (FPSchematicShouldSwoosh(4, 8)) return false;   // profile->profile
+        if (FPSchematicShouldSwoosh(5, 6)) return false;   // BackRight->Back
+        if (FPSchematicShouldSwoosh(12, 6)) return false;  // Top->Back (already dropped)
         if (FPSchematicShouldSwoosh(0, 0)) return false;   // same state
         return true;
     }());
-    TEST("swoosh: symmetric", FPSchematicShouldSwoosh(4, 0)
-        == FPSchematicShouldSwoosh(0, 4));
+    TEST("swoosh: symmetric", FPSchematicShouldSwoosh(6, 0)
+        == FPSchematicShouldSwoosh(0, 6));
 }
 
 // Phase 6: authored-pose validation. Every authored ring must be a valid
@@ -10853,7 +12498,9 @@ void TestPhase6PoseValidation() {
     printf("\n=== Phase6 PoseValidation ===\n");
     using namespace FPSchematic;
 
-    const char* AuthoredNames[4] = { "Head", "Bangs", "Hair", "BackHair" };
+    const char* AuthoredNames[17] = { "Head", "Bangs", "Hair", "BackHair",
+        "EyeL", "EyeR", "BrowL", "BrowR", "CheekL", "CheekR", "EarL", "EarR",
+        "Nose", "Mouth", "Teeth", "Chin", "Neck" };
     const auto EveryP0RingValid = [&]() {
         for (const char* N : AuthoredNames)
             if (!FPOutlineIsValidClosedRing(FPSchematicAuthoredPoses(N)->P0))
@@ -10906,13 +12553,13 @@ void TestPhase6PoseValidation() {
 
     const FPSchematicPoseValidationSummary Sum =
         FPSchematicValidateAllAuthoredPoses();
-    TEST("summary: table has the 4 silhouette parts, all valid", [&]() {
-        return Sum.TotalPoseSets == 4 && Sum.ValidPoseSets == 4
-            && Sum.TotalRings == 28 && Sum.InvalidRings == 0
+    TEST("summary: table has all 17 canonical parts, all valid", [&]() {
+        return Sum.TotalPoseSets == 17 && Sum.ValidPoseSets == 17
+            && Sum.TotalRings == 119 && Sum.InvalidRings == 0
             && Sum.bAllAuthoredPosesValid();
     }());
     TEST("summary: aggregate back change clears the measured 41% gate", [&]() {
-        // Measured live: 62/91 ring points (68.1%) displace > 10% of canvas.
+        // Measured live: 168/189 ring points (88.9%) displace > 10% of canvas.
         if (Sum.AggregateBackChange() < 0.41) return false;
         return Sum.bBackDiffersFromFront();
     }());
@@ -10961,6 +12608,1318 @@ void TestPhase6PoseValidation() {
         CountMismatchIsInvalid());
 }
 
+// Phase A7 (art_tech_guide I.7 / XII.6): the no-raster silhouette read test.
+// FPSchematicVectorMaskAnalyze builds an exact arrangement of the mask rings
+// (Head + Bangs + Hair + BackHair + Ears as visible per state) on a 10000
+// grid and measures the fill by even-odd parity: exactly ONE filled
+// component and every hole <= 0.5% of the filled area. All synthetic rings
+// use <= 4-decimal coordinates (the grid scale is 10000).
+void TestPhaseA7MaskRead() {
+    printf("\n=== Phase A7 VectorMaskRead ===\n");
+    using namespace FPSchematic;
+    const double Tol = 1e-9;
+
+    const auto Square = [](double X0, double Y0, double X1, double Y1) {
+        return std::vector<FPSchematicPoint>{ SPT(X0, Y0), SPT(X1, Y0),
+            SPT(X1, Y1), SPT(X0, Y1) };
+    };
+    // Funnel donut: outer square (0.25..0.75), one ring that dips in at D,
+    // draws the closed CW window loop E->F->G->H->E and returns via E->A.
+    // The window interior is parity-even (hole); the funnel between the two
+    // spokes stays part of the outer face (the ring has no left edge).
+    const auto Donut = [](double E0, double W) {
+        return std::vector<FPSchematicPoint>{ SPT(0.25, 0.25), SPT(0.75, 0.25),
+            SPT(0.75, 0.75), SPT(0.25, 0.75), SPT(E0, E0), SPT(E0 + W, E0),
+            SPT(E0 + W, E0 + W), SPT(E0, E0 + W), SPT(E0, E0) };
+    };
+
+    // ---- rational / product machinery (exactness before the arrangement) ----
+    TEST("rat: make reduces to lowest terms", [&]() {
+        const FPSchematicRat A = FPSchematicRatMake(2, 4);
+        return A.Num == 1 && A.Den == 2;
+    }());
+    TEST("rat: sign normalization lives on the numerator", [&]() {
+        const FPSchematicRat A = FPSchematicRatMake(-2, 4);
+        const FPSchematicRat B = FPSchematicRatMake(2, -4);
+        const FPSchematicRat C = FPSchematicRatMake(-2, -4);
+        return A.Num == -1 && A.Den == 2 && B.Num == -1 && B.Den == 2
+            && C.Num == 1 && C.Den == 2;
+    }());
+    TEST("rat: zero collapses to 0/1", [&]() {
+        const FPSchematicRat Z = FPSchematicRatMake(0, 7);
+        return Z.Num == 0 && Z.Den == 1;
+    }());
+    TEST("rat: equal reduced forms compare equal",
+        FPSchematicRatCmp(FPSchematicRatMake(1, 3), FPSchematicRatMake(2, 6)) == 0);
+    TEST("rat: compare orders correctly", [&]() {
+        return FPSchematicRatCmp(FPSchematicRatMake(3, 7), FPSchematicRatMake(2, 5)) == 1
+            && FPSchematicRatCmp(FPSchematicRatMake(2, 5), FPSchematicRatMake(3, 7)) == -1;
+    }());
+    TEST("rat: sign-aware compare on negatives", [&]() {
+        return FPSchematicRatCmp(FPSchematicRatMake(-1, 2), FPSchematicRatMake(1, 2)) == -1
+            && FPSchematicRatCmp(FPSchematicRatMake(-1, 2), FPSchematicRatMake(-2, 3)) == 1;
+    }());
+    TEST("rat: to double", [&]() {
+        return std::fabs(FPSchematicRatToDouble(FPSchematicRatMake(1, 3)) - 1.0 / 3.0) < 1e-15
+            && FPSchematicRatToDouble(FPSchematicRatMake(-7, 2)) == -3.5;
+    }());
+    TEST("mul: 64x64 portable product basics", [&]() {
+        const FPSchematicU128 Z = FPSchematicMulU64(0, 123);
+        const FPSchematicU128 O = FPSchematicMulU64(1, 1);
+        return Z.Lo == 0 && Z.Hi == 0 && O.Lo == 1 && O.Hi == 0;
+    }());
+    TEST("mul: 2^32 * 2^32 = 2^64 exactly", [&]() {
+        const FPSchematicU128 R = FPSchematicMulU64(4294967296ULL, 4294967296ULL);
+        return R.Lo == 0 && R.Hi == 1;
+    }());
+    TEST("mul: max*max lands in the low word", [&]() {
+        const FPSchematicU128 R = FPSchematicMulU64(0xFFFFFFFFull, 0xFFFFFFFFull);
+        return R.Lo == 0xFFFFFFFE00000001ull && R.Hi == 0;
+    }());
+    TEST("mul: 2^63 * 2 = 2^64", [&]() {
+        const FPSchematicU128 R = FPSchematicMulU64(9223372036854775808ULL, 2);
+        return R.Lo == 0 && R.Hi == 1;
+    }());
+    TEST("cmp: exact big-product sign (int64-overflow range)", [&]() {
+        // 4000000000^2 = 1.6e19 overflows int64 — the comparator must stay exact.
+        if (FPSchematicProductCmp(4000000000LL, 4000000000LL, 4000000000LL, 3999999999LL) != 1) return false;
+        if (FPSchematicProductCmp(4000000000LL, 4000000000LL, 4000000000LL, 4000000001LL) != -1) return false;
+        if (FPSchematicProductCmp(4000000000LL, -4000000000LL, 4000000000LL, 4000000001LL) != -1) return false;
+        if (FPSchematicProductCmp(-4000000000LL, -4000000000LL, -4000000000LL, -4000000001LL) != -1) return false;
+        return true;
+    }());
+    TEST("cmp: equal 2^40 products exact", [&]() {
+        return FPSchematicProductCmp(1099511627776LL, 1099511627776LL, 1099511627776LL, 1099511627776LL) == 0
+            && FPSchematicProductCmp(1099511627776LL, 1099511627776LL, 1099511627775LL, 1099511627776LL) == 1;
+    }());
+
+    // ---- mask read: positives ----
+    const std::vector<FPSchematicPoint> RingDupCorner{ SPT(0.25, 0.25),
+        SPT(0.75, 0.25), SPT(0.75, 0.25), SPT(0.75, 0.75), SPT(0.25, 0.75) };
+    TEST("mask: single unit square — 1 component, no holes, passes", [&]() {
+        const FPSchematicSilhouetteReadResult R =
+            FPSchematicVectorMaskAnalyze({ Square(0.0, 0.0, 1.0, 1.0) });
+        return R.bMaskValid && R.FilledComponents == 1 && R.HoleCount == 0
+            && std::fabs(R.TotalFilledArea - 1.0) < Tol && R.bPasses();
+    }());
+    TEST("mask: duplicate corner point (zero-length edge) is skipped",
+        FPSchematicVectorMaskAnalyze({ RingDupCorner }).bMaskValid
+        && FPSchematicVectorMaskAnalyze({ RingDupCorner }).FilledComponents == 1
+        && FPSchematicVectorMaskAnalyze({ RingDupCorner }).HoleCount == 0
+        && std::fabs(FPSchematicVectorMaskAnalyze({ RingDupCorner }).TotalFilledArea - 0.25) < Tol
+        && FPSchematicVectorMaskAnalyze({ RingDupCorner }).bPasses());
+    TEST("mask: overlapping squares merge into ONE component, no hole", [&]() {
+        // A=[0.25,0.5]x[0.25,0.5], B=[0.4375,0.75]x[0.375,0.625]; two proper
+        // crossings at (0.4375,0.5) and (0.5,0.375); union = 0.0625+0.078125
+        // -0.0078125 = 0.1328125.
+        const FPSchematicSilhouetteReadResult R = FPSchematicVectorMaskAnalyze({
+            Square(0.25, 0.25, 0.5, 0.5), Square(0.4375, 0.375, 0.75, 0.625) });
+        return R.bMaskValid && R.FilledComponents == 1 && R.HoleCount == 0
+            && std::fabs(R.TotalFilledArea - 0.1328125) < Tol && R.bPasses();
+    }());
+    TEST("mask: sub-noise-floor hole passes (window 156x156 grid units)", [&]() {
+        const FPSchematicSilhouetteReadResult R =
+            FPSchematicVectorMaskAnalyze({ Donut(0.5, 0.0156) });
+        // mask = 0.25 - funnel(0.0625) - window(0.0156^2=0.00024336)
+        return R.bMaskValid && R.FilledComponents == 1 && R.HoleCount == 1
+            && std::fabs(R.MaxHoleArea - 0.00024336) < Tol
+            && std::fabs(R.TotalFilledArea - 0.18725664) < Tol && R.bPasses();
+    }());
+
+    // ---- mask read: negatives ----
+    const std::vector<FPSchematicPoint> RingTwoPt{ SPT(0.25, 0.25), SPT(0.75, 0.25) };
+    const std::vector<FPSchematicPoint> RingDupTri{ SPT(0.25, 0.25), SPT(0.75, 0.25),
+        SPT(0.25, 0.25) };
+    TEST("mask: empty ring list is invalid", [&]() {
+        const FPSchematicSilhouetteReadResult R = FPSchematicVectorMaskAnalyze({});
+        return !R.bMaskValid && !R.bPasses();
+    }());
+    TEST("mask: 2-point ring is invalid",
+        !FPSchematicVectorMaskAnalyze({ RingTwoPt }).bMaskValid
+        && !FPSchematicVectorMaskAnalyze({ RingTwoPt }).bPasses());
+    TEST("mask: 3-point ring with a duplicate vertex is invalid (2 distinct)",
+        !FPSchematicVectorMaskAnalyze({ RingDupTri }).bMaskValid
+        && !FPSchematicVectorMaskAnalyze({ RingDupTri }).bPasses());
+    TEST("mask: disjoint squares are TWO components — split mask fails", [&]() {
+        const FPSchematicSilhouetteReadResult R = FPSchematicVectorMaskAnalyze({
+            Square(0.1, 0.1, 0.4, 0.4), Square(0.6, 0.6, 0.9, 0.9) });
+        return R.bMaskValid && R.FilledComponents == 2 && R.HoleCount == 0
+            && !R.bPasses();
+    }());
+    TEST("mask: point-touching squares are TWO components — no edge merge", [&]() {
+        const FPSchematicSilhouetteReadResult R = FPSchematicVectorMaskAnalyze({
+            Square(0.25, 0.25, 0.5, 0.5), Square(0.5, 0.5, 0.75, 0.75) });
+        return R.bMaskValid && R.FilledComponents == 2 && !R.bPasses();
+    }());
+    TEST("mask: over-noise hole fails (window 1250x1250 grid units)", [&]() {
+        const FPSchematicSilhouetteReadResult R =
+            FPSchematicVectorMaskAnalyze({ Donut(0.5, 0.125) });
+        // mask = 0.25 - 0.0625 - 0.015625 = 0.171875; 0.015625 > 0.5% of it
+        return R.bMaskValid && R.FilledComponents == 1 && R.HoleCount == 1
+            && std::fabs(R.MaxHoleArea - 0.015625) < Tol
+            && std::fabs(R.TotalFilledArea - 0.171875) < Tol && !R.bPasses();
+    }());
+    TEST("mask: noise floor is pinned at 0.5% of the filled area",
+        FPSchematicSilhouetteReadResult::NoiseFloorFraction == 0.005);
+
+    // ---- canonical per-state read (art_tech_guide I.7: run the silhouette
+    // read per hard-swap AND sub-threshold asset, not only at front view).
+    // The mask = the four silhouette parts + the ears as visible per state,
+    // resolved through the PRODUCT path (FPSchematicOutlineForState — paired
+    // parts resolve the partner's ring mirrored on the left half), so the
+    // read measures exactly the ring set the widget/runtime renders.
+    const char* MaskParts[6] = { "Head", "Bangs", "Hair", "BackHair", "EarL", "EarR" };
+    const std::vector<FPSchematicPart>& MaskPartsDefs = DefaultPartSchematics();
+    const auto CanonicalMask = [&](int StateIdx) {
+        std::vector<std::vector<FPSchematicPoint>> Mask;
+        for (const char* P : MaskParts)
+        {
+            if (!FPSchematicLayerVisibleInState(StateIdx, P)) continue;
+            const FPSchematicPart* Part = FPSchematicFindPart(MaskPartsDefs, P);
+            if (!Part) continue;
+            const std::vector<FPSchematicPoint> R = FPSchematicOutlineForState(
+                P, Part->Outline, Part->DepthClass, StateIdx);
+            if (R.size() >= 3) Mask.push_back(R);
+        }
+        return Mask;
+    };
+    const auto CanonicalRead = [&](int StateIdx) {
+        return FPSchematicVectorMaskAnalyze(CanonicalMask(StateIdx));
+    };
+    // The state -> authored slot table (FPSchematicStatePoseOut): states
+    // 0/1 -> P0, 2/3 -> P45, 4 -> P90, 5 -> P135, 6 -> P180, 7 -> P135
+    // mirror, 8 -> P90 mirror, 9/10 -> P45 mirror, 11 -> P0 mirror,
+    // 12 -> PTop, 13 -> PBottom.
+    const int SlotForState[14] = { 0, 0, 1, 1, 2, 3, 4, 3, 2, 1, 1, 0, 5, 6 };
+    const auto All14Pass = [&]() {
+        for (int s = 0; s < 14; ++s)
+        {
+            const FPSchematicSilhouetteReadResult R = CanonicalRead(s);
+            if (!R.bMaskValid || R.FilledComponents != 1 || !R.bPasses()) return false;
+        }
+        return true;
+    };
+    TEST("canonical A7: all 14 states read ONE component with sub-noise holes",
+        All14Pass());
+    const auto SlotsAllPass = [&]() {
+        for (int s = 0; s < 14; ++s)
+        {
+            const FPSchematicSilhouetteReadResult R = CanonicalRead(s);
+            if (R.MaxHoleArea > 0.005 * R.TotalFilledArea) return false;
+        }
+        return true;
+    };
+    TEST("canonical A7: every state clears the 0.5% hole gate", SlotsAllPass());
+    const auto MaskValidEveryState = [&]() {
+        for (int s = 0; s < 14; ++s)
+            if (!CanonicalRead(s).bMaskValid) return false;
+        return true;
+    };
+    TEST("canonical A7: every state mask is valid (>=3 distinct pts/ring)",
+        MaskValidEveryState());
+    const auto NoEmptyMask = [&]() {
+        for (int s = 0; s < 14; ++s)
+        {
+            const FPSchematicSilhouetteReadResult R = CanonicalRead(s);
+            if (R.TotalFilledArea <= 0.5) return false;  // silhouette must dominate
+        }
+        return true;
+    };
+    TEST("canonical A7: every state silhouette fills over half the canvas",
+        NoEmptyMask());
+    // Left-half states are the exact horizontal mirror of the right-half
+    // read: the mask area must agree within rasterization noise (the ear
+    // rings union into the mass on both profiles).
+    const auto MirrorAreaPairs = [&]() {
+        const int PairA[5] = { 0, 2, 3, 4, 5 };
+        const int PairB[5] = { 11, 9, 10, 8, 7 };
+        for (int k = 0; k < 5; ++k)
+        {
+            const FPSchematicSilhouetteReadResult A = CanonicalRead(PairA[k]);
+            const FPSchematicSilhouetteReadResult B = CanonicalRead(PairB[k]);
+            if (std::fabs(A.TotalFilledArea - B.TotalFilledArea) > 5e-5) return false;
+        }
+        return true;
+    };
+    TEST("canonical A7: mirror states read the same silhouette area",
+        MirrorAreaPairs());
+    // Each authored slot renders identically across the states that resolve
+    // it (the sub-threshold states carry the parent pose unchanged).
+    const auto SlotConsistent = [&]() {
+        for (int s = 1; s < 14; ++s)
+        {
+            if (SlotForState[s] == SlotForState[0]) continue;
+            for (int t = 1; t < s; ++t)
+                if (SlotForState[t] == SlotForState[s])
+                {
+                    const FPSchematicSilhouetteReadResult A = CanonicalRead(s);
+                    const FPSchematicSilhouetteReadResult B = CanonicalRead(t);
+                    if (A.FilledComponents != B.FilledComponents) return false;
+                    // Mirror states resolve partner rings: the authored P135
+                    // ear pair is only approximately mirror-symmetric, so
+                    // allow rasterization noise (same bound as the mirror
+                    // pairs above) — the read must still be structurally
+                    // identical (one component, same hole count).
+                    if (A.HoleCount != B.HoleCount) return false;
+                    if (std::fabs(A.TotalFilledArea - B.TotalFilledArea) > 5e-5)
+                        return false;
+                }
+        }
+        return true;
+    };
+    TEST("canonical A7: states sharing a slot read identically", SlotConsistent());
+    const auto SlotAreas = [&]() {
+        // The 7 authored-slot areas (canvas fractions), measured on the
+        // canonical data — re-pinned so an accidental pose-table edit that
+        // still unions (comps=1) cannot silently reshape the silhouette.
+        // Slot 1 (P45) + slot 3 (P135) carry the E11 hair-ribbon bulges
+        // (0.631974 / 0.605567).
+        const double Expected[7] = { 0.641717, 0.631974, 0.602187, 0.605567,
+            0.730803, 0.583375, 0.548176 };
+        for (int slot = 0; slot < 7; ++slot)
+        {
+            int s = 0;
+            for (; s < 14; ++s) if (SlotForState[s] == slot) break;
+            const FPSchematicSilhouetteReadResult R = CanonicalRead(s);
+            if (std::fabs(R.TotalFilledArea - Expected[slot]) > 1e-5) return false;
+        }
+        return true;
+    };
+    TEST("canonical A7: authored-slot silhouette areas re-pinned", SlotAreas());
+}
+
+// Phase 7: the discrete per-view art swap contract (freeze the card, flip the
+// view). Real 2D art is a rigid billboarded card — the ONLY continuous outputs
+// are a per-layer blend weight (FPSchematicBracketStates) and an alpha
+// (FPSchematicLayerArtAlpha); the placeholder outline SNAPS to the nearest
+// view's pose (FPOrientationOutline) instead of morphing. Pins: canonical
+// state resolution, wrap-aware bracketing weights, exact authored pose
+// resolution with left-half mirroring, per-state feature visibility (authored
+// or empty), art-availability alpha, the per-layer delta-gated swap path, and the
+// back-half rule. Negative + edge cases included.
+void TestPhase7ArtSwap() {
+    printf("\n=== Phase7 ArtSwap ===\n");
+    using namespace FPSchematic;
+    using P = FPSchematicPoint;
+    const std::vector<FPSchematicPart> Parts = DefaultPartSchematics();
+    auto Find = [&](const char* N) -> const FPSchematicPart& {
+        return *FPSchematicFindPart(Parts, N);
+    };
+    auto SameRing = [](const std::vector<P>& A, const std::vector<P>& B, double Tol) {
+        if (A.size() != B.size()) return false;
+        for (size_t i = 0; i < A.size(); ++i)
+            if (std::abs(A[i].X - B[i].X) > Tol || std::abs(A[i].Y - B[i].Y) > Tol)
+                return false;
+        return true;
+    };
+    const double Eps = 1e-9;
+
+    // --- Canonical state resolution (default zone geometry) ---
+    TEST("swap: exact state centers resolve to their own state",
+        FPSchematicStateAtAngles(0.0, 0.0) == 0
+        && FPSchematicStateAtAngles(22.5, 0.0) == 1
+        && FPSchematicStateAtAngles(45.0, 0.0) == 2
+        && FPSchematicStateAtAngles(67.5, 0.0) == 3
+        && FPSchematicStateAtAngles(90.0, 0.0) == 4
+        && FPSchematicStateAtAngles(135.0, 0.0) == 5
+        && FPSchematicStateAtAngles(180.0, 0.0) == 6
+        && FPSchematicStateAtAngles(-135.0, 0.0) == 7
+        && FPSchematicStateAtAngles(-90.0, 0.0) == 8
+        && FPSchematicStateAtAngles(-67.5, 0.0) == 9
+        && FPSchematicStateAtAngles(-45.0, 0.0) == 10
+        && FPSchematicStateAtAngles(-22.5, 0.0) == 11);
+    TEST("swap: pitch thresholds resolve Top/Bottom",
+        FPSchematicStateAtAngles(0.0, 61.0) == 12
+        && FPSchematicStateAtAngles(0.0, 90.0) == 12
+        && FPSchematicStateAtAngles(0.0, -61.0) == 13
+        && FPSchematicStateAtAngles(0.0, -90.0) == 13
+        && FPSchematicStateAtAngles(0.0, 45.0) == 0);
+    // Exact zone boundaries are the blueprint's hard swaps at 22.5/45/67.5/
+    // 90/135/180 and the boundary angle belongs to the NEXT view (half-open
+    // bands, mirroring DetermineStateFromAngles): 22.5 is NarrowR, 45 is
+    // 3/4R, 67.5 is SliverR, 90 is RightProfile, 135 is BackRight, 180 is
+    // Back.
+    TEST("swap: zone boundaries resolve like the runtime", [&]() {
+        if (FPSchematicStateAtAngles(22.49, 0.0) != 0) return false;      // Front
+        if (FPSchematicStateAtAngles(22.5, 0.0) != 1) return false;       // NarrowR
+        if (FPSchematicStateAtAngles(44.99, 0.0) != 1) return false;      // NarrowR
+        if (FPSchematicStateAtAngles(45.0, 0.0) != 2) return false;       // 3/4R
+        if (FPSchematicStateAtAngles(67.49, 0.0) != 2) return false;      // 3/4R
+        if (FPSchematicStateAtAngles(67.5, 0.0) != 3) return false;       // SliverR
+        if (FPSchematicStateAtAngles(90.0, 0.0) != 4) return false;       // RProfile
+        if (FPSchematicStateAtAngles(135.0, 0.0) != 5) return false;      // BR
+        if (FPSchematicStateAtAngles(180.0, 0.0) != 6) return false;      // Back
+        if (FPSchematicStateAtAngles(-180.0, 0.0) != 6) return false;     // Back
+        if (FPSchematicStateAtAngles(-135.0, 0.0) != 7) return false;     // BL
+        if (FPSchematicStateAtAngles(-90.0, 0.0) != 8) return false;      // LProfile
+        if (FPSchematicStateAtAngles(-67.5, 0.0) != 9) return false;      // SliverL
+        if (FPSchematicStateAtAngles(-45.0, 0.0) != 10) return false;     // 3/4L
+        if (FPSchematicStateAtAngles(-22.5, 0.0) != 11) return false;     // NarrowL
+        return true;
+    }());
+    TEST("swap: yaw beyond +-180 wraps to the back state",
+        FPSchematicStateAtAngles(200.0, 0.0) == 6
+        && FPSchematicStateAtAngles(-200.0, 0.0) == 6);
+    TEST("swap: non-cardinal angles snap to the nearest state",
+        FPSchematicStateAtAngles(10.0, 0.0) == 0
+        && FPSchematicStateAtAngles(30.0, 0.0) == 1
+        && FPSchematicStateAtAngles(60.0, 0.0) == 2
+        && FPSchematicStateAtAngles(100.0, 0.0) == 4
+        && FPSchematicStateAtAngles(150.0, 0.0) == 5
+        && FPSchematicStateAtAngles(-60.0, 0.0) == 10);
+
+    // --- Bracket states + smoothstep weight ---
+    const auto BracketLandsOnState = [&]() {
+        int A, B; double W;
+        FPSchematicBracketStates(45.0, 0.0, A, B, W);
+        if (A != 2 || B != 3 || std::abs(W - 0.0) > Eps) return false;
+        FPSchematicBracketStates(90.0, 0.0, A, B, W);
+        if (A != 4 || B != 5 || std::abs(W - 0.0) > Eps) return false;
+        FPSchematicBracketStates(135.0, 0.0, A, B, W);
+        if (A != 5 || B != 5 || std::abs(W - 1.0) > Eps) return false;
+        return true;
+    };
+    TEST("swap: bracket lands on the state at its center", BracketLandsOnState());
+    const auto BracketWeightIsSmoothstep = [&]() {
+        int A, B; double W;
+        FPSchematicBracketStates(0.0, 0.0, A, B, W);
+        if (A != 0 || B != 1 || std::abs(W - FPSmoothstep01(0.0)) > Eps) return false;
+        FPSchematicBracketStates(11.25, 0.0, A, B, W);
+        if (A != 0 || B != 1 || std::abs(W - FPSmoothstep01(0.5)) > Eps) return false;
+        FPSchematicBracketStates(22.5, 0.0, A, B, W);
+        if (A != 1 || B != 2 || std::abs(W - FPSmoothstep01(0.0)) > Eps) return false;
+        FPSchematicBracketStates(60.0, 0.0, A, B, W);
+        if (A != 2 || B != 3 || std::abs(W - FPSmoothstep01(15.0 / 22.5)) > Eps) return false;
+        return true;
+    };
+    TEST("swap: bracket weight is smoothstep between adjacent centers", BracketWeightIsSmoothstep());
+    const auto BracketWrapsAtBack = [&]() {
+        int A, B; double W;
+        FPSchematicBracketStates(170.0, 0.0, A, B, W);
+        if (A != 5 || B != 6 || std::abs(W - FPSmoothstep01(35.0 / 45.0)) > Eps) return false;
+        FPSchematicBracketStates(-175.0, 0.0, A, B, W);
+        if (A != 6 || B != 7 || std::abs(W - FPSmoothstep01(5.0 / 45.0)) > Eps) return false;
+        FPSchematicBracketStates(-180.0, 0.0, A, B, W);
+        if (A != 6 || B != 7 || std::abs(W - FPSmoothstep01(0.0)) > Eps) return false;
+        return true;
+    };
+    TEST("swap: back edges wrap the ring through Back", BracketWrapsAtBack());
+    const auto BracketPitchCrosses45 = [&]() {
+        int A, B; double W;
+        FPSchematicBracketStates(0.0, 70.0, A, B, W);
+        if (A != 0 || B != 12 || std::abs(W - FPSmoothstep01(25.0 / 45.0)) > Eps) return false;
+        FPSchematicBracketStates(0.0, 46.0, A, B, W);
+        if (A != 0 || B != 12 || std::abs(W - FPSmoothstep01(1.0 / 45.0)) > Eps) return false;
+        FPSchematicBracketStates(0.0, 90.0, A, B, W);
+        if (A != 0 || B != 12 || std::abs(W - 1.0) > Eps) return false;
+        FPSchematicBracketStates(45.0, -70.0, A, B, W);
+        if (A != 2 || B != 13) return false;
+        // exactly AT the threshold pitch the yaw bracket still rules (strict >)
+        FPSchematicBracketStates(0.0, 45.0, A, B, W);
+        if (A != 0 || B != 1) return false;
+        return true;
+    };
+    TEST("swap: pitch bracket crosses at the +-45 threshold", BracketPitchCrosses45());
+
+    // --- Exact authored pose resolution + left-half mirror ---
+    TEST("swap: state pose resolves the authored ring", [&]() {
+        const FPSchematicPoseSet* S = FPSchematicAuthoredPoses("Head");
+        std::vector<P> Out;
+        FPSchematicStatePoseOut(*S, 0, Out); if (!SameRing(Out, S->P0, Eps)) return false;
+        FPSchematicStatePoseOut(*S, 1, Out); if (!SameRing(Out, S->P0, Eps)) return false;
+        FPSchematicStatePoseOut(*S, 2, Out); if (!SameRing(Out, S->P45, Eps)) return false;
+        FPSchematicStatePoseOut(*S, 3, Out); if (!SameRing(Out, S->P45, Eps)) return false;
+        FPSchematicStatePoseOut(*S, 4, Out); if (!SameRing(Out, S->P90, Eps)) return false;
+        FPSchematicStatePoseOut(*S, 5, Out); if (!SameRing(Out, S->P135, Eps)) return false;
+        FPSchematicStatePoseOut(*S, 6, Out); if (!SameRing(Out, S->P180, Eps)) return false;
+        FPSchematicStatePoseOut(*S, 12, Out); if (!SameRing(Out, S->PTop, Eps)) return false;
+        FPSchematicStatePoseOut(*S, 13, Out); if (!SameRing(Out, S->PBottom, Eps)) return false;
+        return true;
+    }());
+    TEST("swap: left-half states are the exact mirror of the right", [&]() {
+        const FPSchematicPoseSet* S = FPSchematicAuthoredPoses("Head");
+        std::vector<P> Out;
+        FPSchematicStatePoseOut(*S, 10, Out);
+        for (size_t i = 0; i < Out.size(); ++i)
+            if (std::abs(Out[i].X - (1.0 - S->P45[i].X)) > Eps
+                || std::abs(Out[i].Y - S->P45[i].Y) > Eps) return false;
+        FPSchematicStatePoseOut(*S, 7, Out);
+        for (size_t i = 0; i < Out.size(); ++i)
+            if (std::abs(Out[i].X - (1.0 - S->P135[i].X)) > Eps) return false;
+        return true;
+    }());
+
+    // --- Outline SNAP + parallax slide (never interpolates between poses) ---
+    // Phase 8: the outline is ALWAYS one authored state pose (never a vertex
+    // blend), translated rigidly by the parallax slide — 0 exactly at the
+    // state center, peak at the zone boundary, continuous through the swap.
+    TEST("swap: outline slides rigidly between centers (no pose morph)", [&]() {
+        const FPSchematicPoseSet* S = FPSchematicAuthoredPoses("Head");
+        const double Peak = FPSchematicParallaxSlidePeak("Head");
+        // Mid-Front (11.25): the Front pose has slid half-way to its peak at
+        // the 22.5 NarrowR swap (smoothstep(0.5)); the pose is still P0,
+        // never a blend.
+        {
+            const std::vector<P> B = FPOrientationOutline("Head", Find("Head").Outline,
+                FPDepthClass::Base, 11.25, 0.0);
+            const double R = FPSchematicParallaxRamp(0, 11.25);
+            if (B.size() != S->P0.size()) return false;
+            for (size_t i = 0; i < B.size(); ++i)
+            {
+                if (std::abs(B[i].X - (S->P0[i].X + Peak * R)) > Eps) return false;
+                if (std::abs(B[i].Y - S->P0[i].Y) > Eps) return false;
+            }
+        }
+        // Exactly at the 22.5 swap: the outgoing Front ramp is at its full
+        // peak (pure-function pin below) while the incoming NarrowR state —
+        // the same P0 ring, exact at its key — wins the outline: pose exact,
+        // zero slide, so the swap is a hard pose change with no blend.
+        {
+            const std::vector<P> B = FPOrientationOutline("Head", Find("Head").Outline,
+                FPDepthClass::Base, 22.5, 0.0);
+            if (!SameRing(B, S->P0, Eps)) return false;
+        }
+        if (std::abs(FPSchematicParallaxRamp(0, 22.5) - 1.0) > Eps) return false;
+        if (std::abs(FPSchematicParallaxRamp(1, 22.5) - 0.0) > Eps) return false;
+        // Mid-3/4 (56.25): the 3/4 pose slid partway toward its peak at the
+        // 67.5 SliverR swap (smoothstep(0.5)); still the authored P45 ring.
+        {
+            const std::vector<P> M = FPOrientationOutline("Head", Find("Head").Outline,
+                FPDepthClass::Base, 56.25, 0.0);
+            const double R = FPSchematicParallaxRamp(2, 56.25);
+            if (M.size() != S->P45.size()) return false;
+            for (size_t i = 0; i < M.size(); ++i)
+            {
+                if (std::abs(M[i].X - (S->P45[i].X + Peak * R)) > Eps) return false;
+                if (std::abs(M[i].Y - S->P45[i].Y) > Eps) return false;
+            }
+        }
+        // Exact keys: pose exact, zero slide.
+        {
+            const std::vector<P> C = FPOrientationOutline("Head", Find("Head").Outline,
+                FPDepthClass::Base, 45.0, 0.0);
+            if (!SameRing(C, S->P45, Eps)) return false;
+        }
+        {
+            const std::vector<P> C = FPOrientationOutline("Head", Find("Head").Outline,
+                FPDepthClass::Base, 90.0, 0.0);
+            if (!SameRing(C, S->P90, Eps)) return false;
+        }
+        return true;
+    }());
+    TEST("swap: outline snap mirrors the left half", [&]() {
+        const FPSchematicPoseSet* S = FPSchematicAuthoredPoses("Head");
+        const std::vector<P> R = FPOrientationOutline("Head", Find("Head").Outline,
+            FPDepthClass::Base, 90.0, 0.0);
+        const std::vector<P> L = FPOrientationOutline("Head", Find("Head").Outline,
+            FPDepthClass::Base, -90.0, 0.0);
+        if (!SameRing(R, S->P90, Eps)) return false;
+        for (size_t i = 0; i < L.size(); ++i)
+            if (std::abs(L[i].X - (1.0 - S->P90[i].X)) > Eps
+                || std::abs(L[i].Y - S->P90[i].Y) > Eps) return false;
+        return true;
+    }());
+    TEST("swap: back half resolves authored back poses", [&]() {
+        const FPSchematicPoseSet* S = FPSchematicAuthoredPoses("Head");
+        const std::vector<P> BackLeft = FPOrientationOutline("Head", Find("Head").Outline,
+            FPDepthClass::Base, -135.0, 0.0);   // state 5 = P135 mirrored X -> 1-X
+        for (size_t i = 0; i < BackLeft.size(); ++i)
+            if (std::abs(BackLeft[i].X - (1.0 - S->P135[i].X)) > Eps
+                || std::abs(BackLeft[i].Y - S->P135[i].Y) > Eps) return false;
+        return SameRing(FPOrientationOutline("Head", Find("Head").Outline,
+                FPDepthClass::Base, 135.0, 0.0), S->P135, Eps)
+            && SameRing(FPOrientationOutline("Head", Find("Head").Outline,
+                FPDepthClass::Base, 180.0, 0.0), S->P180, Eps);
+    }());
+    TEST("swap: BackHair trails behind the profile via its authored pose", [&]() {
+        const FPSchematicPoseSet* S = FPSchematicAuthoredPoses("BackHair");
+        return SameRing(FPOrientationOutline("BackHair", Find("BackHair").Outline,
+            FPDepthClass::Back, 90.0, 0.0), S->P90, Eps);
+    }());
+
+    // --- Per-state feature visibility (authored ring or empty) ---
+    TEST("swap: far-side paired member hides at its profile", [&]() {
+        return FPSchematicOutlineForState("EyeL", Find("EyeL").Outline,
+                FPDepthClass::Front, 4).empty()          // RightProfile: EyeL far
+            && !FPSchematicOutlineForState("EyeR", Find("EyeR").Outline,
+                FPDepthClass::Front, 4).empty();          // near side stays
+    }());
+    TEST("swap: features hide in every walk-behind state", [&]() {
+        return FPSchematicOutlineForState("Nose", Find("Nose").Outline,
+                FPDepthClass::Front, 5).empty()
+            && FPSchematicOutlineForState("EyeR", Find("EyeR").Outline,
+                FPDepthClass::Front, 6).empty()
+            && FPSchematicOutlineForState("Mouth", Find("Mouth").Outline,
+                FPDepthClass::Front, 7).empty();
+    }());
+    TEST("swap: features resolve authored rings — front exact, 3/4 compressed, top empty", [&]() {
+        const FPSchematicPoseSet* ER = FPSchematicAuthoredPoses("EyeR");
+        const FPSchematicPoseSet* NS = FPSchematicAuthoredPoses("Nose");
+        if (!ER || !NS) return false;
+        auto W = [](const std::vector<P>& R) {
+            double mn = 2.0;
+            double mx = -1.0;
+            for (const P& p : R) { mn = std::min(mn, p.X); mx = std::max(mx, p.X); }
+            return mx - mn;
+        };
+        const double P45W = W(ER->P45);
+        const double P0W = W(ER->P0);
+        return SameRing(FPSchematicOutlineForState("Nose", Find("Nose").Outline,
+                FPDepthClass::Front, 0), Find("Nose").Outline, Eps)
+            && SameRing(FPSchematicOutlineForState("EyeR", Find("EyeR").Outline,
+                FPDepthClass::Front, 1), ER->P0, Eps)     // NarrowR near eye keeps the front glyph
+            && SameRing(FPSchematicOutlineForState("EyeR", Find("EyeR").Outline,
+                FPDepthClass::Front, 2), ER->P45, Eps)    // 3/4R compressed
+            // Y22/Y67 sub-threshold eye variant (E11: canthus-aligned scale —
+            // FPSchematicScaleRingAboutCanthus keeps the tareme chord; the
+            // sliver's bbox width includes the 0.95 across-chord component):
+            && std::abs(W(FPSchematicOutlineForState("EyeL", Find("EyeL").Outline,
+                FPDepthClass::Front, 1)) - 0.85 * P0W) < Eps   // far eye narrows at 22.5
+            && std::abs(W(FPSchematicOutlineForState("EyeL", Find("EyeL").Outline,
+                FPDepthClass::Front, 3)) - 0.025812242613) < Eps  // far eye sliver at 67.5
+            && std::abs(W(FPSchematicOutlineForState("EyeR", Find("EyeR").Outline,
+                FPDepthClass::Front, 3)) - 0.88 * P45W) < Eps  // near eye 3Q at 67.5
+            && FPSchematicOutlineForState("Nose", Find("Nose").Outline,
+                FPDepthClass::Front, 12).empty()     // Top drops the features
+            && SameRing(FPSchematicOutlineForState("Nose", Find("Nose").Outline,
+                FPDepthClass::Front, 13), NS->PBottom, Eps);
+    }());
+
+    // --- Art-availability alpha (fade target, replaces the hard toggle) ---
+    TEST("swap: art alpha is availability, not just visibility", [&]() {
+        return FPSchematicLayerArtAlpha(0, "Eyes", true) == 1.0
+            && FPSchematicLayerArtAlpha(0, "Eyes", false) == 0.0   // no art painted
+            && FPSchematicLayerArtAlpha(6, "Eyes", true) == 0.0    // walk-behind hides
+            && FPSchematicLayerArtAlpha(6, "Head", true) == 1.0    // silhouette always
+            && FPSchematicLayerArtAlpha(6, "Head", false) == 0.0;  // but unpainted -> 0
+    }());
+
+    // --- Per-layer delta-gated swap path ---
+    TEST("swap: structurally-alike pairs crossfade", [&]() {
+        return FPSchematicSwapModeFor(0, 1, true, true) == FPSchematicSwapMode::Blend
+            && FPSchematicSwapModeFor(1, 2, true, true) == FPSchematicSwapMode::Blend;
+    }());
+    TEST("swap: structural gaps sweep (never a slow ghost blend)", [&]() {
+        return FPSchematicSwapModeFor(0, 6, true, true) == FPSchematicSwapMode::Swoosh
+            && FPSchematicSwapModeFor(0, 5, true, true) == FPSchematicSwapMode::Swoosh
+            && FPSchematicSwapModeFor(0, 12, true, true) == FPSchematicSwapMode::Swoosh
+            && FPSchematicSwapModeFor(8, 4, true, true) == FPSchematicSwapMode::Blend;
+    }());
+    TEST("swap: an incoming art gap sweeps out stale art", [&]() {
+        return FPSchematicSwapModeFor(0, 1, true, false) == FPSchematicSwapMode::Swoosh
+            && FPSchematicSwapModeFor(0, 1, false, true) == FPSchematicSwapMode::Blend
+            && FPSchematicSwapModeFor(0, 1, false, false) == FPSchematicSwapMode::Blend;
+    }());
+}
+
+// Phase 8: the master blueprint's parallax + swap model. The 360 turn is
+// smooth WITHOUT deforming art: the cards slide rigidly against each other
+// (parallax translation — every vertex moves by the SAME delta, so uniform
+// line widths survive) and the per-view change is a HARD swap at the zone
+// boundary. This pins the velocity hierarchy table, the slide ramps, the
+// rigid-translation property, the swap continuity, and the blueprint Part I
+// geometry (absolute-midline eyes + the 5-part width rule).
+void TestPhase8ParallaxSwap() {
+    printf("\n=== Phase8 ParallaxSwap ===\n");
+    using namespace FPSchematic;
+    using P = FPSchematicPoint;
+    const std::vector<FPSchematicPart> Parts = DefaultPartSchematics();
+    auto Find = [&](const char* N) -> const FPSchematicPart& {
+        return *FPSchematicFindPart(Parts, N);
+    };
+    const double Eps = 1e-9;
+    auto SameRing = [](const std::vector<P>& A, const std::vector<P>& B, double E) {
+        if (A.size() != B.size()) return false;
+        for (size_t i = 0; i < A.size(); ++i)
+            if (std::abs(A[i].X - B[i].X) > E || std::abs(A[i].Y - B[i].Y) > E)
+                return false;
+        return true;
+    };
+
+    // --- Velocity hierarchy table (Part II.3: +150/+100/+60/0/-50/-100%) ---
+    TEST("parallax: tag velocity hierarchy matches the blueprint", [&]() {
+        return FPSchematicTagParallaxRate("Nose") == 1.0     // +100% projections
+            && FPSchematicTagParallaxRate("Bangs") == 1.0
+            && FPSchematicTagParallaxRate("Eyes") == 0.6     // +60% primary features
+            && FPSchematicTagParallaxRate("Brows") == 0.6
+            && FPSchematicTagParallaxRate("Mouth") == 0.6
+            && FPSchematicTagParallaxRate("Cheeks") == 0.6
+            && FPSchematicTagParallaxRate("Head") == 0.0     // 0% anchor
+            && FPSchematicTagParallaxRate("Hair") == 0.3     // near side hair
+            && FPSchematicTagParallaxRate("Ears") == -0.5    // -50% base-anchored
+            && FPSchematicTagParallaxRate("BackHair") == -1.0 // -100% max negative
+            && FPSchematicTagParallaxRate("") == 0.0
+            && FPSchematicTagParallaxRate(nullptr) == 0.0
+            && FPSchematicTagParallaxRate("Bogus") == 0.0;
+    }());
+    TEST("parallax: part-to-tag rate resolution (aliases + pairs)", [&]() {
+        return FPSchematicTagParallaxRateForPart("Nose") == 1.0
+            && FPSchematicTagParallaxRateForPart("EyeL") == 0.6
+            && FPSchematicTagParallaxRateForPart("EyeR") == 0.6
+            && FPSchematicTagParallaxRateForPart("BrowR") == 0.6
+            && FPSchematicTagParallaxRateForPart("CheekL") == 0.6
+            && FPSchematicTagParallaxRateForPart("Teeth") == 0.6   // alias -> Mouth
+            && FPSchematicTagParallaxRateForPart("Chin") == 0.0    // alias -> Head
+            && FPSchematicTagParallaxRateForPart("Neck") == 0.0    // alias -> Head
+            && FPSchematicTagParallaxRateForPart("EarL") == -0.5
+            && FPSchematicTagParallaxRateForPart("EarR") == -0.5
+            && FPSchematicTagParallaxRateForPart("Head") == 0.0
+            && FPSchematicTagParallaxRateForPart("BackHair") == -1.0
+            && FPSchematicTagParallaxRateForPart(nullptr) == 0.0;
+    }());
+    TEST("parallax: slide peaks sign + magnitude follow the hierarchy", [&]() {
+        return FPSchematicParallaxSlidePeak("Nose") > FPSchematicParallaxSlidePeak("EyeR")
+            && FPSchematicParallaxSlidePeak("EyeR") > FPSchematicParallaxSlidePeak("Head")
+            && FPSchematicParallaxSlidePeak("Head") > 0.0
+            && FPSchematicParallaxSlidePeak("EarR") < 0.0
+            && FPSchematicParallaxSlidePeak("BackHair") < 0.0
+            && FPSchematicParallaxSlidePeak("BackHair") == -FPSchematicParallaxSlidePeak("Nose")
+            && FPSchematicParallaxSlidePeak("EarR") == -FPSchematicParallaxSlidePeak("Nose") / 2.0
+            && FPSchematicParallaxSlidePeak("") == FPSchematicParallaxSlidePeak("Head");
+    }());
+
+    // --- Slide ramp: 0 at the pose key, 1 at the next key (where it swaps) ---
+    TEST("parallax: ramp is 0 at the pose key and 1 at the next key", [&]() {
+        return FPSchematicParallaxRamp(1, 22.5) == 0.0   // NarrowR key exact
+            && FPSchematicParallaxRamp(1, 90.0) == 1.0   // full spacing clamps at 1
+            && FPSchematicParallaxRamp(0, 0.0) == 0.0
+            && FPSchematicParallaxRamp(0, 45.0) == 1.0   // past the 22.5 sub-key, clamped
+            && FPSchematicParallaxRamp(2, 45.0) == 0.0   // 3/4R key exact
+            && FPSchematicParallaxRamp(2, 67.5) == 1.0   // SliverR boundary peak
+            && FPSchematicParallaxRamp(3, 67.5) == 0.0;  // SliverR key exact
+    }());
+    TEST("parallax: ramp is symmetric and monotone toward the next key", [&]() {
+        double Prev = 0.0;
+        for (double A = 22.5; A <= 45.0; A += 1.0)
+        {
+            const double R = FPSchematicParallaxRamp(1, A);
+            if (R < Prev - 1e-12) return false;
+            Prev = R;
+        }
+        if (std::abs(FPSchematicParallaxRamp(1, 30.0)
+                - FPSchematicParallaxRamp(1, 15.0)) > 1e-9) return false;
+        return true;
+    }());
+
+    // --- Rigid translation: EVERY vertex moves by the same delta ---
+    // The master blueprint's monoline constraint: no scaling, rotation or
+    // per-vertex deformation — only the rigid parallax slide + the pose swap.
+    TEST("parallax: the slide is a RIGID translation (uniform lines preserved)", [&]() {
+        const std::vector<P> F = Find("Nose").Outline;
+        const std::vector<P> O = FPOrientationOutline("Nose", F,
+            FPDepthClass::Front, 15.0, 0.0);   // mid-Front, ramp 0.5
+        if (O.size() != F.size()) return false;
+        double RefDx = 0.0;
+        double RefDy = 0.0;
+        bool First = true;
+        for (size_t i = 0; i < O.size(); ++i)
+        {
+            const double Dx = O[i].X - F[i].X;
+            const double Dy = O[i].Y - F[i].Y;
+            if (First) { RefDx = Dx; RefDy = Dy; First = false; }
+            if (std::abs(Dx - RefDx) > 1e-12 || std::abs(Dy - RefDy) > 1e-12)
+                return false;
+        }
+        // the whole card moved, and it moved WITH the turn (positive yaw)
+        return std::abs(RefDx) > 0.05 && RefDx > 0.0 && std::abs(RefDy) < 1e-12;
+    }());
+    TEST("parallax: output respects the velocity hierarchy in practice", [&]() {
+        // Frozen cards (features + ears) keep the front glyph, so their vertex
+        // delta IS the pure parallax slide. (Authored silhouettes swap their
+        // whole pose, so they are not comparable vertex-to-vertex here.)
+        const auto Slide = [&](const char* N, double Yaw) {
+            const std::vector<P> F = Find(N).Outline;
+            const std::vector<P> O = FPOrientationOutline(N, F,
+                Find(N).DepthClass, Yaw, 0.0);
+            return O.empty() ? 0.0 : (O[0].X - F[0].X);
+        };
+        const double Nose = Slide("Nose", 15.0);
+        const double EyeR = Slide("EyeR", 15.0);
+        const double EarR = Slide("EarR", 15.0);
+        return Nose > EyeR && EyeR > 0.0
+            && EarR < 0.0 && Nose > -EarR;
+    }());
+
+    // --- Swap: the outgoing pose is at its peak, the incoming pose is exact ---
+    TEST("parallax: the outgoing pose slides to its peak right at the swap", [&]() {
+        const double Peak = FPSchematicParallaxSlidePeak("Head");
+        const std::vector<P> Lo = FPOrientationOutline("Head", Find("Head").Outline,
+            FPDepthClass::Base, 89.99, 0.0);   // SliverR, just before the 90 swap
+        const std::vector<P> K = FPOrientationOutline("Head", Find("Head").Outline,
+            FPDepthClass::Base, 90.0, 0.0);    // RightProfile key, exact
+        const FPSchematicPoseSet* S = FPSchematicAuthoredPoses("Head");
+        if (std::abs((Lo[0].X - S->P45[0].X) - Peak) > 1e-3) return false;
+        if (std::abs(K[0].X - S->P90[0].X) > Eps
+            || std::abs(K[0].Y - S->P90[0].Y) > Eps) return false;
+        return true;
+    }());
+    TEST("parallax: no vertex morph anywhere between keys (pose + slide only)", [&]() {
+        // For an AUTHORED silhouette, the outline at a mid-zone angle must be
+        // EXACTLY the zone's pose shifted by the ramp-scaled peak — a vertex
+        // morph (Phase 2's FPSchematicYawMorph) would smear between P0 and
+        // P45 and fail the vertex-exact comparison. 56.25 is mid-SliverR (the
+        // ramp reads Ramp(2, 56.25) = smoothstep(0.5)); a zone KEY (67.5) is
+        // exact with ramp 0 instead.
+        const FPSchematicPoseSet* S = FPSchematicAuthoredPoses("Head");
+        const double Peak = FPSchematicParallaxSlidePeak("Head");
+        const double R = FPSchematicParallaxRamp(2, 56.25);
+        const std::vector<P> O = FPOrientationOutline("Head", Find("Head").Outline,
+            FPDepthClass::Base, 56.25, 0.0);
+        if (O.size() != S->P45.size()) return false;
+        for (size_t i = 0; i < O.size(); ++i)
+        {
+            if (std::abs(O[i].X - (S->P45[i].X + Peak * R)) > Eps) return false;
+            if (std::abs(O[i].Y - S->P45[i].Y) > Eps) return false;
+        }
+        return true;
+    }());
+    TEST("parallax: Top/Bottom are exact authored pitch poses (no slide)", [&]() {
+        const FPSchematicPoseSet* S = FPSchematicAuthoredPoses("Head");
+        return SameRing(FPOrientationOutline("Head", Find("Head").Outline,
+                FPDepthClass::Base, 60.0, 90.0), S->PTop, Eps)
+            && SameRing(FPOrientationOutline("Head", Find("Head").Outline,
+                FPDepthClass::Base, -90.0, -90.0), S->PBottom, Eps);
+    }());
+
+    // --- BackHair promote at the true back (Part III Zone 5) ---
+    TEST("parallax: BackHair promotes to Layer 1 only at the true back", [&]() {
+        return FPSchematicLayerOrderInState(6, "BackHair") == 1
+            && FPSchematicLayerOrderInTag(6, "BackHair") == 1
+            && FPSchematicLayerOrderInState(4, "BackHair")
+                == (int)FPZDepthForPart("BackHair")
+            && FPSchematicLayerOrderInState(0, "BackHair")
+                == (int)FPZDepthForPart("BackHair");
+    }());
+
+    // --- Master blueprint Part I geometry pins ---
+    TEST("geometry: eye baseline sits near the cranium->chin absolute midline", [&]() {
+        const FPSchematicFaceGeometry G = FPSchematicMeasureFaceGeometry();
+        return std::abs(G.EyeBaselineY - G.MidlineY) <= 0.05;
+    }());
+    TEST("geometry: the 5-part width rule holds at the eye line", [&]() {
+        const FPSchematicFaceGeometry G = FPSchematicMeasureFaceGeometry();
+        if (G.PartWidth <= 0.0) return false;
+        for (int i = 0; i < 5; ++i)
+            if (G.Segments[i] <= 0.0) return false;
+        return std::abs(G.HeadWidthAtEyeLine - G.PartWidth * 5.0) < 1e-9;
+    }());
+    TEST("geometry: the core face contract passes", [&]() {
+        const FPSchematicFaceGeometry G = FPSchematicMeasureFaceGeometry();
+        return G.bChinBelowCraniumRule && G.bJawOriginsOnEquator
+            && G.bHairlineCrownInset && G.bEyeHeightRatio;
+    }());
+}
+
+// WI1: the derived sub-threshold states (Narrow 22.5 / Sliver 67.5 and their
+// left-half mirrors) — the 14-state swap set is pinned end to end: zone
+// derivation, exact centers, half-open band resolution, key spacing, ramp
+// continuity through the sub-swaps, bracket landing, and exact authored poses
+// at the new keys.
+void TestY22Y67SubThresholds() {
+    printf("\n=== Y22Y67SubThresholds ===\n");
+    using namespace FPSchematic;
+    using P = FPSchematicPoint;
+    const std::vector<FPSchematicPart> Parts = DefaultPartSchematics();
+    auto Find = [&](const char* N) -> const FPSchematicPart& {
+        return *FPSchematicFindPart(Parts, N);
+    };
+    auto SameRing = [](const std::vector<P>& A, const std::vector<P>& B, double Eps) {
+        if (A.size() != B.size()) return false;
+        for (size_t i = 0; i < A.size(); ++i)
+            if (std::abs(A[i].X - B[i].X) > Eps || std::abs(A[i].Y - B[i].Y) > Eps)
+                return false;
+        return true;
+    };
+    const double Eps = 1e-9;
+
+    // The sub-boundaries are DERIVED from the first primary boundary.
+    const auto SubBoundariesDerive = [&]() {
+        using Z = FPSchematicViewZone;
+        return std::abs(Z::NarrowBoundary() - Z::BoundaryAt(1) * 0.5) < Eps
+            && std::abs(Z::SliverBoundary() - Z::BoundaryAt(1) * 1.5) < Eps
+            && std::abs(Z::NarrowBoundary() - 22.5) < Eps
+            && std::abs(Z::SliverBoundary() - 67.5) < Eps;
+    };
+    TEST("y22: sub-boundaries derive from the first primary boundary", SubBoundariesDerive());
+
+    const auto CenterTable = [&]() {
+        const double Expected[14] = { 0.0, 22.5, 45.0, 67.5, 90.0, 135.0, 180.0,
+            -135.0, -90.0, -67.5, -45.0, -22.5, 0.0, 0.0 };
+        for (int s = 0; s < 14; ++s)
+            if (std::abs(FPSchematicStateCenterYaw(s) - Expected[s]) > Eps) return false;
+        return true;
+    };
+    TEST("y22: the center table is the full signed 14-state ring", CenterTable());
+
+    const auto SubBoundaryResolution = [&]() {
+        return FPSchematicStateAtAngles(22.49, 0.0) == 0     // Front
+            && FPSchematicStateAtAngles(22.5, 0.0) == 1      // NarrowR
+            && FPSchematicStateAtAngles(22.51, 0.0) == 1
+            && FPSchematicStateAtAngles(44.99, 0.0) == 1     // NarrowR
+            && FPSchematicStateAtAngles(67.49, 0.0) == 2     // 3/4R
+            && FPSchematicStateAtAngles(67.5, 0.0) == 3      // SliverR
+            && FPSchematicStateAtAngles(67.51, 0.0) == 3
+            && FPSchematicStateAtAngles(89.99, 0.0) == 3     // SliverR
+            && FPSchematicStateAtAngles(-22.49, 0.0) == 0
+            && FPSchematicStateAtAngles(-22.5, 0.0) == 11    // NarrowL
+            && FPSchematicStateAtAngles(-67.49, 0.0) == 10   // 3/4L
+            && FPSchematicStateAtAngles(-67.5, 0.0) == 9     // SliverL
+            && FPSchematicStateAtAngles(-22.51, 0.0) == 11;
+    };
+    TEST("y22: state resolution at and around the sub-boundaries", SubBoundaryResolution());
+
+    const auto KeySpacing = [&]() {
+        return std::abs(FPSchematicStateKeySpacing(0) - 22.5) < Eps
+            && std::abs(FPSchematicStateKeySpacing(1) - 22.5) < Eps
+            && std::abs(FPSchematicStateKeySpacing(2) - 22.5) < Eps
+            && std::abs(FPSchematicStateKeySpacing(3) - 22.5) < Eps
+            && std::abs(FPSchematicStateKeySpacing(4) - 45.0) < Eps
+            && std::abs(FPSchematicStateKeySpacing(5) - 45.0) < Eps
+            && std::abs(FPSchematicStateKeySpacing(9) - 22.5) < Eps
+            && std::abs(FPSchematicStateKeySpacing(10) - 22.5) < Eps
+            && std::abs(FPSchematicStateKeySpacing(11) - 22.5) < Eps;
+    };
+    TEST("y22: key spacing is BM0/2 inside the sub-threshold band, HZW outside", KeySpacing());
+
+    const auto RampAtSubSwaps = [&]() {
+        return FPSchematicParallaxRamp(0, 22.5) == 1.0       // Front outgoing peak
+            && FPSchematicParallaxRamp(1, 22.5) == 0.0       // NarrowR incoming exact
+            && FPSchematicParallaxRamp(2, 67.5) == 1.0       // 3/4R outgoing peak
+            && FPSchematicParallaxRamp(3, 67.5) == 0.0       // SliverR incoming exact
+            && FPSchematicParallaxRamp(0, 11.25) == FPSmoothstep01(0.5)
+            && FPSchematicParallaxRamp(2, 56.25) == FPSmoothstep01(0.5);
+    };
+    TEST("y22: the ramp peaks at the sub-swap for BOTH sides of the boundary", RampAtSubSwaps());
+
+    const auto ExactAtSubKeys = [&]() {
+        const FPSchematicPoseSet* S = FPSchematicAuthoredPoses("Head");
+        auto MirrorRing = [](const std::vector<P>& R) {
+            std::vector<P> O; O.reserve(R.size());
+            for (const P& p : R) O.push_back({ 1.0 - p.X, p.Y });
+            return O;
+        };
+        return SameRing(FPOrientationOutline("Head", Find("Head").Outline,
+                FPDepthClass::Base, 22.5, 0.0), S->P0, Eps)
+            && SameRing(FPOrientationOutline("Head", Find("Head").Outline,
+                FPDepthClass::Base, 67.5, 0.0), S->P45, Eps)
+            && SameRing(FPOrientationOutline("Head", Find("Head").Outline,
+                FPDepthClass::Base, -22.5, 0.0), MirrorRing(S->P0), Eps)
+            && SameRing(FPOrientationOutline("Head", Find("Head").Outline,
+                FPDepthClass::Base, -67.5, 0.0), MirrorRing(S->P45), Eps);
+    };
+    TEST("y22: the outline is EXACT at the new sub-keys (hard swap, no blend)", ExactAtSubKeys());
+
+    const auto BracketsOnSubStates = [&]() {
+        int A, B; double W;
+        FPSchematicBracketStates(22.5, 0.0, A, B, W);
+        if (A != 1 || B != 2 || std::abs(W - 0.0) > Eps) return false;
+        FPSchematicBracketStates(67.5, 0.0, A, B, W);
+        if (A != 3 || B != 4 || std::abs(W - 0.0) > Eps) return false;
+        FPSchematicBracketStates(-22.5, 0.0, A, B, W);
+        if (A != 11 || B != 0 || std::abs(W - 0.0) > Eps) return false;
+        FPSchematicBracketStates(-67.5, 0.0, A, B, W);
+        if (A != 9 || B != 10 || std::abs(W - 0.0) > Eps) return false;
+        return true;
+    };
+    TEST("y22: the bracket lands exactly on the sub-states at their centers", BracketsOnSubStates());
+}
+
+// Placeholder art library (generate_art.py, repo root): 17 parts x 13 views =
+// 221 vector SVG pieces in Art/<Part>/, one folder per part. Every piece is
+// the exact ring the runtime resolves for (part, state) — slot = P0/P45/P90/
+// P135/P180/PTop per the yaw/pitch zone (NarrowR/SliverR reuse the front/3-4
+// rings), mirror for the left-half states, and the PAIRED part resolves its
+// PARTNER's pose set mirrored on the left half (FPSchematicPairPartner — near
+// card rides the left side). The encode table mirrors generate_art.py's VIEWS
+// list exactly: state 0..12 are art pieces, state 13 (Bottom) is EXCLUDED —
+// art_guide Part V.4/VIII: no Pn90 token, the under-plane asset is carried by
+// parallax. Where the runtime visibility gate keeps a card in the read, the
+// encoded ring must equal FPSchematicOutlineForState EXACTLY (the piece the
+// widget would snap to).
+void TestArtLibrary() {
+    printf("\n=== ArtLibrary ===\n");
+    using namespace FPSchematic;
+    using P = FPSchematicPoint;
+    const std::vector<FPSchematicPart> Parts = DefaultPartSchematics();
+    auto Find = [&](const char* N) -> const FPSchematicPart& {
+        return *FPSchematicFindPart(Parts, N);
+    };
+    const double Eps = 1e-9;
+    auto SameRing = [](const std::vector<P>& A, const std::vector<P>& B, double E) {
+        if (A.size() != B.size()) return false;
+        for (size_t i = 0; i < A.size(); ++i)
+            if (std::abs(A[i].X - B[i].X) > E || std::abs(A[i].Y - B[i].Y) > E)
+                return false;
+        return true;
+    };
+    auto MirrorRing = [](const std::vector<P>& R) {
+        std::vector<P> O; O.reserve(R.size());
+        for (const P& p : R) O.push_back({ 1.0 - p.X, p.Y });
+        return O;
+    };
+    auto ValidRing = [](const std::vector<P>& R) {
+        if (R.size() < 3) return false;
+        for (const P& p : R)
+            if (!(p.X == p.X) || !(p.Y == p.Y)) return false;
+            else if (p.X < 0.0 || p.X > 1.0 || p.Y < 0.0 || p.Y > 1.0) return false;
+        return true;
+    };
+
+    // The 13 art views: (state, ring slot, mirrored). Mirrors generate_art.py.
+    struct ArtView { int State; int Slot; bool Mirror; };
+    const ArtView Views[13] = {
+        { 0, 0, false },   // Front      -> P0
+        { 1, 0, false },   // NarrowR    -> P0 (front ring)
+        { 2, 1, false },   // 3Q         -> P45
+        { 3, 1, false },   // SliverR    -> P45 (3/4 ring)
+        { 4, 2, false },   // Profile    -> P90
+        { 5, 3, false },   // Back3Q     -> P135
+        { 6, 4, false },   // Back       -> P180
+        { 7, 3, true  },   // Back3Q_L   -> mirror(P135)
+        { 8, 2, true  },   // Profile_L  -> mirror(P90)
+        { 9, 1, true  },   // SliverL    -> mirror(P45)
+        { 10, 1, true  },  // 3Q_L       -> mirror(P45)
+        { 11, 0, true  },  // NarrowL    -> mirror(P0)
+        { 12, 5, false },  // Top        -> PTop
+    };
+    const std::vector<P> FPSchematicPoseSet::*RingBySlot[7] = {
+        &FPSchematicPoseSet::P0, &FPSchematicPoseSet::P45, &FPSchematicPoseSet::P90,
+        &FPSchematicPoseSet::P135, &FPSchematicPoseSet::P180,
+        &FPSchematicPoseSet::PTop, &FPSchematicPoseSet::PBottom };
+
+    TEST("artlib: the library is exactly 17 parts x 13 views (Bottom excluded)", [&]() {
+        int Count = 0;
+        for (const char* const* N = FPSchematicAllAuthoredNames(); *N; ++N) ++Count;
+        return Count == 17;
+    }());
+
+    TEST("artlib: every piece resolves the authored slot + mirror exactly", [&]() {
+        for (const char* const* N = FPSchematicAllAuthoredNames(); *N; ++N)
+        {
+            const char* Name = *N;
+            const FPSchematicPoseSet* S = FPSchematicAuthoredPoses(Name);
+            if (!S) return false;
+            for (int v = 0; v < 13; ++v)
+            {
+                const FPSchematicPoseSet* Src = S;
+                if (Views[v].State >= 7 && Views[v].State <= 11)
+                    if (const char* Partner = FPSchematicPairPartner(Name))
+                    {
+                        Src = FPSchematicAuthoredPoses(Partner);
+                        if (!Src) return false;
+                    }
+                const std::vector<P>& R = Src->*RingBySlot[Views[v].Slot];
+                if (Views[v].Mirror)
+                {
+                    if (!SameRing(MirrorRing(R), [&]() {
+                        std::vector<P> O;
+                        FPSchematicStatePoseOut(*Src, Views[v].State, O);
+                        return O;
+                    }(), Eps)) return false;
+                }
+                else
+                {
+                    std::vector<P> O;
+                    FPSchematicStatePoseOut(*Src, Views[v].State, O);
+                    if (!SameRing(R, O, Eps)) return false;
+                }
+            }
+        }
+        return true;
+    }());
+
+    TEST("artlib: every encoded ring is valid, closed, front-count-matched", [&]() {
+        for (const char* const* N = FPSchematicAllAuthoredNames(); *N; ++N)
+        {
+            const FPSchematicPoseSet* S = FPSchematicAuthoredPoses(*N);
+            const size_t N0 = S->P0.size();
+            for (int v = 0; v < 13; ++v)
+            {
+                const FPSchematicPoseSet* Src = S;
+                if (Views[v].State >= 7 && Views[v].State <= 11)
+                    if (const char* Partner = FPSchematicPairPartner(*N))
+                        Src = FPSchematicAuthoredPoses(Partner);
+                const std::vector<P>& R = Src->*RingBySlot[Views[v].Slot];
+                if (!ValidRing(R)) return false;
+                if (R.size() != N0) return false;
+            }
+        }
+        return true;
+    }());
+
+    TEST("artlib: left-half pieces are the exact mirror of the right-half", [&]() {
+        // resolved(part, 10) == mirror(resolved(partner, 2)) etc. — the −45 view
+        // is the exact horizontal mirror of +45 (near card rides the left).
+        // The right side must resolve the PARTNER's pose set as well: for pairs
+        // the left-half piece is partner pose @ P45 mirrored, so its mirror is
+        // the partner pose @ P45 unmirrored (the far/near role split follows
+        // the turn, mirrored about the canvas centerline).
+        auto Resolve = [&](const char* Name, int v) {
+            const FPSchematicPoseSet* Src = FPSchematicAuthoredPoses(Name);
+            if (Views[v].State >= 7 && Views[v].State <= 11)
+                if (const char* Partner = FPSchematicPairPartner(Name))
+                    Src = FPSchematicAuthoredPoses(Partner);
+            std::vector<P> O;
+            FPSchematicStatePoseOut(*Src, Views[v].State, O);
+            return O;
+        };
+        for (const char* const* N = FPSchematicAllAuthoredNames(); *N; ++N)
+        {
+            const char* Base = *N;
+            if (const char* Partner = FPSchematicPairPartner(Base)) Base = Partner;
+            for (int v = 7; v <= 11; ++v)
+            {
+                const int R = 12 - v;   // BackL->BackR, LProfile->RProfile,
+                                        // SliverL->SliverR, 3/4L->3/4R, NarrowL->NarrowR
+                if (!SameRing(Resolve(*N, v), MirrorRing(Resolve(Base, R)), Eps))
+                    return false;
+            }
+        }
+        return true;
+    }());
+
+    TEST("artlib: the Snap == Encoded ring check ALSO holds for silhouette tops", [&]() {
+        // Head/Bangs/Hair/BackHair carry authored Top/Bottom poses distinct
+        // from the front glyph — the profile/back/top pieces still resolve the
+        // authored ring exactly (never a blend or an encroach/slide formula).
+        // The EYE cards at the Y22/Y67 sub-threshold states (1/3/9/11) are
+        // skipped: FPSchematicOutlineForState additionally applies the pure
+        // far/near variant transform there (FPSchematicFeatureVariantAt), which
+        // is not part of the SVG encode contract.
+        auto IsEyeVariantView = [](const char* Name, int State) {
+            return (std::string(Name) == "EyeL" || std::string(Name) == "EyeR")
+                && (State == 1 || State == 3 || State == 9 || State == 11);
+        };
+        for (const char* const* N = FPSchematicAllAuthoredNames(); *N; ++N)
+        {
+            const char* Name = *N;
+            for (int v = 0; v < 13; ++v)
+            {
+                if (IsEyeVariantView(Name, Views[v].State)) continue;
+                if (!FPSchematicLayerVisibleInState(Views[v].State, Name)) continue;
+                std::vector<P> Snap = FPSchematicOutlineForState(Name,
+                    Find(Name).Outline, Find(Name).DepthClass, Views[v].State);
+                const FPSchematicPoseSet* Src = FPSchematicAuthoredPoses(Name);
+                if (Views[v].State >= 7 && Views[v].State <= 11)
+                    if (const char* Partner = FPSchematicPairPartner(Name))
+                        Src = FPSchematicAuthoredPoses(Partner);
+                std::vector<P> Encoded;
+                FPSchematicStatePoseOut(*Src, Views[v].State, Encoded);
+                if (!SameRing(Snap, Encoded, Eps)) return false;
+            }
+        }
+        return true;
+    }());
+
+    TEST("artlib: Bottom (state 13) has no art piece (parallax-only, Part V.4)", [&]() {
+        // No Pn90 token: the library's 13th view is Top, never Bottom. The
+        // Bottom ring still EXISTS in the authored set (valid, count-matched)
+        // because the runtime resolves it as a pose — it just never becomes an
+        // SVG piece. generate_art.py's VIEWS list stops at index 12.
+        for (const char* const* N = FPSchematicAllAuthoredNames(); *N; ++N)
+        {
+            const FPSchematicPoseSet* S = FPSchematicAuthoredPoses(*N);
+            if (!ValidRing(S->PBottom)) return false;
+            if (S->PBottom.size() != S->P0.size()) return false;
+        }
+        return true;
+    }());
+}
+
+// Section 10 SVG-style smooth curves: FPSchematicArtFaceForRing builds the
+// same curve/fill chains the Art/<Part>/*.svg library was generated from,
+// exactly (probes diff every ring's emitted SVG path string against smooth_art
+// with zero mismatches). These pins lock the golden FRONT-ring geometry, the
+// chain/command model (coverage mapping, fill ordering, tint/opacity), and the
+// painter-facing invariants (decorative accents never read occlusion).
+void TestSVGPaintSmooth() {
+    printf("\n=== SVGPaintSmooth ===\n");
+    using namespace FPSchematic;
+    using P = FPSchematicPoint;
+    const std::vector<FPSchematicPart> Parts = DefaultPartSchematics();
+    const FPSchematicPart& EyeL = *FPSchematicFindPart(Parts, "EyeL");
+    const FPSchematicPart& EyeR = *FPSchematicFindPart(Parts, "EyeR");
+    const FPSchematicPart& Mouth = *FPSchematicFindPart(Parts, "Mouth");
+    const FPSchematicPart& Head = *FPSchematicFindPart(Parts, "Head");
+    const FPSchematicPart& Bangs = *FPSchematicFindPart(Parts, "Bangs");
+    const FPSchematicPart& Nose = *FPSchematicFindPart(Parts, "Nose");
+    const FPSchematicPart& Teeth = *FPSchematicFindPart(Parts, "Teeth");
+    auto Near = [](const P& a, const P& b, double e) {
+        return std::abs(a.X - b.X) <= e && std::abs(a.Y - b.Y) <= e;
+    };
+    // Golden teeth polyline (canvas 1000 -> unit): the M==1 single-vertex-run
+    // case renders as straight L reads exactly like smooth_art.
+    const std::vector<P> TeethGolden = {
+        { 0.475, 0.782 }, { 0.53, 0.790 },
+        { 0.50, 0.794 }, { 0.47, 0.790 } };
+    // View slots for the 13 authored art views (Bottom excluded), mirroring
+    // generate_art.py / TestArtLibrary: states 0..12 -> P0/P0/P45/P45/P90/
+    // P135/P180/mirrors, PTop.
+    struct ArtView { int Slot; };
+    const ArtView Poses[13] = {
+        { 0 }, { 0 }, { 1 }, { 1 }, { 2 }, { 3 }, { 4 },
+        { 3 }, { 2 }, { 1 }, { 1 }, { 0 }, { 5 } };
+    const std::vector<P> FPSchematicPoseSet::*RingPtr[7] = {
+        &FPSchematicPoseSet::P0, &FPSchematicPoseSet::P45, &FPSchematicPoseSet::P90,
+        &FPSchematicPoseSet::P135, &FPSchematicPoseSet::P180,
+        &FPSchematicPoseSet::PTop, &FPSchematicPoseSet::PBottom };
+
+    TEST("svgpaint: eye resolves the 5-chain face (contour/lash/iris/hl1/hl2)", [&]() {
+        const FPSchematicArtFace F = FPSchematicArtFaceForRing("EyeL", EyeL.Outline);
+        return F.Chains.size() == 5 && !F.Sharp.empty();
+    }());
+
+    TEST("svgpaint: eye upper-lash contour is a closed stroke with coverage", [&]() {
+        const FPSchematicArtFace F = FPSchematicArtFaceForRing("EyeL", EyeL.Outline);
+        if (F.Chains.size() < 1) return false;
+        const FPSchematicArtChain& C = F.Chains[0];
+        if (C.Order != 1 || !C.bClosed) return false;
+        if (C.Cmds.size() < 4) return false;
+        if (C.Cmds[0].CovEdgeA < 0 || C.Cmds[0].CovEdgeB < 0) return false;
+        return C.WrapCov >= 0 && !F.Sharp.empty();
+    }());
+
+    TEST("svgpaint: eye lower lash is the disconnected decorative quadratic", [&]() {
+        const FPSchematicArtFace F = FPSchematicArtFaceForRing("EyeL", EyeL.Outline);
+        if (F.Chains.size() < 2) return false;
+        const FPSchematicArtChain& L = F.Chains[1];
+        if (L.bClosed || L.Order != 1) return false;
+        if (L.Cmds.size() != 1) return false;
+        if (L.Cmds[0].Type != 1) return false;
+        if (L.Cmds[0].CovEdgeA != -1 || L.Cmds[0].CovEdgeB != -1) return false;
+        if (L.WrapCov != -1) return false;
+        return true;
+    }());
+
+    TEST("svgpaint: eye iris fill matches the golden ellipse (tint 2, op 1.0)", [&]() {
+        const FPSchematicArtFace F = FPSchematicArtFaceForRing("EyeL", EyeL.Outline);
+        if (F.Chains.size() < 3) return false;
+        const FPSchematicArtChain& C = F.Chains[2];
+        if (C.Order != 0 || !C.bFill || !C.bClosed) return false;
+        if (C.Tint != 2 || C.Opacity != 1.0f) return false;
+        if (C.Cmds.size() != 4) return false;
+        for (const FPSchematicCurveCmd& M : C.Cmds)
+            if (M.CovEdgeA != -1 || M.CovEdgeB != -1) return false;
+        return true;
+    }());
+
+    TEST("svgpaint: highlights use tint 1 with the authored opacities", [&]() {
+        const FPSchematicArtFace F = FPSchematicArtFaceForRing("EyeL", EyeL.Outline);
+        if (F.Chains.size() < 5) return false;
+        const FPSchematicArtChain& H1 = F.Chains[3];
+        const FPSchematicArtChain& H2 = F.Chains[4];
+        if (H1.Order != 0 || H2.Order != 0) return false;
+        if (H1.Tint != 1 || H1.Opacity != 0.85f) return false;
+        if (H2.Tint != 1 || H2.Opacity != 0.6f) return false;
+        return true;
+    }());
+
+    TEST("svgpaint: the paired right eye mirrors the left hand-to-hand", [&]() {
+        const FPSchematicArtFace FL = FPSchematicArtFaceForRing("EyeL", EyeL.Outline);
+        const FPSchematicArtFace FR = FPSchematicArtFaceForRing("EyeR", EyeR.Outline);
+        if (FL.Chains.size() != FR.Chains.size()) return false;
+        if (FR.Chains[0].bClosed != FL.Chains[0].bClosed) return false;
+        if (std::abs((1.0 - FL.Chains[0].Start.X) - FR.Chains[0].Start.X) > 1e-3) return false;
+        // iris mirror
+        if (std::abs((1.0 - FL.Chains[2].Start.X) - FR.Chains[2].Start.X) > 1e-3) return false;
+        if (std::abs(FL.Chains[2].Start.Y - FR.Chains[2].Start.Y) > 1e-3) return false;
+        if (FR.Chains[2].Opacity != FL.Chains[2].Opacity) return false;
+        return true;
+    }());
+
+    TEST("svgpaint: mouth is two open stroke curves + the lower-lip tick", [&]() {
+        const FPSchematicArtFace F = FPSchematicArtFaceForRing("Mouth", Mouth.Outline);
+        if (F.Chains.size() != 3) return false;
+        const FPSchematicArtChain& U = F.Chains[0];
+        const FPSchematicArtChain& L = F.Chains[1];
+        const FPSchematicArtChain& T = F.Chains[2];
+        if (U.bClosed || L.bClosed || U.Order != 1 || L.Order != 1) return false;
+        if (U.Cmds.empty() || L.Cmds.empty()) return false;
+        if (U.Cmds[0].CovEdgeA < 0 || L.Cmds[0].CovEdgeA < 0) return false;
+        if (T.bClosed || T.Order != 1 || T.WrapCov != -1) return false;
+        if (T.Cmds.size() != 1 || T.Cmds[0].Type != 1) return false;
+        return true;
+    }());
+
+    TEST("svgpaint: head keeps the fixed crown sheen (tint 1, op 0.2)", [&]() {
+        const FPSchematicArtFace F = FPSchematicArtFaceForRing("Head", Head.Outline);
+        if (F.Chains.size() != 2) return false;
+        if (F.Chains[0].Order != 1 || !F.Chains[0].bClosed) return false;
+        const FPSchematicArtChain& G = F.Chains[1];
+        if (G.Order != 0 || !G.bFill || !G.bClosed) return false;
+        if (G.Tint != 1 || G.Opacity != 0.2f || G.Cmds.size() != 4) return false;
+        if (!Near(G.Start, { 0.43, 0.09 }, 1e-3)) return false;           // top of 0.12x0.06
+        if (!Near(G.Cmds[0].End, { 0.55, 0.15 }, 1e-3)) return false;     // right extreme
+        for (const FPSchematicCurveCmd& M : G.Cmds)
+            if (M.CovEdgeA != -1) return false;
+        return true;
+    }());
+
+    TEST("svgpaint: bangs ribbon is a decorative open chain with a gloss patch", [&]() {
+        const FPSchematicArtFace F = FPSchematicArtFaceForRing("Bangs", Bangs.Outline);
+        if (F.Chains.size() != 3) return false;
+        const FPSchematicArtChain& Inner = F.Chains[1];
+        if (Inner.bClosed || Inner.Order != 1) return false;
+        for (const FPSchematicCurveCmd& M : Inner.Cmds)
+            if (M.CovEdgeA != -1 || M.CovEdgeB != -1) return false;      // decorative, always solid
+        const FPSchematicArtChain& Gloss = F.Chains[2];
+        if (Gloss.Order != 0 || Gloss.Tint != 1 || Gloss.Opacity != 0.3f) return false;
+        if (!Gloss.bFill || !Gloss.bClosed || Gloss.Cmds.size() != 4) return false;
+        return true;
+    }());
+
+    TEST("svgpaint: nose is traced entirely with sharp line commands", [&]() {
+        const FPSchematicArtFace F = FPSchematicArtFaceForRing("Nose", Nose.Outline);
+        if (F.Chains.empty() || F.Chains[0].Order != 1) return false;
+        const FPSchematicArtChain& C = F.Chains[0];
+        if (C.Cmds.size() != 2) return false;
+        for (const FPSchematicCurveCmd& M : C.Cmds) if (M.Type != 0) return false;
+        return true;
+    }());
+
+    TEST("svgpaint: teeth keep the smooth curve reads (golden path)", [&]() {
+        const FPSchematicArtFace F = FPSchematicArtFaceForRing("Teeth", Teeth.Outline);
+        if (F.Chains.empty() || F.Chains[0].Order != 1) return false;
+        const FPSchematicArtChain& C = F.Chains[0];
+        std::vector<P> Pts;
+        Pts.push_back(C.Start);
+        for (const FPSchematicCurveCmd& M : C.Cmds)
+        {
+            Pts.push_back(M.End);
+        }
+        if (Pts.size() != TeethGolden.size()) return false;
+        for (size_t i = 0; i < Pts.size(); ++i)
+            if (!Near(Pts[i], TeethGolden[i], 1e-3)) return false;
+        return true;
+    }());
+
+    TEST("svgpaint: every authored ring per view builds a sane, covered face", [&]() {
+        for (const char* const* N = FPSchematicAllAuthoredNames(); *N; ++N)
+        {
+            const FPSchematicPoseSet* S = FPSchematicAuthoredPoses(*N);
+            for (int v = 0; v < 13; ++v)
+            {
+                const std::vector<P>& Ring = S->*RingPtr[Poses[v].Slot];
+                const FPSchematicArtFace F = FPSchematicArtFaceForRing(*N, Ring);
+                const int NFull = (int)Ring.size();
+                if (F.Chains.empty()) return false;
+                for (const FPSchematicArtChain& C : F.Chains)
+                {
+                    if (C.bClosed && C.Cmds.empty()) return false;   // closed ring must draw
+                    if (C.WrapCov < -1 || C.WrapCov >= NFull) return false;
+                    for (const FPSchematicCurveCmd& M : C.Cmds)
+                    {
+                        if (M.CovEdgeA < -1 || M.CovEdgeA >= NFull) return false;
+                        if (M.CovEdgeB < -1 || M.CovEdgeB >= NFull) return false;
+                        if (!(M.End.X == M.End.X) || !(M.End.Y == M.End.Y)) return false;
+                    }
+                }
+            }
+        }
+        return true;
+    }());
+}
+
 // Phase C: up/down view scrub (the vertical mirror of the yaw scrub). The
 // widget feeds the pitch strip's pixel drag through the pure
 // FPLayout::FPZoneScrubPitchAfterDrag contract — full strip height = 180 deg,
@@ -10997,6 +13956,2495 @@ void TestPhaseCUpDownScrub() {
     }());
 }
 
+// Phase 1: construction geometry (art_guide.md Part I). The front glyphs are
+// built from authored rules, not squished circles — the cranium top half is a
+// perfect circle (R = span / 2.5, chin apex sits +0.5R below the circle
+// bottom), the jaw originates at the circle's equator, the hairline arc is a
+// concentric ellipse inset 10% at the crown, eyes ride the absolute midline
+// with the 5-part width rule, the eye height is 70-80% of its width, and the
+// brow sits exactly one eye-height above the upper lash.
+void TestPhase1ConstructionGeometry() {
+    printf("\n=== Phase1 ConstructionGeometry (Part I) ===\n");
+    namespace S = FPSchematic;
+    using S::FPSchematicPart;
+    const std::vector<FPSchematicPart> Parts = S::DefaultPartSchematics();
+    const FPSchematicPart* Head = S::FPSchematicFindPart(Parts, "Head");
+    const FPSchematicPart* EyeL = S::FPSchematicFindPart(Parts, "EyeL");
+    const FPSchematicPart* EyeR = S::FPSchematicFindPart(Parts, "EyeR");
+    const FPSchematicPart* BrowL = S::FPSchematicFindPart(Parts, "BrowL");
+    const FPSchematicPart* Nose = S::FPSchematicFindPart(Parts, "Nose");
+    const FPSchematicPart* Mouth = S::FPSchematicFindPart(Parts, "Mouth");
+    const FPSchematicPart* EarL = S::FPSchematicFindPart(Parts, "EarL");
+    const FPSchematicPart* Bangs = S::FPSchematicFindPart(Parts, "Bangs");
+    const S::FPSchematicFaceGeometry G = S::FPSchematicMeasureFaceGeometry();
+    TEST("geo: required parts present",
+        Head && EyeL && EyeR && BrowL && Nose && Mouth && EarL && Bangs);
+
+    // I.2 cranium & jaw foundation.
+    TEST("geo: head keeps a 12-point ring", Head->Outline.size() == 12);
+    TEST("geo: crown at (0.50,0.02), chin apex at (0.50,0.86)", [&]() {
+        return std::abs(Head->Outline[0].X - 0.5) < 1e-9
+            && std::abs(Head->Outline[0].Y - 0.02) < 1e-9
+            && std::abs(Head->Outline[6].X - 0.5) < 1e-9
+            && std::abs(Head->Outline[6].Y - 0.86) < 1e-9;
+    }());
+    TEST("geo: cranium radius = crown-to-chin span / 2.5", [&]() {
+        return std::abs(G.CraniumRadius - (0.86 - 0.02) / 2.5) < 1e-9
+            && std::abs(G.CraniumRadius - 0.336) < 1e-9
+            && std::abs(G.CraniumCenterY - (0.02 + 0.336)) < 1e-9
+            && std::abs(G.CraniumBottomY - (0.02 + 2.0 * 0.336)) < 1e-9;
+    }());
+    TEST("geo: chin apex sits 0.5R below the circle bottom", [&]() {
+        return G.bChinBelowCraniumRule
+            && std::abs(G.ChinTipY - (G.CraniumBottomY + 0.5 * G.CraniumRadius)) < 1e-9;
+    }());
+    TEST("geo: jaw originates at the circle's equator (both sides)", [&]() {
+        return G.bJawOriginsOnEquator
+            && std::abs(G.JawOriginLeftX - 0.164) < 1e-6
+            && std::abs(G.JawOriginRightX - 0.836) < 1e-6
+            && std::abs(G.JawOriginY - G.CraniumCenterY) < 1e-9;
+    }());
+    TEST("geo: the upper-head crown arc sits on the cranium circle", [&]() {
+        for (size_t i = 0; i < 3; ++i)
+        {
+            const double Dx = Head->Outline[i].X - 0.5;
+            const double Dy = Head->Outline[i].Y - G.CraniumCenterY;
+            if (std::abs(std::sqrt(Dx * Dx + Dy * Dy) - G.CraniumRadius) > 1e-4) return false;
+        }
+        return true;
+    }());
+    TEST("geo: the jaw pushes past the circle's vertical drop", [&]() {
+        // Circle's left edge at the eye line vs. the head ring's min-X (jaw bulge).
+        const double CircLeftAtEye = 0.5 - std::sqrt(
+            G.CraniumRadius * G.CraniumRadius - (0.44 - G.CraniumCenterY) * (0.44 - G.CraniumCenterY));
+        return S::FPSchematicPolyMinX(Head->Outline) < CircLeftAtEye - 0.005;
+    }());
+
+    // I.4 universal placement.
+    TEST("geo: eye baseline sits near the absolute midline", [&]() {
+        return std::abs(G.MidlineY - 0.44) < 1e-9
+            && std::abs(G.EyeBaselineY - G.MidlineY) <= 0.05;
+    }());
+    TEST("geo: 5-part width rule: all segments within 40% of ideal",
+        G.PartWidth > 0.0 && G.MaxSegmentDeviation <= 0.40);
+    TEST("geo: the inter-eye gap is a valid segment", [&]() {
+        return G.Segments[2] > 0.0;
+    }());
+    TEST("geo: nose tip at ~60% of the eye-baseline->chin distance", [&]() {
+        const double Target = G.EyeBaselineY + 0.6 * (G.ChinTipY - G.EyeBaselineY);
+        return Nose && std::abs(S::FPSchematicPolyMaxY(Nose->Outline) - Target) <= 0.05;
+    }());
+    TEST("geo: mouth baseline at 80-90% of the eye-baseline->chin distance", [&]() {
+        const double Eye = G.EyeBaselineY;
+        const double D = G.ChinTipY - Eye;
+        const double Lo = Eye + 0.80 * D;
+        const double Hi = Eye + 0.90 * D;
+        const double C = Mouth ? (S::FPSchematicPolyMinY(Mouth->Outline)
+            + S::FPSchematicPolyMaxY(Mouth->Outline)) * 0.5 : -1.0;
+        return Mouth && C >= Lo && C <= Hi;
+    }());
+
+    // I.6 feature construction pins.
+    TEST("geo: eye height runs 70-80% of eye width", [&]() {
+        return G.bEyeHeightRatio;
+    }());
+    TEST("geo: brow sits above the upper lash", [&]() {
+        return G.BrowCenterY < S::FPSchematicPolyMinY(EyeL->Outline);
+    }());
+    TEST("geo: ears span from above the eye to the nose bottom", [&]() {
+        if (!Nose || !EarL) return false;
+        return S::FPSchematicPolyMinY(EarL->Outline) <= S::FPSchematicPolyMinY(EyeL->Outline)
+            && std::abs(S::FPSchematicPolyMaxY(EarL->Outline)
+                - S::FPSchematicPolyMaxY(Nose->Outline)) <= 0.01;
+    }());
+
+    // I.2 hairline arc (construction guide, never inked).
+    TEST("geo: hairline arc insets 10% at the crown", G.bHairlineCrownInset);
+    TEST("geo: 3-sample hairline arc anchors at jaw origins + crown", [&]() {
+        const std::vector<S::FPSchematicPoint> S3 = S::FPSchematicHairlineArcSample(3);
+        if (S3.size() != 3) return false;
+        return std::abs(S3[0].X - 0.164) < 1e-6 && std::abs(S3[0].Y - 0.356) < 1e-6
+            && std::abs(S3[1].X - 0.5) < 1e-9
+            && std::abs(S3[1].Y - (0.02 + 0.1 * G.CraniumRadius)) < 1e-9
+            && std::abs(S3[2].X - 0.836) < 1e-6 && std::abs(S3[2].Y - 0.356) < 1e-6;
+    }());
+    TEST("geo: hairline arc rejects N < 2",
+        S::FPSchematicHairlineArcSample(1).empty()
+        && S::FPSchematicHairlineArcSample(0).empty());
+    TEST("geo: the bangs and brow both exist as separate parts",
+        Bangs && BrowL);
+    TEST("geo: the core Part I checks pass", [&]() {
+        return G.bChinBelowCraniumRule && G.bJawOriginsOnEquator
+            && G.bHairlineCrownInset && G.bEyeHeightRatio;
+    }());
+
+    // Negative controls: the rules discriminate against the pre-Phase-1 shapes.
+    TEST("geo: negative - the old full-circle head fails the 0.5R chin rule", [&]() {
+        // Old geometry: chin at the circle bottom (no extra 0.5R wedge).
+        const double OldChinY = G.CraniumBottomY;
+        return std::abs(OldChinY - (G.CraniumBottomY + 0.5 * G.CraniumRadius))
+            > S::FPSchematicFaceGeometry::CraniumTolerance;
+    }());
+    TEST("geo: negative - jaw origins off the equator fail the rule", [&]() {
+        const double Off = G.CraniumCenterY + 0.05;
+        return std::abs(Off - G.CraniumCenterY) > S::FPSchematicFaceGeometry::CraniumTolerance;
+    }());
+    TEST("geo: negative - the old ~1.13 eye aspect fails the 70-80% rule", [&]() {
+        // Reconstruct the old eye's aspect: width 0.155, height 0.175.
+        const double BadRatio = 0.175 / 0.155;   // ~1.13
+        return !(BadRatio >= 0.70 && BadRatio <= 0.80);
+    }());
+    TEST("geo: negative - the head ring is not one plain circle", [&]() {
+        // The old wide-sphere head had every point on a single circle (chin at
+        // the bottom). The jaw must deviate from the cranium circle.
+        double MaxDev = 0.0;
+        for (const S::FPSchematicPoint& p : Head->Outline)
+        {
+            const double Dx = p.X - 0.5;
+            const double Dy = p.Y - G.CraniumCenterY;
+            MaxDev = std::max(MaxDev,
+                std::abs(std::sqrt(Dx * Dx + Dy * Dy) - G.CraniumRadius));
+        }
+        return MaxDev > 0.05;
+    }());
+}
+
+// Phase 2: the authored feature-card pose matrix (guide Parts IV/V). The 13
+// anatomical cards carry HAND-AUTHORED per-view rings in
+// FPSchematicAuthoredPoseTable (the FPSchematicFeatureRingAt formula remains
+// only as the fallback for non-table parts): P0 is the glyph
+// itself, P45 is the 3/4 compression — near member Eye_Near_3Q (~0.84) vs far
+// member Eye_Far_Narrow (~0.50) / Brow_Far_3Q (~0.60) / compressed far
+// projection (every card's P45/P90 slot is hand-authored with per-segment
+// rings: the outer/profile-side edge
+// compresses more than the nose-side edge), the
+// mouth compresses into an off-center curve, the nose darts toward the turn
+// side (the left-half states resolve the PARTNER's ring mirrored so the −45
+// view is the exact mirror of +45), P90 is the profile sliver (single lash
+// INTO the profile contour, tall ear, narrow neck), P135 is the ear back-fuzz
+// band, P180 is the
+// folded card dropped by >10% of the canvas (clears the Phase 6 back-change
+// gate), and PTop/PBottom keep the front glyph (Top never renders — Part V.2
+// drops Primary Features at the Top swap; Bottom keeps the read). Paired
+// cards mirror slot for slot except the role-split P45, and the per-state
+// visibility gate (Top drop / profile drop / far-side fold / walk-behind
+// fade) precedes resolution. Mirrors FPSchematicAuthoredPoseTable /
+// FPSchematicFeatureRingAt / FPSchematicLayerVisibleInState /
+// FPSchematicOutlineForState in FaceParallaxSchematic.h.
+void TestPhase2AuthoredFeatureMatrix() {
+    printf("\n=== Phase2 AuthoredFeatureMatrix ===\n");
+    using namespace FPSchematic;
+    using P = FPSchematicPoint;
+    const double Eps = 1e-9;
+    const std::vector<FPSchematicPart> Parts = DefaultPartSchematics();
+    auto Find = [&](const char* N) -> const FPSchematicPart& {
+        return *FPSchematicFindPart(Parts, N);
+    };
+    auto MirrorRing = [](const std::vector<P>& R) {
+        std::vector<P> O; O.reserve(R.size());
+        for (const P& p : R) O.push_back({ 1.0 - p.X, p.Y });
+        return O;
+    };
+    auto SameRing = [](const std::vector<P>& A, const std::vector<P>& B, double E) {
+        if (A.size() != B.size()) return false;
+        for (size_t i = 0; i < A.size(); ++i)
+            if (std::abs(A[i].X - B[i].X) > E || std::abs(A[i].Y - B[i].Y) > E) return false;
+        return true;
+    };
+    auto CX = [](const std::vector<P>& V) {
+        double S = 0; for (const P& p : V) S += p.X;
+        return V.empty() ? 0.0 : S / (double)V.size();
+    };
+    auto W = [](const std::vector<P>& V) {
+        if (V.empty()) return 0.0;
+        double Mn = 2.0, Mx = -1.0;
+        for (const P& p : V) { Mn = std::min(Mn, p.X); Mx = std::max(Mx, p.X); }
+        return Mx - Mn;
+    };
+    auto H = [](const std::vector<P>& V) {
+        if (V.empty()) return 0.0;
+        double Mn = 2.0, Mx = -1.0;
+        for (const P& p : V) { Mn = std::min(Mn, p.Y); Mx = std::max(Mx, p.Y); }
+        return Mx - Mn;
+    };
+    const std::vector<P> FPSchematicPoseSet::*RingBySlot[7] = {
+        &FPSchematicPoseSet::P0, &FPSchematicPoseSet::P45, &FPSchematicPoseSet::P90,
+        &FPSchematicPoseSet::P135, &FPSchematicPoseSet::P180,
+        &FPSchematicPoseSet::PTop, &FPSchematicPoseSet::PBottom };
+    const char* Pairs[4][2] = {
+        { "EyeL", "EyeR" }, { "BrowL", "BrowR" },
+        { "CheekL", "CheekR" }, { "EarL", "EarR" } };
+
+    TEST("matrix: P0 is the front glyph for all 13 cards", [&]() {
+        for (const char* const* N = FPSchematicFeatureCardNames(); *N; ++N)
+        {
+            const FPSchematicPoseSet* S = FPSchematicAuthoredPoses(*N);
+            if (!S || !SameRing(S->P0, Find(*N).Outline, Eps)) return false;
+        }
+        return true;
+    }());
+    TEST("matrix: every ring keeps the front point count", [&]() {
+        for (const char* const* N = FPSchematicFeatureCardNames(); *N; ++N)
+        {
+            const FPSchematicPoseSet* S = FPSchematicAuthoredPoses(*N);
+            const size_t N0 = S->P0.size();
+            if (S->P45.size() != N0 || S->P90.size() != N0
+                || S->P135.size() != N0 || S->P180.size() != N0
+                || S->PTop.size() != N0 || S->PBottom.size() != N0) return false;
+        }
+        return true;
+    }());
+    TEST("matrix: paired cards mirror slot for slot, P45 splits near/far", [&]() {
+        // The pair contract: RingL == mirror(RingR) in every slot EXCEPT P45 —
+        // the near member keeps Eye_Near_3Q (~0.84) while the far member swaps
+        // to the narrower Eye_Far_Narrow (~0.50, canonical L-side at +yaw), and
+        // the −45 view resolves the PARTNER's ring mirrored so the VIEW still
+        // mirrors exactly (near card rides the left side).
+        for (auto& Pair : Pairs)
+            for (int Slot = 0; Slot < 7; ++Slot)
+            {
+                if (Slot == 1) continue;   // P45: the role split, below
+                const FPSchematicPoseSet* SL = FPSchematicAuthoredPoses(Pair[0]);
+                const FPSchematicPoseSet* SR = FPSchematicAuthoredPoses(Pair[1]);
+                if (!SameRing(SL->*RingBySlot[Slot],
+                        MirrorRing(SR->*RingBySlot[Slot]), 1e-6)) return false;
+            }
+        // P45 role split: far eye 0.50 vs near eye 0.84, far brow ~0.60 vs
+        // near brow ~0.80, far projection compressed — the canonical far card
+        // is the L-side.
+        const FPSchematicPoseSet* EL = FPSchematicAuthoredPoses("EyeL");
+        const FPSchematicPoseSet* ER = FPSchematicAuthoredPoses("EyeR");
+        if (std::abs(W(EL->P45) / W(ER->P45) - 0.50 / 0.84) > 0.03) return false;
+        const FPSchematicPoseSet* BL = FPSchematicAuthoredPoses("BrowL");
+        const FPSchematicPoseSet* BR = FPSchematicAuthoredPoses("BrowR");
+        if (W(BL->P45) >= W(BR->P45)) return false;
+        const FPSchematicPoseSet* AL = FPSchematicAuthoredPoses("EarL");
+        const FPSchematicPoseSet* AR = FPSchematicAuthoredPoses("EarR");
+        if (W(AL->P45) >= W(AR->P45)) return false;
+        // the −45 VIEW is still the exact horizontal mirror of +45
+        if (!SameRing(FPOrientationOutline("EyeL", Find("EyeL").Outline,
+                FPDepthClass::Front, -45.0, 0.0), MirrorRing(ER->P45), 1e-6)) return false;
+        if (!SameRing(FPOrientationOutline("EyeR", Find("EyeR").Outline,
+                FPDepthClass::Front, -45.0, 0.0), MirrorRing(EL->P45), 1e-6)) return false;
+        return true;
+    }());
+    TEST("matrix: 3/4 rings — near eye mildly compressed, far eye narrow", [&]() {
+        const FPSchematicPoseSet* EN = FPSchematicAuthoredPoses("EyeR");
+        const FPSchematicPoseSet* EF = FPSchematicAuthoredPoses("EyeL");
+        const FPSchematicPoseSet* BN = FPSchematicAuthoredPoses("BrowR");
+        const FPSchematicPoseSet* BF = FPSchematicAuthoredPoses("BrowL");
+        const double EN0 = W(Find("EyeR").Outline);
+        const double EF0 = W(Find("EyeL").Outline);
+        const double BN0 = W(Find("BrowR").Outline);
+        const double BF0 = W(Find("BrowL").Outline);
+        return std::abs(W(EN->P45) / EN0 - 0.84) < 0.03
+            && std::abs(W(EF->P45) / EF0 - 0.50) < 0.03
+            && std::abs(W(BN->P45) / BN0 - 0.80) < 0.03
+            && std::abs(W(BF->P45) / BF0 - 0.60) < 0.03;
+    }());
+    TEST("matrix: every P45/P90 ring is hand-authored, not a formula re-bake", [&]() {
+        const char* Names[13];
+        Names[0] = "EyeL"; Names[1] = "EyeR"; Names[2] = "BrowL"; Names[3] = "BrowR";
+        Names[4] = "CheekL"; Names[5] = "CheekR"; Names[6] = "EarL"; Names[7] = "EarR";
+        Names[8] = "Nose"; Names[9] = "Mouth"; Names[10] = "Teeth";
+        Names[11] = "Chin"; Names[12] = "Neck";
+        for (const char* N : Names)
+        {
+            const FPSchematicPoseSet* S = FPSchematicAuthoredPoses(N);
+            if (!S) return false;
+            if (SameRing(S->P45, FPSchematicFeatureRingAt(N, S->P0, 1), 1e-6)) return false;
+            if (SameRing(S->P90, FPSchematicFeatureRingAt(N, S->P0, 2), 1e-6)) return false;
+        }
+        return true;
+    }());
+    TEST("matrix: P45 compression is per-segment — the outer edge compresses more", [&]() {
+        // A uniform-scale ring shifts both edges equally; the hand-authored 3/4
+        // rings shift the outer (profile-side) edge more than the nose-side edge.
+        const FPSchematicPoseSet* EL = FPSchematicAuthoredPoses("EyeL");
+        const FPSchematicPoseSet* ER = FPSchematicAuthoredPoses("EyeR");
+        const FPSchematicPoseSet* BL = FPSchematicAuthoredPoses("BrowL");
+        const FPSchematicPoseSet* BR = FPSchematicAuthoredPoses("BrowR");
+        if (!EL || !ER || !BL || !BR) return false;
+        auto MinX = [](const std::vector<P>& V) {
+            double Mn = 2.0; for (const P& p : V) Mn = std::min(Mn, p.X); return Mn; };
+        auto MaxX = [](const std::vector<P>& V) {
+            double Mx = -1.0; for (const P& p : V) Mx = std::max(Mx, p.X); return Mx; };
+        const FPSchematicPart& FL = Find("EyeL");
+        const FPSchematicPart& FR = Find("EyeR");
+        const FPSchematicPart& BFL = Find("BrowL");
+        const FPSchematicPart& BFR = Find("BrowR");
+        // far cards (L at +yaw): the LEFT edge is outer — it shifts more than the right.
+        if (!(MinX(EL->P45) - MinX(FL.Outline) > MaxX(FL.Outline) - MaxX(EL->P45))) return false;
+        if (!(MinX(BL->P45) - MinX(BFL.Outline) > MaxX(BFL.Outline) - MaxX(BL->P45))) return false;
+        // near cards (R at +yaw): the RIGHT edge is outer — it shifts more than the left.
+        if (!(MaxX(FR.Outline) - MaxX(ER->P45) > MinX(ER->P45) - MinX(FR.Outline))) return false;
+        if (!(MaxX(BFR.Outline) - MaxX(BR->P45) > MinX(BR->P45) - MinX(BFR.Outline))) return false;
+        return true;
+    }());
+    TEST("matrix: ear/cheek P45 compression is per-segment — outer edge moves more", [&]() {
+        // The same non-uniform rule as the eyes/brows: the outer (profile-side)
+        // edge of the far/near 3/4 ring shifts more than the nose-side edge.
+        const FPSchematicPoseSet* EL = FPSchematicAuthoredPoses("EarL");
+        const FPSchematicPoseSet* ER = FPSchematicAuthoredPoses("EarR");
+        const FPSchematicPoseSet* CL = FPSchematicAuthoredPoses("CheekL");
+        const FPSchematicPoseSet* CR = FPSchematicAuthoredPoses("CheekR");
+        if (!EL || !ER || !CL || !CR) return false;
+        auto MinX = [](const std::vector<P>& V) {
+            double Mn = 2.0; for (const P& p : V) Mn = std::min(Mn, p.X); return Mn; };
+        auto MaxX = [](const std::vector<P>& V) {
+            double Mx = -1.0; for (const P& p : V) Mx = std::max(Mx, p.X); return Mx; };
+        const FPSchematicPart& ELO = Find("EarL");
+        const FPSchematicPart& ERO = Find("EarR");
+        const FPSchematicPart& CLO = Find("CheekL");
+        const FPSchematicPart& CRO = Find("CheekR");
+        // far cards (L at +yaw): the LEFT edge is outer — it shifts more than the right.
+        if (!(MinX(EL->P45) - MinX(ELO.Outline) > MaxX(ELO.Outline) - MaxX(EL->P45))) return false;
+        if (!(MinX(CL->P45) - MinX(CLO.Outline) > MaxX(CLO.Outline) - MaxX(CL->P45))) return false;
+        // near cards (R at +yaw): the RIGHT edge is outer — it shifts more than the left.
+        if (!(MaxX(ERO.Outline) - MaxX(ER->P45) > MinX(ER->P45) - MinX(ERO.Outline))) return false;
+        if (!(MaxX(CRO.Outline) - MaxX(CR->P45) > MinX(CR->P45) - MinX(CRO.Outline))) return false;
+        return true;
+    }());
+    TEST("matrix: ear/cheek 3/4 role split — far member narrower than near", [&]() {
+        return W(FPSchematicAuthoredPoses("EarL")->P45)
+                < W(FPSchematicAuthoredPoses("EarR")->P45)
+            && W(FPSchematicAuthoredPoses("CheekL")->P45)
+                < W(FPSchematicAuthoredPoses("CheekR")->P45);
+    }());
+    TEST("matrix: mouth 3/4 is a compressed OFF-CENTER curve (Mouth_3Q)", [&]() {
+        const FPSchematicPoseSet* M = FPSchematicAuthoredPoses("Mouth");
+        return std::abs(W(M->P45) / W(Find("Mouth").Outline) - 0.80) < 0.02
+            && std::abs(CX(M->P45) - 0.5) > 0.01;
+    }());
+    TEST("matrix: nose darts toward the turn side at 3/4", [&]() {
+        const FPSchematicPoseSet* S = FPSchematicAuthoredPoses("Nose");
+        return CX(S->P45) > 0.51 && W(S->P45) < W(Find("Nose").Outline);
+    }());
+    TEST("matrix: profile rings are slivers (Eye_Profile single lash)", [&]() {
+        const FPSchematicPoseSet* E = FPSchematicAuthoredPoses("EyeR");
+        const FPSchematicPoseSet* B = FPSchematicAuthoredPoses("BrowR");
+        const FPSchematicPoseSet* C = FPSchematicAuthoredPoses("CheekR");
+        const FPSchematicPoseSet* N = FPSchematicAuthoredPoses("Neck");
+        if (!E || !B || !C || !N) return false;
+        return W(E->P90) < 0.08 && W(B->P90) < 0.08 && W(C->P90) < 0.08
+            && W(N->P90) < 0.6 * W(Find("Neck").Outline)
+            && H(FPSchematicAuthoredPoses("EarR")->P90) > H(Find("EarR").Outline);
+    }());
+    TEST("matrix: every back pose clears the >10% displacement gate", [&]() {
+        for (const char* const* N = FPSchematicFeatureCardNames(); *N; ++N)
+        {
+            const FPSchematicPoseSet* S = FPSchematicAuthoredPoses(*N);
+            const FPSchematicPoseValidation V = FPSchematicValidatePoseSet(*S);
+            if (V.BackMovedPoints != V.RingPointCount) return false;
+        }
+        return true;
+    }());
+    const char* CenterFeatureNames[3] = { "Nose", "Mouth", "Teeth" };
+    const char* RightProfileKept[6] = { "EyeR", "BrowR", "CheekR", "EarR",
+        "Chin", "Neck" };
+    TEST("matrix: state 4 (RightProfile) drops the centerline cards", [&]() {
+        for (const char* L : CenterFeatureNames)
+            if (!FPSchematicOutlineForState(L, Find(L).Outline,
+                FPDepthClass::Front, 4).empty()) return false;
+        for (const char* L : RightProfileKept)
+            if (FPSchematicOutlineForState(L, Find(L).Outline,
+                FPDepthClass::Front, 4).empty()) return false;
+        return true;
+    }());
+    TEST("matrix: state 12 (Top View) drops EVERY feature card", [&]() {
+        for (const char* const* N = FPSchematicFeatureCardNames(); *N; ++N)
+            if (std::string(*N) != "EarL" && std::string(*N) != "EarR")
+                if (!FPSchematicOutlineForState(*N, Find(*N).Outline,
+                    FPDepthClass::Front, 12).empty()) return false;
+        // the ears still read from above (AnchorCritical projection)
+        return !FPSchematicOutlineForState("EarL", Find("EarL").Outline,
+                FPDepthClass::Front, 12).empty()
+            && FPSchematicLayerArtAlpha(12, "Eyes", true) == 0.0
+            && FPSchematicLayerArtAlpha(12, "Ears", true) == 1.0;
+    }());
+    TEST("matrix: state 13 (Bottom View) keeps the front feature read", [&]() {
+        for (const char* const* N = FPSchematicFeatureCardNames(); *N; ++N)
+        {
+            const FPSchematicPoseSet* S = FPSchematicAuthoredPoses(*N);
+            if (!SameRing(FPSchematicOutlineForState(*N, Find(*N).Outline,
+                FPDepthClass::Front, 13), S->PBottom, Eps)) return false;
+        }
+        return true;
+    }());
+    const int WalkBehindStates[3] = { 5, 6, 7 };
+    TEST("matrix: walk-behind hides every feature, keeps the ear fuzz", [&]() {
+        for (int S : WalkBehindStates)
+        {
+            for (const char* const* N = FPSchematicFeatureCardNames(); *N; ++N)
+                if (std::string(*N) != "EarL" && std::string(*N) != "EarR")
+                    if (!FPSchematicOutlineForState(*N, Find(*N).Outline,
+                        FPDepthClass::Front, S).empty()) return false;
+            // the ears render as flat back-fuzz planes (Part IV Zone 5) —
+            // a WIDER, SHORTER band than the front ear card
+            if (FPSchematicOutlineForState("EarL", Find("EarL").Outline,
+                    FPDepthClass::Front, S).empty()) return false;
+            if (W(FPSchematicAuthoredPoses("EarL")->P135)
+                    <= W(Find("EarL").Outline)) return false;
+            if (H(FPSchematicAuthoredPoses("EarL")->P135)
+                    >= 0.6 * H(Find("EarL").Outline)) return false;
+        }
+        return true;
+    }());
+}
+
+// ============================================================================
+// Phase II work items WI2-WI6: Schmitt step + theta-fired rebase, camera
+// proximity + seam margin, anchor-critical read contract, pin lag/chain
+// decay, shape contrast ~4:1 (art_tech_guide III.6/IV.0/XIV.3/XIV.7/II.3/
+// II.4/XII.2/XII.4/XIII.2).
+// ============================================================================
+
+void TestPhaseIISchmittStep() {
+    printf("\n=== WI2 Schmitt Step + Theta-Fired Rebase ===\n");
+    using namespace FPSchematic;
+    const double Eps = 1e-9;
+
+    // ---- the canonical 12-pair boundary table (mirror of the component) ----
+    TEST("step: boundary table matches the canonical 12 pairs", [&]() {
+        return std::abs(FPSchematicYawBoundaryForPair(0, 1) - 11.25) < Eps
+            && std::abs(FPSchematicYawBoundaryForPair(1, 2) - 22.5) < Eps
+            && std::abs(FPSchematicYawBoundaryForPair(2, 3) - 33.75) < Eps
+            && std::abs(FPSchematicYawBoundaryForPair(3, 4) - 67.5) < Eps
+            && std::abs(FPSchematicYawBoundaryForPair(4, 5) - 135.0) < Eps
+            && std::abs(FPSchematicYawBoundaryForPair(5, 6) - 180.0) < Eps
+            && std::abs(FPSchematicYawBoundaryForPair(6, 7) + 180.0) < Eps
+            && std::abs(FPSchematicYawBoundaryForPair(7, 8) + 135.0) < Eps
+            && std::abs(FPSchematicYawBoundaryForPair(8, 9) + 67.5) < Eps
+            && std::abs(FPSchematicYawBoundaryForPair(9, 10) + 33.75) < Eps
+            && std::abs(FPSchematicYawBoundaryForPair(10, 11) + 22.5) < Eps
+            && std::abs(FPSchematicYawBoundaryForPair(11, 0) + 11.25) < Eps
+            && std::abs(FPSchematicYawBoundaryForPair(1, 0) - 11.25) < Eps
+            && std::abs(FPSchematicYawBoundaryForPair(7, 6) + 180.0) < Eps;
+    }());
+
+    // ---- the right half: hard step at Boundary + 1.5 rising ----
+    TEST("step: front holds inside the dead zone, commits at the trigger", [&]() {
+        return FPSchematicSchmittStep(0, 12.7, 10.0) == 0
+            && FPSchematicSchmittStep(0, 12.8, 10.0) == 1
+            && FPSchematicSchmittStep(0, 11.5, 10.0) == 0;
+    }());
+    TEST("step: each right-half boundary fires at V + 1.5", [&]() {
+        return FPSchematicSchmittStep(1, 24.0, 15.0) == 2
+            && FPSchematicSchmittStep(1, 23.9, 15.0) == 1
+            && FPSchematicSchmittStep(2, 35.3, 30.0) == 3
+            && FPSchematicSchmittStep(2, 35.2, 30.0) == 2
+            && FPSchematicSchmittStep(3, 69.0, 50.0) == 4
+            && FPSchematicSchmittStep(3, 68.9, 50.0) == 3
+            && FPSchematicSchmittStep(4, 136.6, 100.0) == 5
+            && FPSchematicSchmittStep(4, 136.4, 100.0) == 4;
+    }());
+    TEST("step: BackRight->Back wraps through +180", [&]() {
+        return FPSchematicSchmittStep(5, 181.5, 140.0) == 6
+            && FPSchematicSchmittStep(5, 181.4, 140.0) == 5;
+    }());
+
+    // ---- the wrap pair 6<->7 at +-180 ----
+    TEST("step: Back->BackLeft crosses the -180 wrap rising", [&]() {
+        return FPSchematicSchmittStep(6, 181.2, 179.9) == 6
+            && FPSchematicSchmittStep(6, 182.0, 179.9) == 7;
+    }());
+    TEST("step: BackLeft->Back crosses -181.5 (= 178.5) falling", [&]() {
+        return FPSchematicSchmittStep(7, 178.6, -130.0) == 7
+            && FPSchematicSchmittStep(7, 178.4, -130.0) == 6;
+    }());
+
+    // ---- the left half: negative boundaries, mirror triggers ----
+    TEST("step: left-half boundaries fire at their own triggers", [&]() {
+        // rising sweeps commit at Boundary + 1.5: 7->8 at -133.5, 9->10 at
+        // -32.25, 10->11 at -21.0, 11->0 at -9.75 (canonical pair boundaries:
+        // -135 / -33.75 / -22.5 / -11.25)
+        return FPSchematicSchmittStep(7, -133.6, -140.0) == 7
+            && FPSchematicSchmittStep(7, -133.4, -140.0) == 8
+            && FPSchematicSchmittStep(9, -32.3, -40.0) == 9
+            && FPSchematicSchmittStep(9, -32.2, -40.0) == 10
+            && FPSchematicSchmittStep(10, -21.1, -30.0) == 10
+            && FPSchematicSchmittStep(10, -21.0, -30.0) == 11
+            && FPSchematicSchmittStep(11, -9.8, -20.0) == 11
+            && FPSchematicSchmittStep(11, -9.7, -20.0) == 0;
+    }());
+    TEST("step: left-half falling sweeps commit at Boundary - 1.5", [&]() {
+        return FPSchematicSchmittStep(8, -136.6, -80.0) == 7
+            && FPSchematicSchmittStep(8, -136.4, -80.0) == 8
+            && FPSchematicSchmittStep(9, -69.1, -60.0) == 8
+            && FPSchematicSchmittStep(9, -68.9, -60.0) == 9
+            && FPSchematicSchmittStep(10, -35.3, -30.0) == 9
+            && FPSchematicSchmittStep(10, -35.2, -30.0) == 10
+            && FPSchematicSchmittStep(11, -24.1, -20.0) == 10
+            && FPSchematicSchmittStep(11, -23.9, -20.0) == 11;
+    }());
+    TEST("step: negative sweep from Front->NarrowL at -12.75", [&]() {
+        return FPSchematicSchmittStep(0, -12.8, -1.0) == 11
+            && FPSchematicSchmittStep(0, -12.7, -1.0) == 0;
+    }());
+    TEST("step: negative sweep from NarrowR->Front at 9.75", [&]() {
+        return FPSchematicSchmittStep(1, 9.7, 30.0) == 0
+            && FPSchematicSchmittStep(1, 9.8, 30.0) == 1;
+    }());
+
+    // ---- step semantics ----
+    TEST("step: only the boundary in the travel direction can commit", [&]() {
+        // state 2 sweeping DOWN toward 1: the 3/4->Sliver boundary is off limits
+        return FPSchematicSchmittStep(2, 50.0, 60.0) == 2;
+    }());
+    TEST("step: one neighbor per sample (fast drags catch up gradually)", [&]() {
+        return FPSchematicSchmittStep(0, 80.0, 20.0) == 1;
+    }());
+    TEST("step: zero sweep holds", FPSchematicSchmittStep(2, 50.0, 50.0) == 2);
+
+    // ---- pitch axis: Top/Bottom across +-45 ----
+    TEST("step: pitch axis Front->Top at 46.5, Top->Front at 43.5", [&]() {
+        return FPSchematicSchmittStep(0, 46.6, 40.0, true) == 12
+            && FPSchematicSchmittStep(0, 46.4, 40.0, true) == 0
+            && FPSchematicSchmittStep(12, 43.4, 50.0, true) == 0
+            && FPSchematicSchmittStep(12, 43.6, 50.0, true) == 12;
+    }());
+    TEST("step: pitch axis Front->Bottom at -46.5, Bottom->Front at -43.5", [&]() {
+        return FPSchematicSchmittStep(0, -46.6, -40.0, true) == 13
+            && FPSchematicSchmittStep(0, -46.4, -40.0, true) == 0
+            && FPSchematicSchmittStep(13, -43.4, -50.0, true) == 0
+            && FPSchematicSchmittStep(13, -43.6, -50.0, true) == 13;
+    }());
+    TEST("step: yaw states ignore the pitch axis", [&]() {
+        return FPSchematicSchmittStep(2, 50.0, 40.0, true) == 2;
+    }());
+
+    // ---- the WI2 point: the 22.5/67.5 sub-swaps fire at THEIR triggers ----
+    TEST("step: the 22.5 Narrow sub-swap fires at 12.8, not 22.5", [&]() {
+        // the Front|NarrowR edge sits at 11.25 (H); by 22.5 the machine has
+        // long since committed to NarrowR
+        return FPSchematicSchmittStep(0, 12.7, 12.0) == 0
+            && FPSchematicSchmittStep(0, 12.8, 12.5) == 1
+            && FPSchematicSchmittStep(0, 22.5, 12.0) == 1;
+    }());
+    TEST("step: the 67.5 Sliver sub-swap fires at 69.0, not 67.5", [&]() {
+        return FPSchematicSchmittStep(3, 68.9, 60.0) == 3
+            && FPSchematicSchmittStep(3, 69.0, 60.0) == 4
+            && FPSchematicSchmittStep(3, 67.5, 60.0) == 3;
+    }());
+
+    // ---- ThetaFiredRebase: III.6 local delta reset ----
+    TEST("rebase: zero at the captured firing angle", [&]() {
+        return FPSchematicThetaFiredRebase(46.6, 46.6, 1.0) == 0.0
+            && FPSchematicThetaFiredRebase(24.0, 24.0, 0.11) == 0.0
+            && FPSchematicThetaFiredRebase(69.0, 69.0, 0.11) == 0.0;
+    }());
+    TEST("rebase: key-rebase leaves a residual at the real firing moment", [&]() {
+        // nominal 45.1 with the trigger at 46.6: sin-based rebase against the
+        // KEY is nonzero at the firing instant — the III.6 defect fixed by
+        // rebasing against theta_fired instead.
+        return std::abs(FPSchematicThetaFiredRebase(46.6, 45.1, 1.0)) > 1e-3
+            && FPSchematicThetaFiredRebase(46.6, 46.6, 1.0) == 0.0;
+    }());
+    TEST("rebase: the 22.5/67.5 sub-keys leave residuals at their triggers", [&]() {
+        return std::abs(FPSchematicThetaFiredRebase(24.0, 22.5, 0.11)) > 1e-4
+            && std::abs(FPSchematicThetaFiredRebase(69.0, 67.5, 0.11)) > 1e-4;
+    }());
+    TEST("rebase: exact sine form at any sample", [&]() {
+        const double kPi = 3.14159265358979323846;
+        const double Expect = 2.0 * (std::sin(30.0 * kPi / 180.0)
+            - std::sin(10.0 * kPi / 180.0));
+        return std::abs(FPSchematicThetaFiredRebase(30.0, 10.0, 2.0) - Expect) < Eps;
+    }());
+    TEST("rebase: velocity continuity at the firing angle", [&]() {
+        // d/dtheta = Peak*cos(theta)*pi/180 — the same factor the outgoing
+        // zone's sine has at the boundary (only the Peak differs).
+        const double kPi = 3.14159265358979323846;
+        const double Slope = (FPSchematicThetaFiredRebase(46.7, 46.6, 1.0)
+                            - FPSchematicThetaFiredRebase(46.5, 46.6, 1.0)) / 0.2;
+        const double Expect = std::cos(46.6 * kPi / 180.0) * kPi / 180.0;
+        return std::abs(Slope - Expect) / Expect < 0.02;
+    }());
+    TEST("rebase: left-half mirror negates the offset", [&]() {
+        return std::abs(FPSchematicThetaFiredRebase(-30.0, -10.0, 1.0)
+            + FPSchematicThetaFiredRebase(30.0, 10.0, 1.0)) < Eps;
+    }());
+    TEST("rebase: peak scaling is linear", [&]() {
+        return std::abs(FPSchematicThetaFiredRebase(30.0, 10.0, 2.0)
+            - 2.0 * FPSchematicThetaFiredRebase(30.0, 10.0, 1.0)) < Eps;
+    }());
+
+    // ---- normalize ----
+    TEST("step: normalize maps any angle into [-180, 180)", [&]() {
+        return std::abs(FPSchematicNormalizeDeg(181.0) + 179.0) < Eps
+            && std::abs(FPSchematicNormalizeDeg(-181.0) - 179.0) < Eps
+            && std::abs(FPSchematicNormalizeDeg(540.0) + 180.0) < Eps
+            && std::abs(FPSchematicNormalizeDeg(-540.0) + 180.0) < Eps
+            && std::abs(FPSchematicNormalizeDeg(0.0)) < Eps;
+    }());
+}
+
+void TestPhaseIIProximity() {
+    printf("\n=== WI3 Proximity + Seam Margin ===\n");
+    using namespace FPSchematic;
+    const double Eps = 1e-12;
+
+    // ---- XIV.7 clamped inverse proximity ----
+    TEST("prox: F = 1.0 at the reference mid-shot", [&]() {
+        return std::abs(FPProximityFactor(100.0,
+            FPSchematicProximityK(), FPSchematicProximityZMin(),
+            FPSchematicProximityFMin(), FPSchematicProximityFMax()) - 1.0) < Eps;
+    }());
+    TEST("prox: close-ups clamp at F_max (never diverge)", [&]() {
+        return FPProximityFactor(1.0, 100.0, 5.0, 0.25, 2.0) == 2.0
+            && FPProximityFactor(5.0, 100.0, 5.0, 0.25, 2.0) == 2.0
+            && FPProximityFactor(50.0, 100.0, 5.0, 0.25, 2.0) == 2.0
+            && FPProximityFactor(0.0, 100.0, 5.0, 0.25, 2.0) == 2.0;
+    }());
+    TEST("prox: long shots flatten toward F_min", [&]() {
+        return std::abs(FPProximityFactor(200.0, 100.0, 5.0, 0.25, 2.0) - 0.5) < Eps
+            && std::abs(FPProximityFactor(400.0, 100.0, 5.0, 0.25, 2.0) - 0.25) < Eps
+            && FPProximityFactor(1000.0, 100.0, 5.0, 0.25, 2.0) == 0.25;
+    }());
+    TEST("prox: strictly decreasing with distance", [&]() {
+        return FPProximityFactor(80.0, 100.0, 5.0, 0.25, 2.0)
+                > FPProximityFactor(120.0, 100.0, 5.0, 0.25, 2.0)
+            && FPProximityFactor(120.0, 100.0, 5.0, 0.25, 2.0)
+                > FPProximityFactor(200.0, 100.0, 5.0, 0.25, 2.0);
+    }());
+
+    // ---- proximity-scaled swap ramp: smoothstep(1 - d/D) ----
+    TEST("ramp: swap completes exactly at the seam at reference distance", [&]() {
+        return FPSchematicProximitySwapRamp(0.0, 10.0, 1.0) == 1.0
+            && FPSchematicProximitySwapRamp(10.0, 10.0, 1.0) == 0.0
+            && std::abs(FPSchematicProximitySwapRamp(5.0, 10.0, 1.0)
+                - FPSmoothstep01(0.5)) < Eps;
+    }());
+    TEST("ramp: monotone decreasing away from the seam", [&]() {
+        return FPSchematicProximitySwapRamp(2.0, 10.0, 1.0)
+                > FPSchematicProximitySwapRamp(4.0, 10.0, 1.0)
+            && FPSchematicProximitySwapRamp(20.0, 10.0, 1.0) == 0.0;
+    }());
+    TEST("ramp: close range shrinks the window (finishes before the seam)", [&]() {
+        return FPSchematicProximitySwapRamp(5.0, 10.0, 2.0) == 0.0
+            && std::abs(FPSchematicProximitySwapRamp(2.5, 10.0, 2.0)
+                - FPSmoothstep01(0.5)) < Eps
+            && FPSchematicProximitySwapRamp(0.0, 10.0, 2.0) == 1.0;
+    }());
+    TEST("ramp: long shots keep the reference window (F < 1 never widens)", [&]() {
+        return std::abs(FPSchematicProximitySwapRamp(5.0, 10.0, 0.5)
+                - FPSchematicProximitySwapRamp(5.0, 10.0, 1.0)) < Eps;
+    }());
+    TEST("ramp: degenerate window completes immediately", [&]() {
+        return FPSchematicProximitySwapRamp(0.0, 0.0, 1.0) == 1.0
+            && FPSchematicProximitySwapRamp(1.0, 0.0, 1.0) == 1.0;
+    }());
+
+    // ---- II.4 seam margin with the close-up floor ----
+    TEST("seam: percentage * F_prox with the floor", [&]() {
+        return std::abs(FPSchematicSeamMargin(0.10, 1.0, 0.06) - 0.10) < Eps
+            && std::abs(FPSchematicSeamMargin(0.10, 0.5, 0.06) - 0.06) < Eps
+            && std::abs(FPSchematicSeamMargin(0.10, 2.0, 0.06) - 0.20) < Eps
+            && std::abs(FPSchematicSeamMargin(0.05, 1.0, 0.06) - 0.06) < Eps;
+    }());
+    TEST("seam: the same proximity math scales margin and swing", [&]() {
+        // margin at F_prox=2 is exactly twice the reference margin (above floor)
+        return std::abs(FPSchematicSeamMargin(0.10, 2.0, 0.06)
+            - 2.0 * FPSchematicSeamMargin(0.10, 1.0, 0.06)) < Eps;
+    }());
+
+    // ---- bake-region clamp: >= 1 sub-zone from the seam ----
+    TEST("bake: unclamped while a sub-zone of clearance fits", [&]() {
+        return std::abs(FPSchematicBakeRegionClamp(30.0, 60.0, 22.5) - 30.0) < Eps
+            && std::abs(FPSchematicBakeRegionClamp(10.0, 60.0, 22.5) - 10.0) < Eps;
+    }());
+    TEST("bake: clamps so the region never straddles the seam", [&]() {
+        return std::abs(FPSchematicBakeRegionClamp(30.0, 40.0, 22.5) - 17.5) < Eps
+            && std::abs(FPSchematicBakeRegionClamp(45.0, 45.0, 22.5) - 22.5) < Eps;
+    }());
+    TEST("bake: Y22/Y67 sub-keys sit one sub-zone from the seam -> no bake", [&]() {
+        // NarrowR key 22.5 / seam 45; SliverR key 67.5 / seam 90 — distance
+        // 22.5 = exactly one sub-zone, so the bake region collapses to 0:
+        // those zones are pure parallax slide (their art swaps at the seams).
+        return FPSchematicBakeRegionClamp(30.0, 22.5, 22.5) == 0.0
+            && FPSchematicBakeRegionClamp(30.0, 67.5, 22.5) == 30.0;
+    }());
+    TEST("bake: full zones keep a one-sub-zone bake", [&]() {
+        // BackR key 90 / seam 135: distance 45 -> max half-width 22.5
+        return std::abs(FPSchematicBakeRegionClamp(45.0, 45.0, 22.5) - 22.5) < Eps;
+    }());
+}
+
+void TestPhaseIIAnchorRead() {
+    printf("\n=== WI4 Anchor-Critical Read Contract ===\n");
+    using namespace FPSchematic;
+    const double Eps = 1e-9;
+    const double kPi = 3.14159265358979323846;
+    const auto Deg = [&](double D) { return D * kPi / 180.0; };
+
+    // ---- XII.2 registration lookup covers every part ----
+    const char* AllParts[17] = { "Head", "Bangs", "Hair", "BackHair", "EarL",
+        "EarR", "EyeL", "EyeR", "BrowL", "BrowR", "CheekL", "CheekR", "Nose",
+        "Mouth", "Teeth", "Chin", "Neck" };
+    static const char* SilhouetteNames[4] = { "Head", "Bangs", "Hair", "BackHair" };
+    TEST("read: every part resolves an anchor registration", [&]() {
+        for (const char* P : AllParts)
+            if (!FPSchematicAnchorAngleForPart(P)) return false;
+        return FPSchematicAnchorAngleForPart("Scarf") == nullptr
+            && FPSchematicAnchorAngleForPart("") == nullptr;
+    }());
+    TEST("read: silhouettes ride the cranium origin", [&]() {
+        for (const char* P : SilhouetteNames)
+        {
+            const FPSchematicAnchorSphere* A = FPSchematicAnchorAngleForPart(P);
+            if (A->Domain != FPSchematicAnchorDomain::Cranium) return false;
+            if (std::abs(A->Theta0Deg) > Eps || std::abs(A->Phi0Deg) > Eps) return false;
+        }
+        return true;
+    }());
+    TEST("read: jaw parts ride R_jaw with their baselines", [&]() {
+        const FPSchematicAnchorSphere* Neck = FPSchematicAnchorAngleForPart("Neck");
+        const FPSchematicAnchorSphere* Teeth = FPSchematicAnchorAngleForPart("Teeth");
+        return Neck && Neck->Domain == FPSchematicAnchorDomain::Jaw
+            && std::abs(Neck->Phi0Deg + 94.0) < Eps
+            && Teeth && Teeth->Domain == FPSchematicAnchorDomain::Jaw
+            && std::abs(Teeth->Phi0Deg + 52.0) < Eps
+            && std::abs(Teeth->Theta0Deg) < Eps;
+    }());
+    TEST("read: cheeks bulge below-outside the eyes on the cranium", [&]() {
+        const FPSchematicAnchorSphere* CL = FPSchematicAnchorAngleForPart("CheekL");
+        const FPSchematicAnchorSphere* CR = FPSchematicAnchorAngleForPart("CheekR");
+        return CL && CR
+            && CL->Domain == FPSchematicAnchorDomain::Cranium
+            && std::abs(CL->Theta0Deg + 30.0) < Eps
+            && std::abs(CL->Phi0Deg + 35.0) < Eps
+            && std::abs(CR->Theta0Deg - 30.0) < Eps;
+    }());
+
+    // ---- XIV.1 master projection ----
+    TEST("read: eye projection at 45 yaw = Theta 68.1, Phi -14.5", [&]() {
+        const FPSchematicAnchorProjection P =
+            FPSchematicAnchorProjectionAt("EyeR", 45.0, 0.0);
+        return P.bValid
+            && std::abs(P.Dx - std::cos(Deg(-14.5)) * std::sin(Deg(68.1))) < Eps
+            && std::abs(P.Dy - std::sin(Deg(-14.5))) < Eps
+            && std::abs(P.ZSort - std::cos(Deg(-14.5)) * std::cos(Deg(68.1))) < Eps;
+    }());
+    TEST("read: nose sits on its jaw baseline at front (Dy ~ -1.0R)", [&]() {
+        const FPSchematicAnchorProjection P =
+            FPSchematicAnchorProjectionAt("Nose", 0.0, 0.0);
+        return P.bValid
+            && std::abs(P.Dx) < Eps
+            && std::abs(P.Dy + 1.0) < 2e-3
+            && std::abs(P.ZSort - 1.5 * std::cos(Deg(-41.8))) < 1e-6;
+    }());
+    TEST("read: chin is the jaw pole — Dx 0, Dy -1.5R, ZSort 0", [&]() {
+        const FPSchematicAnchorProjection P =
+            FPSchematicAnchorProjectionAt("Chin", 0.0, 0.0);
+        return P.bValid
+            && std::abs(P.Dx) < Eps
+            && std::abs(P.Dy + 1.5) < Eps
+            && std::abs(P.ZSort) < Eps;
+    }());
+    TEST("read: ears sit ON the limb at front view (ZSort = 0)", [&]() {
+        const FPSchematicAnchorProjection P =
+            FPSchematicAnchorProjectionAt("EarR", 0.0, 0.0);
+        return P.bValid
+            && std::abs(P.Dx - std::cos(Deg(-12.0))) < Eps
+            && std::abs(P.ZSort) < Eps;
+    }());
+    TEST("read: unknown name is invalid", [&]() {
+        return !FPSchematicAnchorProjectionAt("Scarf", 0.0, 0.0).bValid;
+    }());
+
+    // ---- the read band: every AnchorCritical part stays inside |x|,|y| <= R
+    // under +-45 pitch at every yaw ----
+    const double Yaws[7] = { 0.0, 22.5, 45.0, 67.5, 90.0, 135.0, 180.0 };
+    const char* Critical[6] = { "Head", "Bangs", "Hair", "BackHair", "EarL", "EarR" };
+    const double Pitches[3] = { -45.0, 0.0, 45.0 };
+    TEST("read: anchor-critical parts never leave the band under +-45 pitch", [&]() {
+        for (const char* P : Critical)
+            for (double Y : Yaws)
+                for (double Pi : Pitches)
+                    if (!FPSchematicAnchorCriticalInReadBand(P, Y, Pi)) return false;
+        return true;
+    }());
+    TEST("read: bridge-safe parts are free to leave the band", [&]() {
+        // the nose dives to -1.5R under the Bottom pitch — legal, it is not
+        // load-bearing (XII.4)
+        const FPSchematicAnchorProjection P =
+            FPSchematicAnchorProjectionAt("Nose", 0.0, -45.0);
+        return std::abs(P.Dy) > 1.0
+            && FPSchematicAnchorCriticalInReadBand("Nose", 0.0, -45.0);
+    }());
+    TEST("read: out-of-zone angles are always in compliance", [&]() {
+        return FPSchematicAnchorCriticalInReadBand("Head", 0.0, 75.0);
+    }());
+
+    // ---- the ear read: back-fuzz past the profile, mirror-symmetric ----
+    TEST("read: the turn-side ear folds to back-fuzz past the profile", [&]() {
+        return FPSchematicAnchorProjectionAt("EarR", 45.0, 0.0).ZSort < 0.0
+            && FPSchematicAnchorProjectionAt("EarL", 45.0, 0.0).ZSort > 0.0
+            && FPSchematicAnchorProjectionAt("EarL", -45.0, 0.0).ZSort < 0.0
+            && FPSchematicAnchorProjectionAt("EarR", -45.0, 0.0).ZSort > 0.0;
+    }());
+
+    // ---- the crown read: nose/top of head over the crown ----
+    TEST("read: top of head stays over the nose at Top pitch", [&]() {
+        return FPSchematicAnchorProjectionAt("Head", 0.0, 45.0).Dy
+                > FPSchematicAnchorProjectionAt("Nose", 0.0, 45.0).Dy;
+    }());
+    TEST("read: the nose rises past the ear-tops toward the crown", [&]() {
+        // at Top pitch the nose (jaw, phi -41.8) sweeps up past the ear line
+        return FPSchematicAnchorProjectionAt("Nose", 0.0, 45.0).Dy
+                > FPSchematicAnchorProjectionAt("EarR", 0.0, 0.0).Dy
+            && FPSchematicAnchorProjectionAt("Nose", 0.0, 45.0).Dy < 1.0;
+    }());
+    TEST("read: the nose crosses the crown (past +1.0R) only at the Top pole", [&]() {
+        return FPSchematicAnchorProjectionAt("Nose", 0.0, 90.0).Dy > 1.0
+            && FPSchematicAnchorProjectionAt("Nose", 0.0, 45.0).Dy < 1.0;
+    }());
+    TEST("read: the nose rises monotonically with pitch over the anchor zone", [&]() {
+        return FPSchematicAnchorProjectionAt("Nose", 0.0, 45.0).Dy
+                > FPSchematicAnchorProjectionAt("Nose", 0.0, 0.0).Dy
+            && FPSchematicAnchorProjectionAt("Nose", 0.0, 0.0).Dy
+                > FPSchematicAnchorProjectionAt("Nose", 0.0, -45.0).Dy;
+    }());
+}
+
+void TestPhaseIIPinLag() {
+    printf("\n=== WI5 Pin Lag + Chain Decay ===\n");
+    using namespace FPSchematic;
+    const double Eps = 1e-12;
+
+    TEST("lag: defaults sit in the whip-turn bands", [&]() {
+        return FPSchematicPinLagFraction >= 0.15 && FPSchematicPinLagFraction <= 0.25
+            && FPSchematicChainDecayRatio >= 0.65 && FPSchematicChainDecayRatio <= 0.75;
+    }());
+    TEST("lag: V_lag = 0.20 * |V|, clamped by MaxLag", [&]() {
+        return std::abs(FPSchematicLagVelocity(2.0, 0.0, 0.20, 1.0) - 0.4) < Eps
+            && FPSchematicLagVelocity(10.0, 0.0, 0.20, 1.0) == 1.0
+            && FPSchematicLagVelocity(10.0, 0.0, 0.20, 0.5) == 0.5
+            && std::abs(FPSchematicLagVelocity(3.0, 4.0, 0.20, 2.0) - 1.0) < Eps
+            && FPSchematicLagVelocity(0.0, 0.0, 0.20, 1.0) == 0.0;
+    }());
+    TEST("lag: chain decay damps 0.70 per link", [&]() {
+        return std::abs(FPSchematicChainDecay(1.0, 0.70) - 0.70) < Eps
+            && std::abs(FPSchematicChainDecay(0.70, 0.70) - 0.49) < Eps
+            && std::abs(FPSchematicChainDecay(0.49, 0.70) - 0.343) < Eps
+            && FPSchematicChainDecay(0.0, 0.70) == 0.0;
+    }());
+    TEST("lag: a flick travels 0.20 then 0.70 per hop without overshoot", [&]() {
+        // unit flick: tip velocity 0.20, then 0.14 after one chain hop,
+        // 0.098 after two — inside the MaxLag clamp throughout
+        const double Tip = FPSchematicLagVelocity(100.0, 0.0, 0.20, 100.0);
+        return std::abs(Tip - 20.0) < Eps
+            && std::abs(FPSchematicChainDecay(Tip, 0.70) - 14.0) < Eps
+            && std::abs(FPSchematicChainDecay(14.0, 0.70) - 9.8) < Eps
+            && Tip <= 100.0;
+    }());
+    TEST("lag: S1 return-to-zero (XIV.2 context selector)", [&]() {
+        return FPPinLagCurve(0.0) == 0.0
+            && FPPinLagCurve(1.0) == 1.0
+            && std::abs(FPPinLagCurve(0.5) - 0.5) < Eps
+            && std::abs(FPPinLagCurve(0.25) - 0.15625) < Eps
+            && std::abs(FPPinLagCurve(0.75) - 0.84375) < Eps;
+    }());
+    TEST("lag: return-to-zero is clamped and symmetric", [&]() {
+        return FPPinLagCurve(-1.0) == 0.0
+            && FPPinLagCurve(2.0) == 1.0
+            && std::abs(FPPinLagCurve(0.25) + FPPinLagCurve(0.75) - 1.0) < Eps;
+    }());
+}
+
+void TestPhaseIIShapeContrast() {
+    printf("\n=== WI6 Shape Contrast ~4:1 ===\n");
+    using namespace FPSchematic;
+    const std::vector<FPSchematicPart> Parts = DefaultPartSchematics();
+    auto Find = [&](const char* N) -> const FPSchematicPart& {
+        return *FPSchematicFindPart(Parts, N);
+    };
+    const std::vector<FPSchematicPoint> MakeKite = []() {
+        std::vector<FPSchematicPoint> K;
+        K.push_back({ 0.5, 0.1 }); K.push_back({ 0.55, 0.4 });
+        K.push_back({ 0.5, 0.9 }); K.push_back({ 0.45, 0.4 });
+        return K;
+    }();
+
+    TEST("shape: ratio contract", [&]() {
+        return std::abs(FPShapeContrastRatio(40, 10) - 4.0) < 1e-12
+            && std::abs(FPShapeContrastRatio(39, 10) - 3.9) < 1e-12
+            && FPShapeContrastRatio(0, 0) > 1e8;
+    }());
+    TEST("shape: the ~4:1 gate", [&]() {
+        return FPShapeContrastPasses(40, 10)     // exactly 4:1 passes
+            && !FPShapeContrastPasses(39, 10)    // 3.9:1 fails
+            && FPShapeContrastPasses(8, 2)
+            && !FPShapeContrastPasses(1, 1)
+            && FPShapeContrastPasses(0, 0);      // no sharp forms pass trivially
+    }());
+    TEST("shape: the cranium reads rounded (ratio comfortably > 4)", [&]() {
+        const std::vector<char> Sharp = FPSchematicDetectSharpCorners(Find("Head").Outline);
+        int S = 0;
+        for (char C : Sharp) if (C) ++S;
+        return FPSchematicShapeContrastForRing(Find("Head").Outline)
+            && FPShapeContrastPasses((int)Find("Head").Outline.size() - S, S);
+    }());
+    TEST("shape: the mouth lip is a rounded form", [&]() {
+        return FPSchematicShapeContrastForRing(Find("Mouth").Outline);
+    }());
+    TEST("shape: sharp forms are sparse per-part — ear and hair tips", [&]() {
+        // post-smoothing the canonical set carries sharp corners at ear tips
+        // and hair tip; the brows are now gentle arches (rounded) and the
+        // nose is a micro-triangle (1 sharp)
+        auto SharpCount = [&](const char* N) {
+            const std::vector<char> Sharp = FPSchematicDetectSharpCorners(Find(N).Outline);
+            int S = 0;
+            for (char C : Sharp) if (C) ++S;
+            return S;
+        };
+        return SharpCount("EarL") == 1 && SharpCount("EarR") == 1
+            && SharpCount("Hair") == 1
+            && SharpCount("Nose") == 1
+            && FPSchematicShapeContrastForRing(Find("EarL").Outline)
+            && FPSchematicShapeContrastForRing(Find("Hair").Outline);
+    }());
+    TEST("shape: the authored nose reads rounded (micro-triangle, smoothed)", [&]() {
+        // the guide's sharp-form list names the nose tip, but the authored
+        // micro-triangle ring is below the 40-deg threshold at every vertex —
+        // the contract functions report the data; the face-level gate below is
+        // the ruling read
+        return FPSchematicShapeContrastForRing(Find("Nose").Outline)
+            && !FPShapeContrastPasses(2, 1)   // a 2:1 cell still fails the gate
+            && FPShapeContrastPasses(4, 1);
+    }());
+    TEST("shape: the aggregate canonical face clears the 4:1 gate", [&]() {
+        // live canonical data: 4 sharp corners (Nose/EarL/EarR/Hair) vs 191 round
+        int Round = 0;
+        int Sharp = 0;
+        for (const FPSchematicPart& P : Parts)
+        {
+            const std::vector<char> Flags = FPSchematicDetectSharpCorners(P.Outline);
+            for (char C : Flags) { if (C) ++Sharp; else ++Round; }
+        }
+        return Sharp == 4 && Round == 191
+            && FPShapeContrastPasses(Round, Sharp);
+    }());
+    TEST("shape: negative control — a needle kite fails", [&]() {
+        const std::vector<FPSchematicPoint> Kite = MakeKite;
+        return !FPSchematicShapeContrastForRing(Kite);
+    }());
+    TEST("shape: a perfect circle passes trivially", [&]() {
+        std::vector<FPSchematicPoint> Circle;
+        for (int i = 0; i < 12; ++i)
+        {
+            const double A = i * 6.2831853071795864769 / 12.0;
+            Circle.push_back({ 0.5 + 0.4 * std::cos(A), 0.5 + 0.4 * std::sin(A) });
+        }
+        return FPSchematicShapeContrastForRing(Circle);
+    }());
+}
+
+void TestPhaseA8Asymmetry() {
+    printf("\n=== A.8 Deliberate Asymmetry Counter ===\n");
+    using namespace FPSchematic;
+    const std::vector<FPSchematicPart> Parts = DefaultPartSchematics();
+    auto Find = [&](const char* N) -> const FPSchematicPart& {
+        return *FPSchematicFindPart(Parts, N);
+    };
+    const auto FrontRing = [&]() {
+        return FPSchematicOutlineForState(
+            "Bangs", Find("Bangs").Outline, Find("Bangs").DepthClass, 0);
+    }();
+    TEST("asymmetry: the front cowlick is a pointy crown spike (not a cap)", [&]() {
+        return FPSchematicCowlickInRing(FrontRing)
+            && FrontRing.size() == 27;   // 24-point wedge + the 3-point ahoge
+    }());
+    TEST("asymmetry: the cowlick tip breaks the centerline, mirror-exact", [&]() {
+        // the canonical ahoge tip sits at x = 0.47 (its mirror 0.53 is absent —
+        // the spike is a 3-vertex group, not on the centerline); the mirror
+        // state resolves the partner's ring mirrored to exactly 0.53
+        auto TipX = [&](int s) {
+            const std::vector<FPSchematicPoint> R = FPSchematicOutlineForState(
+                "Bangs", Find("Bangs").Outline, Find("Bangs").DepthClass, s);
+            int iMin = 0;
+            for (int i = 1; i < (int)R.size(); ++i)
+                if (R[(size_t)i].Y < R[(size_t)iMin].Y) iMin = i;
+            return R[(size_t)iMin].X;
+        };
+        const double X0 = TipX(0);
+        const double X11 = TipX(11);
+        return std::abs(X0 - 0.47) < 1e-9
+            && std::abs(X11 - 0.53) < 1e-9
+            && std::abs(X0 - 0.5) >= 0.02
+            && std::abs(X11 - 0.5) >= 0.02;
+    }());
+    TEST("asymmetry: the 3/4 mouth reads compressed-off-center on BOTH sides", [&]() {
+        // states 2/3 (right 3/4) and 9/10 (left 3/4) resolve the P45 ring /
+        // its mirror; the centroid shift is the in-zone asymmetry cue
+        for (int s = 0; s < 14; ++s)
+        {
+            const std::vector<FPSchematicPoint> R = FPSchematicOutlineForState(
+                "Mouth", Find("Mouth").Outline, Find("Mouth").DepthClass, s);
+            if (s == 2 || s == 3 || s == 9 || s == 10)
+            {
+                if (R.size() < 3 || !FPSchematicMouthOffCenter(R)) return false;
+            }
+        }
+        return true;
+    }());
+    TEST("asymmetry: the front/back mouth stays centered", [&]() {
+        for (int s : { 0, 1, 6, 11, 13 })
+        {
+            const std::vector<FPSchematicPoint> R = FPSchematicOutlineForState(
+                "Mouth", Find("Mouth").Outline, Find("Mouth").DepthClass, s);
+            if (R.size() >= 3 && FPSchematicMouthOffCenter(R)) return false;
+        }
+        return true;
+    }());
+    TEST("asymmetry: exactly 1-2 cues on the two-sided cells, -1 elsewhere", [&]() {
+        for (int s = 0; s < 14; ++s)
+        {
+            const int C = FPSchematicAsymmetryCueCount(s);
+            if (s == 0 || s == 1 || s == 11) { if (C != 1) return false; }
+            else if (s == 2 || s == 3 || s == 9 || s == 10) { if (C != 2) return false; }
+            else if (C != -1) return false;
+        }
+        return true;
+    }());
+    TEST("asymmetry: cue owners carry through the mirror states", [&]() {
+        // left-half states resolve the partner's ring mirrored — the cowlick
+        // classification must survive the mirror (y unchanged by X -> 1-X)
+        for (int s = 7; s <= 11; ++s)
+        {
+            const std::vector<FPSchematicPoint> R = FPSchematicOutlineForState(
+                "Bangs", Find("Bangs").Outline, Find("Bangs").DepthClass, s);
+            if (!FPSchematicCowlickInRing(R)) return false;
+        }
+        return true;
+    }());
+    TEST("asymmetry: cross-zone continuity holds (no cell re-symmetrizes a cue)", [&]() {
+        return FPSchematicAsymmetryContinuity();
+    }());
+    TEST("asymmetry: negative control — a flat-cap crown reads no cowlick", [&]() {
+        // a re-symmetrized ring: crown flattened to one level => the pop
+        // defect detector fires
+        std::vector<FPSchematicPoint> Flat = FrontRing;
+        for (auto& P : Flat)
+            if (P.Y <= 0.012) P.Y = 0.010;
+        return !FPSchematicCowlickInRing(Flat);
+    }());
+    TEST("asymmetry: negative control — a centered mouth reads not-off-center", [&]() {
+        std::vector<FPSchematicPoint> C;
+        C.push_back({ 0.44, 0.76 }); C.push_back({ 0.47, 0.78 });
+        C.push_back({ 0.53, 0.78 }); C.push_back({ 0.56, 0.76 });
+        C.push_back({ 0.53, 0.75 }); C.push_back({ 0.47, 0.75 });
+        return !FPSchematicMouthOffCenter(C);
+    }());
+}
+
+void TestPhaseA10FillChains() {
+    printf("\n=== A.10 Order-0 Fill Chain Contract ===\n");
+    using namespace FPSchematic;
+    const std::vector<FPSchematicPart> Parts = DefaultPartSchematics();
+    auto Find = [&](const char* N) -> const FPSchematicPart& {
+        return *FPSchematicFindPart(Parts, N);
+    };
+    const auto Pt = [](double x, double y) { return FPSchematicPoint{ x, y }; };
+    const auto FaceOf = [&](const char* N) {
+        return FPSchematicArtFaceForRing(N, Find(N).Outline);
+    };
+    TEST("fill: the eye face paints three Order-0 flat fills, all closed", [&]() {
+        const FPSchematicArtFace F = FaceOf("EyeL");
+        int Fills = 0;
+        for (const FPSchematicArtChain& Ch : F.Chains)
+        {
+            if (Ch.Order == 0)
+            {
+                ++Fills;
+                if (!Ch.bClosed || !Ch.bFill || Ch.WrapCov != -1) return false;
+                if (Ch.Cmds.size() != 4) return false;   // 4-arc ellipse
+            }
+        }
+        return Fills == 3;   // iris + two highlights
+    }());
+    TEST("fill: the head gloss and hair gloss are contained fills", [&]() {
+        return FPSchematicArtFacePasses("Head", Find("Head").Outline)
+            && FPSchematicArtFacePasses("Bangs", Find("Bangs").Outline)
+            && FPSchematicArtFacePasses("Hair", Find("Hair").Outline);
+    }());
+    TEST("fill: every fill chain sits inside its part ring bbox", [&]() {
+        for (const FPSchematicPart& P : Parts)
+            if (!FPSchematicArtFacePasses(P.Name, P.Outline)) return false;
+        return true;
+    }());
+    TEST("fill: the 17x14 state sweep paints only contained fills", [&]() {
+        // every authored slot ring (including the mirrored left-half reads)
+        // keeps its Order-0 patches inside the contour
+        for (const FPSchematicPart& P : Parts)
+            for (int s = 0; s < 14; ++s)
+            {
+                const std::vector<FPSchematicPoint> R = FPSchematicOutlineForState(
+                    P.Name, P.Outline, P.DepthClass, s);
+                if (R.size() < 3) continue;
+                if (!FPSchematicArtFacePasses(P.Name, R)) return false;
+            }
+        return true;
+    }());
+    TEST("fill: negative control — an escaping fill fails", [&]() {
+        // a fill chain whose endpoint pokes outside the ring bbox
+        std::vector<FPSchematicPoint> Ring;
+        Ring.push_back({ 0.3, 0.3 }); Ring.push_back({ 0.7, 0.3 });
+        Ring.push_back({ 0.7, 0.7 }); Ring.push_back({ 0.3, 0.7 });
+        FPSchematicArtFace Face;
+        FPSchematicArtChain Esc;
+        Esc.Start = Pt(0.5, 0.5);
+        Esc.bClosed = true;
+        Esc.bFill = true;
+        Esc.Order = 0;
+        FPSchematicCurveCmd C;
+        C.Type = 1;
+        C.End = Pt(0.9, 0.5);   // outside x <= 0.7
+        C.C1 = Pt(0.5, 0.5);
+        C.C2 = Pt(0.9, 0.5);
+        Esc.Cmds.push_back(C);
+        Face.Chains.push_back(Esc);
+        return !FPSchematicFillChainPasses(Face, Ring);
+    }());
+    TEST("fill: negative control — an open or dashed fill fails", [&]() {
+        std::vector<FPSchematicPoint> Ring;
+        Ring.push_back(Pt(0.3, 0.3));
+        Ring.push_back(Pt(0.7, 0.3));
+        Ring.push_back(Pt(0.7, 0.7));
+        Ring.push_back(Pt(0.3, 0.7));
+        FPSchematicArtChain Open;
+        Open.Start = Pt(0.4, 0.4);
+        Open.bClosed = false;
+        Open.bFill = true;
+        Open.Order = 0;
+        Open.WrapCov = 0;   // a dashed fill is also invalid
+        FPSchematicArtFace F1;
+        F1.Chains.push_back(Open);
+        if (FPSchematicFillChainPasses(F1, Ring)) return false;
+        FPSchematicArtChain NonFill;
+        NonFill.Start = Pt(0.4, 0.4);
+        NonFill.bClosed = true;
+        NonFill.bFill = false;   // a stroke with Order 0 is a painter bug
+        NonFill.Order = 0;
+        FPSchematicArtFace F2;
+        F2.Chains.push_back(NonFill);
+        return !FPSchematicFillChainPasses(F2, Ring);
+    }());
+}
+
+void TestPhaseB12Residual() {
+    printf("\n=== B.12 Residual Correction ===\n");
+    using namespace FPSchematic;
+    const auto Pt = [](double x, double y) { return FPSchematicPoint{ x, y }; };
+    const FPSchematicPoint PArt = Pt(0.21, 0.34);
+    const FPSchematicPoint PMath = Pt(0.19, 0.30);
+    const FPSchematicPoint E = FPSchematicResidualCorrection(PArt, PMath);
+    TEST("residual: E = P_art - P_math", [&]() {
+        return std::abs(E.X - 0.02) < 1e-12 && std::abs(E.Y - 0.04) < 1e-12;
+    }());
+    TEST("residual: the corner identity holds — P_math + E == P_art", [&]() {
+        return std::abs((PMath.X + E.X) - PArt.X) < 1e-12
+            && std::abs((PMath.Y + E.Y) - PArt.Y) < 1e-12;
+    }());
+    const FPSchematicPoint E00 = Pt(0.01, 0.02), E10 = Pt(0.03, -0.01);
+    const FPSchematicPoint E01 = Pt(-0.02, 0.04), E11 = Pt(0.05, 0.01);
+    TEST("residual: bilinear hits each corner residual exactly", [&]() {
+        const FPSchematicPoint R00 = FPSchematicBilinearResidual(
+            10.0, 20.0, 10.0, 40.0, 20.0, 60.0, E00, E10, E01, E11);
+        const FPSchematicPoint R10 = FPSchematicBilinearResidual(
+            40.0, 20.0, 10.0, 40.0, 20.0, 60.0, E00, E10, E01, E11);
+        const FPSchematicPoint R01 = FPSchematicBilinearResidual(
+            10.0, 60.0, 10.0, 40.0, 20.0, 60.0, E00, E10, E01, E11);
+        const FPSchematicPoint R11 = FPSchematicBilinearResidual(
+            40.0, 60.0, 10.0, 40.0, 20.0, 60.0, E00, E10, E01, E11);
+        auto Close = [](const FPSchematicPoint& A, const FPSchematicPoint& B) {
+            return std::abs(A.X - B.X) < 1e-12 && std::abs(A.Y - B.Y) < 1e-12;
+        };
+        return Close(R00, E00) && Close(R10, E10)
+            && Close(R01, E01) && Close(R11, E11);
+    }());
+    TEST("residual: the cell center is the average of the four corners", [&]() {
+        const FPSchematicPoint R = FPSchematicBilinearResidual(
+            25.0, 40.0, 10.0, 40.0, 20.0, 60.0, E00, E10, E01, E11);
+        const double Ax = 0.25 * (E00.X + E10.X + E01.X + E11.X);
+        const double Ay = 0.25 * (E00.Y + E10.Y + E01.Y + E11.Y);
+        return std::abs(R.X - Ax) < 1e-12 && std::abs(R.Y - Ay) < 1e-12;
+    }());
+    TEST("residual: the 45-90 pitch wedge applies one fixed offset", [&]() {
+        // Top view has no yaw grid — the correction is the single +90 asset
+        // offset regardless of yaw or pitch inside the wedge
+        const FPSchematicPoint ETop = Pt(0.015, -0.03);
+        const FPSchematicPoint R60 = FPSchematicResidualInTopWedge(ETop, 60.0);
+        const FPSchematicPoint R90 = FPSchematicResidualInTopWedge(ETop, 90.0);
+        return std::abs(R60.X - ETop.X) < 1e-12 && std::abs(R60.Y - ETop.Y) < 1e-12
+            && std::abs(R90.X - ETop.X) < 1e-12 && std::abs(R90.Y - ETop.Y) < 1e-12;
+    }());
+    TEST("residual: corrected live position at the corner equals P_art", [&]() {
+        // the full pipeline: P_math_corner + E(theta,phi) == P_art at the corner
+        const FPSchematicPoint PEdge = FPSchematicBilinearResidual(
+            10.0, 20.0, 10.0, 40.0, 20.0, 60.0, E00, E10, E01, E11);
+        const FPSchematicPoint PMathCorner = Pt(0.190, 0.300);
+        return std::abs(PMathCorner.X + PEdge.X - 0.200) < 1e-12
+            && std::abs(PMathCorner.Y + PEdge.Y - 0.320) < 1e-12;
+    }());
+}
+
+// ========================
+// VECTOR ART PIPELINE (guide-token grid library, art_guide Part VIII)
+// ========================
+void TestVectorSvgParse() {
+    printf("\n=== Vector SVG Parse (FPSvg, guide grid files) ===\n");
+    using namespace FPSvg;
+
+    const char* SvgFull =
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1000 1000\">"
+        "  <g id=\"cell\" fill=\"#ff8800\" stroke=\"#101418\" stroke-width=\"6\">"
+        "    <path d=\"M100,100 L900,100 L900,900 L100,900 Z\"/>"
+        "    <circle cx=\"500\" cy=\"500\" r=\"100\"/>"
+        "    <ellipse cx=\"200\" cy=\"200\" rx=\"50\" ry=\"30\"/>"
+        "    <rect x=\"600\" y=\"600\" width=\"80\" height=\"40\"/>"
+        "    <line x1=\"0\" y1=\"0\" x2=\"100\" y2=\"100\"/>"
+        "    <polygon points=\"0,0 100,0 50,100\"/>"
+        "    <path d=\"M0,0 C100,200 300,200 400,0 S600,-200 700,0 Q800,100 900,0 T1100,0\"/>"
+        "    <path d=\"M100,100 A 200 100 30 1 0 300 300\"/>"
+        "    <path d=\"m 10 10 l 20 0 h 10 v 20 c 1 2 3 4 5 6 z\"/>"
+        "  </g>"
+        "</svg>";
+    FDocument Doc;
+    TEST("vparse: full-feature document parses", [&]() {
+        return ParseDocument(SvgFull, strlen(SvgFull), Doc);
+    }());
+    TEST("vparse: 9 paths from 9 shape/path elements", [&]() {
+        return Doc.Paths.size() == 9;
+    }());
+    TEST("vparse: group fill/stroke/width inherited by every path", [&]() {
+        for (const FPath& P : Doc.Paths)
+            if (!P.bHasFill || std::abs(P.FillR - 1.0) > 1e-6 || std::abs(P.FillG - 0x88 / 255.0) > 1e-6)
+                return false;
+        for (const FPath& P : Doc.Paths)
+            if (!P.bHasStroke || std::abs(P.StrokeWidth - 6.0) > 1e-6)
+                return false;
+        return true;
+    }());
+    TEST("vparse: every path carries the enclosing group id", [&]() {
+        for (const FPath& P : Doc.Paths)
+            if (P.GroupId != "cell") return false;
+        return true;
+    }());
+    TEST("vparse: points normalized to the 0..1 viewBox (y-down)", [&]() {
+        for (const FPath& P : Doc.Paths)
+        {
+            if (P.Pts.empty()) return false;
+            const FPoint& Start = P.Pts[0];
+            if (Start.X < -1e-9 || Start.X > 1.0 + 1e-9) return false;
+            if (Start.Y < -1e-9 || Start.Y > 1.0 + 1e-9) return false;
+        }
+        return true;
+    }());
+    TEST("vparse: rect/circle/ellipse are closed", [&]() {
+        return Doc.Paths[0].bClosed && Doc.Paths[1].bClosed && Doc.Paths[2].bClosed;
+    }());
+    TEST("vparse: smooth S ends in a quad, arc expands to cubics, relative path closes", [&]() {
+        return Doc.Paths[6].Cmds.back() == ECmd::QuadTo
+            && Doc.Paths[7].Cmds.size() >= 3
+            && Doc.Paths[8].bClosed;
+    }());
+    TEST("vparse: rect normalized to its viewBox corners", [&]() {
+        const FPoint& P0 = Doc.Paths[0].Pts[0];
+        return std::abs(P0.X - 0.1) < 1e-6 && std::abs(P0.Y - 0.1) < 1e-6;
+    }());
+
+    const char* SvgStyle =
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1000 1000\">"
+        "<path d=\"M0,0 L100,100\" style=\"fill:#112233;stroke:#445566;stroke-width:7\"/>"
+        "</svg>";
+    FDocument SDoc;
+    ParseDocument(SvgStyle, strlen(SvgStyle), SDoc);
+    TEST("vparse: style attribute parsed into fill/stroke/width", [&]() {
+        if (SDoc.Paths.size() != 1) return false;
+        const FPath& P = SDoc.Paths[0];
+        return std::abs(P.FillR - 0x11 / 255.0) < 1e-6 && std::abs(P.FillG - 0x22 / 255.0) < 1e-6
+            && std::abs(P.FillB - 0x33 / 255.0) < 1e-6
+            && std::abs(P.StrokeR - 0x44 / 255.0) < 1e-6
+            && std::abs(P.StrokeWidth - 7.0) < 1e-6;
+    }());
+
+    const char* SvgXform =
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1000 1000\">"
+        "<g transform=\"translate(250,250) scale(0.5)\">"
+        "<rect x=\"0\" y=\"0\" width=\"1000\" height=\"1000\"/>"
+        "</g></svg>";
+    FDocument XDoc;
+    ParseDocument(SvgXform, strlen(SvgXform), XDoc);
+    TEST("vparse: group transform maps the 0..1 canvas corners", [&]() {
+        if (XDoc.Paths.size() != 1) return false;
+        const FPath& P = XDoc.Paths[0];
+        const FPoint& P0 = P.Pts[0];
+        const FPoint& P2 = P.Pts[2];
+        return std::abs(P0.X - 0.25) < 1e-6 && std::abs(P0.Y - 0.25) < 1e-6
+            && std::abs(P2.X - 0.75) < 1e-6 && std::abs(P2.Y - 0.75) < 1e-6;
+    }());
+
+    const char* SvgVb =
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"100 100 800 800\">"
+        "<rect x=\"100\" y=\"100\" width=\"800\" height=\"800\"/>"
+        "</svg>";
+    FDocument VDoc;
+    ParseDocument(SvgVb, strlen(SvgVb), VDoc);
+    TEST("vparse: non-zero viewBox origin rebases coordinates", [&]() {
+        if (VDoc.Paths.size() != 1) return false;
+        const FPoint& P0 = VDoc.Paths[0].Pts[0];
+        const FPoint& P2 = VDoc.Paths[0].Pts[2];
+        return std::abs(P0.X) < 1e-9 && std::abs(P0.Y) < 1e-9
+            && std::abs(P2.X - 1.0) < 1e-9 && std::abs(P2.Y - 1.0) < 1e-9;
+    }());
+
+    const char* SvgNest =
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1000 1000\">"
+        "<g id=\"outer\" fill=\"#ff0000\">"
+        "<path d=\"M0,0 L10,10\"/>"
+        "<g id=\"inner\" stroke=\"#00ff00\">"
+        "<path d=\"M0,0 L20,20\"/>"
+        "</g>"
+        "</g></svg>";
+    FDocument NDoc;
+    ParseDocument(SvgNest, strlen(SvgNest), NDoc);
+    TEST("vparse: nested groups inherit style and keep their own id", [&]() {
+        if (NDoc.Paths.size() != 2) return false;
+        const FPath& A = NDoc.Paths[0];
+        const FPath& B = NDoc.Paths[1];
+        return A.GroupId == "outer" && A.bHasFill
+            && B.GroupId == "inner" && B.bHasFill && B.bHasStroke
+            && std::abs(B.StrokeG - 1.0) < 1e-6;
+    }());
+
+    const char* SvgBad = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1000 1000\">"
+                         "<path d=\"M 0 0 Q 1\"/></svg>";
+    FDocument BDoc;
+    TEST("vparse: malformed path data reports an error", [&]() {
+        return !ParseDocument(SvgBad, strlen(SvgBad), BDoc) && !BDoc.Error.empty();
+    }());
+
+    FDocument M = MirrorX(Doc);
+    TEST("vparse: mirror keeps path count, ids, and x-sums to 1", [&]() {
+        if (M.Paths.size() != Doc.Paths.size()) return false;
+        for (size_t i = 0; i < M.Paths.size(); ++i)
+        {
+            if (M.Paths[i].GroupId != Doc.Paths[i].GroupId) return false;
+            for (size_t j = 0; j < M.Paths[i].Pts.size(); ++j)
+                if (std::abs(M.Paths[i].Pts[j].X + Doc.Paths[i].Pts[j].X - 1.0) > 1e-9)
+                    return false;
+        }
+        return true;
+    }());
+}
+
+void TestVectorGridSpec() {
+    printf("\n=== Vector Grid Spec (FPSvg guide contract) ===\n");
+    using namespace FPSvg;
+
+    static const char* kFeatures[17] = {
+        "FaceBase", "Nose", "HairFront", "HairBack", "BackHair",
+        "Eye_Near", "Eye_Far", "Brow_Near", "Brow_Far",
+        "Cheek_Near", "Cheek_Far", "Ear_Near", "Ear_Far",
+        "Mouth", "Teeth", "Chin", "Neck"
+    };
+    TEST("vspec: feature table is exactly the 17 guide features", [&]() {
+        if (FeatureTableCount() != 17) return false;
+        for (int i = 0; i < 17; ++i)
+            if (strcmp(FeatureTable()[i].Feature, kFeatures[i]) != 0) return false;
+        return true;
+    }());
+    TEST("vspec: part→feature and feature→part round-trip for all 17", [&]() {
+        for (int i = 0; i < FeatureTableCount(); ++i)
+        {
+            const char* Part = FeatureTable()[i].Part;
+            const char* Feat = FeatureTable()[i].Feature;
+            if (strcmp(FeatureTokenForPart(Part), Feat) != 0) return false;
+            if (strcmp(PartForFeature(Feat), Part) != 0) return false;
+        }
+        return true;
+    }());
+    TEST("vspec: canonical part aliases (Head, Nose, Eyes, Ears)", [&]() {
+        return strcmp(FeatureTokenForPart("Head"), "FaceBase") == 0
+            && strcmp(FeatureTokenForPart("Nose"), "Nose") == 0
+            && strcmp(FeatureTokenForPart("EyeR"), "Eye_Near") == 0
+            && strcmp(FeatureTokenForPart("EyeL"), "Eye_Far") == 0
+            && strcmp(FeatureTokenForPart("EarL"), "Ear_Far") == 0;
+    }());
+    TEST("vspec: Proj is an auxiliary token, not a canonical part mapping", [&]() {
+        return PartForFeature("Proj") == nullptr
+            && FeatureIsKnown("Proj") && FeatureIsKnown("Nose")
+            && strcmp(AuxiliaryFeatureAt(0), "Proj") == 0
+            && AuxiliaryFeatureCount() == 1;
+    }());
+
+    static const char* kState[14] = {
+        "Front", "Narrow", "3Q", "Sliver", "Profile", "Back3Q", "Back",
+        "Back3Q_L", "Sliver_L", "Profile_L", "3Q_L", "Narrow_L",
+        "Top", "UnderPlane"
+    };
+    static const char* kYaw[14] = {
+        "Y00", "Y22", "Y45", "Y67", "Y90", "Y135", "Y180",
+        "Y135", "Y67", "Y90", "Y45", "Y22", "Y00", "Y00"
+    };
+    static const char* kSlot[14] = {
+        "P0", "P0", "P45", "P45", "P90", "P135", "P180",
+        "P135", "P45", "P90", "P45", "P0", "PTop", "PBottom"
+    };
+    TEST("vspec: 14 state tokens in mirror order, 7..11 are left", [&]() {
+        for (int i = 0; i < 14; ++i)
+        {
+            const char* S = StateTokenForIndex(i);
+            if (!S || strcmp(S, kState[i]) != 0) return false;
+            if (IsLeftIndex(i) != (i >= 7 && i <= 11)) return false;
+        }
+        return true;
+    }());
+    TEST("vspec: yaw and ring-slot tables match the authored grid", [&]() {
+        for (int i = 0; i < 14; ++i)
+        {
+            const char* Y = YawTokenForIndex(i);
+            const char* R = RingSlotForIndex(i);
+            if (!Y || strcmp(Y, kYaw[i]) != 0) return false;
+            if (!R || strcmp(R, kSlot[i]) != 0) return false;
+        }
+        return true;
+    }());
+    static const int kMirror[14] = { -1, 11, 10, 8, 9, 7, -1, 5, 3, 4, 2, 1, -1, -1 };
+    TEST("vspec: mirror table — paired states swap, unpaired have none", [&]() {
+        for (int i = 0; i < 14; ++i)
+        {
+            if (MirrorIndexForIndex(i) != kMirror[i]) return false;
+            if (kMirror[i] >= 0 && MirrorIndexForIndex(kMirror[i]) != i) return false;
+        }
+        return true;
+    }());
+    TEST("vspec: pitch bands resolve to P00/P45/Pn45", [&]() {
+        return strcmp(PitchTokenForBand(0), "P00") == 0
+            && strcmp(PitchTokenForBand(1), "P45") == 0
+            && strcmp(PitchTokenForBand(2), "Pn45") == 0
+            && PitchTokenForBand(3) == nullptr && PitchTokenForBand(-1) == nullptr;
+    }());
+
+    TEST("vspec: Y22 sub-row gated to eyes + Proj only (Nose has none)", [&]() {
+        return FeatureHasYawRow("Eye_Near", "Y22") && FeatureHasYawRow("Eye_Far", "Y22")
+            && FeatureHasYawRow("Proj", "Y22") && !FeatureHasYawRow("Mouth", "Y22")
+            && !FeatureHasYawRow("FaceBase", "Y22") && !FeatureHasYawRow("HairFront", "Y22")
+            && !FeatureHasYawRow("Nose", "Y22");
+    }());
+    TEST("vspec: Y67 sub-row gated to eyes only", [&]() {
+        return FeatureHasYawRow("Eye_Near", "Y67") && FeatureHasYawRow("Eye_Far", "Y67")
+            && !FeatureHasYawRow("Proj", "Y67") && !FeatureHasYawRow("Mouth", "Y67");
+    }());
+    static const char* kYawRows[5] = { "Y00", "Y45", "Y90", "Y135", "Y180" };
+    TEST("vspec: all features carry Y00/Y45/Y90/Y135/Y180 rows", [&]() {
+        for (int i = 0; i < FeatureTableCount(); ++i)
+            for (int k = 0; k < 5; ++k)
+                if (!FeatureHasYawRow(FeatureTable()[i].Feature, kYawRows[k])) return false;
+        return true;
+    }());
+
+    TEST("vspec: authored file counts (FaceBase 17, Nose 17, Proj 20, Eye_Near 23)", [&]() {
+        return AuthoredFileCountForFeature("FaceBase") == 17
+            && AuthoredFileCountForFeature("Nose") == 17
+            && AuthoredFileCountForFeature("Proj") == 20
+            && AuthoredFileCountForFeature("Eye_Near") == 23
+            && AuthoredFileCountForFeature("Eye_Far") == 23;
+    }());
+    TEST("vspec: cell counts (FaceBase 26, Nose 26, Proj 32, Eye_Near 38)", [&]() {
+        return CellCountForFeature("FaceBase") == 26
+            && CellCountForFeature("Nose") == 26
+            && CellCountForFeature("Proj") == 32
+            && CellCountForFeature("Eye_Near") == 38
+            && CellCountForFeature("Eye_Far") == 38;
+    }());
+    TEST("vspec: canonical library totals — 301 authored files, 466 grid cells", [&]() {
+        return TotalAuthoredFiles() == 301 && TotalCells() == 466;
+    }());
+
+    std::string F, S, Y, P;
+    TEST("vspec: ParseCellKey splits a left-half key on the RIGHT side", [&]() {
+        if (!ParseCellKey("Eye_Far_Sliver_L_Y67_P45", F, S, Y, P)) return false;
+        return F == "Eye_Far" && S == "Sliver_L" && Y == "Y67" && P == "P45";
+    }());
+    TEST("vspec: ParseCellKey accepts viseme/blink/extra tokens", [&]() {
+        if (!ParseCellKey("Mouth_Closed_Y00_P00", F, S, Y, P)) return false;
+        if (F != "Mouth" || S != "Closed" || Y != "Y00" || P != "P00") return false;
+        if (!ParseCellKey("Eye_Near_Open_Y45_P00", F, S, Y, P)) return false;
+        if (F != "Eye_Near" || S != "Open" || Y != "Y45" || P != "P00") return false;
+        if (!ParseCellKey("Mouth_A_Y90_P00", F, S, Y, P)) return false;
+        if (S != "A" || Y != "Y90") return false;
+        return true;
+    }());
+    TEST("vspec: ParseCellKey accepts Top P90 and UnderPlane Pn45", [&]() {
+        if (!ParseCellKey("Eye_Near_Top_Y00_P90", F, S, Y, P)) return false;
+        if (S != "Top" || P != "P90") return false;
+        if (!ParseCellKey("FaceBase_UnderPlane_Y00_Pn45", F, S, Y, P)) return false;
+        return S == "UnderPlane" && Y == "Y00" && P == "Pn45";
+    }());
+    TEST("vspec: ParseCellKey rejects unknown feature/yaw/pitch", [&]() {
+        return !ParseCellKey("Bogus_3Q_Y45_P00", F, S, Y, P)
+            && !ParseCellKey("Mouth_3Q_Y99_P00", F, S, Y, P)
+            && !ParseCellKey("Mouth_3Q_Y45_PX", F, S, Y, P)
+            && !ParseCellKey("Eye_Near_Sliver_Y67", F, S, Y, P)
+            && !ParseCellKey("Mouth_A_Y45", F, S, Y, P);
+    }());
+    TEST("vspec: FeatureCellKey — Top and UnderPlane are pitch-explicit", [&]() {
+        return FeatureCellKey("Eye_Near", 12, 0) == "Eye_Near_Top_Y00_P90"
+            && FeatureCellKey("Eye_Near", 13, 0) == "Eye_Near_UnderPlane_Y00_Pn45"
+            && FeatureCellKey("Mouth", 2, 1) == "Mouth_3Q_Y45_P45"
+            && FeatureCellKey("Mouth", 2, 2) == "Mouth_3Q_Y45_Pn45";
+    }());
+    TEST("vspec: MirrorPartnerKey maps state to its mirror state in-feature", [&]() {
+        return MirrorPartnerKey("Eye_Far", "3Q_L", "Y45", "P45") == "Eye_Far_3Q_Y45_P45"
+            && MirrorPartnerKey("Mouth", "Narrow_L", "Y22", "P00") == "Mouth_Narrow_Y22_P00"
+            && MirrorPartnerKey("Eye_Near", "Front", "Y00", "P00").empty();
+    }());
+
+    FViewCell VC;
+    TEST("vspec: view cell — front band and sub-row yaw bands", [&]() {
+        ResolveViewCell("Eye_Near", 0.0, 0.0, VC);
+        if (VC.Key != "Eye_Near_Front_Y00_P00") return false;
+        ResolveViewCell("Eye_Near", 22.4, 0.0, VC);
+        if (VC.Key != "Eye_Near_Front_Y00_P00") return false;
+        ResolveViewCell("Eye_Near", 22.5, 0.0, VC);
+        if (VC.Key != "Eye_Near_Narrow_Y22_P00") return false;
+        ResolveViewCell("Eye_Near", 45.0, 0.0, VC);
+        if (VC.Key != "Eye_Near_Narrow_Y22_P00") return false;
+        ResolveViewCell("Eye_Near", 67.5, 0.0, VC);
+        if (VC.Key != "Eye_Near_Sliver_Y67_P00") return false;
+        ResolveViewCell("Eye_Near", 112.5, 0.0, VC);
+        if (VC.Key != "Eye_Near_Back3Q_Y135_P00") return false;
+        ResolveViewCell("Eye_Near", 157.5, 0.0, VC);
+        if (VC.Key != "Eye_Near_Back_Y180_P00") return false;
+        return true;
+    }());
+    TEST("vspec: view cell — non-sub-row features fall back to 3Q/Profile", [&]() {
+        ResolveViewCell("FaceBase", 30.0, 0.0, VC);
+        if (VC.Key != "FaceBase_3Q_Y45_P00") return false;
+        ResolveViewCell("FaceBase", 50.0, 0.0, VC);
+        if (VC.Key != "FaceBase_3Q_Y45_P00") return false;
+        ResolveViewCell("FaceBase", 80.0, 0.0, VC);
+        if (VC.Key != "FaceBase_Profile_Y90_P00") return false;
+        ResolveViewCell("Nose", 50.0, 0.0, VC);
+        if (VC.Key != "Nose_3Q_Y45_P00") return false;
+        ResolveViewCell("Nose", 80.0, 0.0, VC);
+        if (VC.Key != "Nose_Profile_Y90_P00") return false;
+        ResolveViewCell("Proj", 50.0, 0.0, VC);
+        if (VC.Key != "Proj_Narrow_Y22_P00") return false;
+        ResolveViewCell("Proj", 80.0, 0.0, VC);
+        if (VC.Key != "Proj_Profile_Y90_P00") return false;
+        return true;
+    }());
+    TEST("vspec: view cell — left half gets the _L state (not Front/Back)", [&]() {
+        ResolveViewCell("Eye_Near", -30.0, 0.0, VC);
+        if (VC.Key != "Eye_Near_Narrow_L_Y22_P00") return false;
+        ResolveViewCell("Eye_Near", -50.0, 0.0, VC);
+        if (VC.Key != "Eye_Near_Narrow_L_Y22_P00") return false;
+        ResolveViewCell("Eye_Near", -100.0, 0.0, VC);
+        if (VC.Key != "Eye_Near_Sliver_L_Y67_P00") return false;
+        ResolveViewCell("Eye_Near", -170.0, 0.0, VC);
+        if (VC.Key != "Eye_Near_Back_Y180_P00") return false;
+        ResolveViewCell("Eye_Near", -10.0, 0.0, VC);
+        if (VC.Key != "Eye_Near_Front_Y00_P00") return false;
+        return true;
+    }());
+    TEST("vspec: view cell — pitch bands P00/P45/Pn45 and Top/UnderPlane", [&]() {
+        ResolveViewCell("Eye_Near", 10.0, 22.4, VC);
+        if (VC.Key != "Eye_Near_Front_Y00_P00") return false;
+        ResolveViewCell("Eye_Near", 10.0, 22.5, VC);
+        if (VC.Key != "Eye_Near_Front_Y00_P45") return false;
+        ResolveViewCell("Eye_Near", 10.0, -22.5, VC);
+        if (VC.Key != "Eye_Near_Front_Y00_Pn45") return false;
+        ResolveViewCell("Eye_Near", 45.0, 80.0, VC);
+        if (VC.Key != "Eye_Near_Top_Y00_P90") return false;
+        ResolveViewCell("Eye_Near", -45.0, 80.0, VC);
+        if (VC.Key != "Eye_Near_Top_Y00_P90") return false;
+        ResolveViewCell("Eye_Near", 45.0, -80.0, VC);
+        if (VC.Key != "Eye_Near_UnderPlane_Y00_Pn45") return false;
+        ResolveViewCell("Eye_Near", 0.0, 67.5, VC);
+        if (VC.Key != "Eye_Near_Top_Y00_P90") return false;
+        ResolveViewCell("Eye_Near", 0.0, -67.5, VC);
+        if (VC.Key != "Eye_Near_UnderPlane_Y00_Pn45") return false;
+        return true;
+    }());
+
+    TEST("vspec: extra cells — viseme yaw rows + left mirror flag", [&]() {
+        ResolveExtraCell("Mouth", "Viseme", "A", 10.0, VC);
+        if (VC.Key != "Mouth_A_Y00_P00" || VC.bMirrorRender) return false;
+        ResolveExtraCell("Mouth", "Viseme", "A", 40.0, VC);
+        if (VC.Key != "Mouth_A_Y45_P00" || VC.bMirrorRender) return false;
+        ResolveExtraCell("Mouth", "Viseme", "A", -40.0, VC);
+        if (VC.Key != "Mouth_A_Y45_P00" || !VC.bMirrorRender) return false;
+        ResolveExtraCell("Mouth", "Viseme", "A", 80.0, VC);
+        if (VC.Key != "Mouth_A_Y90_P00") return false;
+        ResolveExtraCell("Eye_Near", "Blink", "Closed", 40.0, VC);
+        if (VC.Key != "Eye_Near_Closed_Y45_P00") return false;
+        ResolveExtraCell("Eye_Far", "Blink", "Half", -40.0, VC);
+        if (VC.Key != "Eye_Far_Half_Y45_P00" || !VC.bMirrorRender) return false;
+        return true;
+    }());
+    TEST("vspec: extra cells — kind/feature gating", [&]() {
+        if (ResolveExtraCell("Mouth", "Blink", "Open", 0.0, VC)) return false;
+        if (ResolveExtraCell("HairFront", "Viseme", "A", 0.0, VC)) return false;
+        if (ResolveExtraCell("Eye_Near", "Bogus", "A", 0.0, VC)) return false;
+        return true;
+    }());
+}
+
+// Phase 2 parity: the widget/viewer cell pair and the single-cell dominant
+// resolver mirror the RUNTIME's at-rest committed state (the band state of
+// FPSchematicStateAtAngles shifted right by the Schmitt margin — commit at
+// edge + 1.5, coincident with the crossfade alpha = 0.5 key), so the dominant
+// card is exactly the albedo the runtime bakes at a static pose and the
+// two-card fade covers the runtime's own parameter-space window. NOTE: the
+// committed model is the "arrived from the left" trajectory — it is NOT
+// mirror-symmetric at the sub-threshold centers (+45 holds Narrow, -45 holds
+// 3Q_L: the left-half bands are the canonical bands shifted +1.5 in ascending
+// yaw, which is not the mirror of the right-half shift).
+void TestVectorParity() {
+    printf("\n=== Vector Parity (dominant cell == runtime committed state) ===\n");
+    using namespace FPSvg;
+
+    // The 12-pair edge table (default geometry): the same edges the runtime
+    // Schmitt machine commits across, order-independent.
+    TEST("vparity: zone edge table == the canonical swap edges", [&]() {
+        const auto EdgeOf = [](int k) -> double {
+            switch (k)
+            {
+            case 0:  return 22.5;
+            case 1:  return 45.0;
+            case 2:  return 67.5;
+            case 3:  return 90.0;
+            case 4:  return 135.0;
+            case 5:  return 180.0;
+            case 6:  return -180.0;
+            case 7:  return -135.0;
+            case 8:  return -90.0;
+            case 9:  return -67.5;
+            case 10: return -45.0;
+            default: return -22.5;
+            }
+        };
+        for (int k = 0; k < 12; ++k)
+        {
+            const double Edge = FPSchematic::FPSchematicZoneEdgeForPair(k, (k + 1) % 12);
+            if (std::abs(Edge - EdgeOf(k)) > 1e-9) return false;
+            const double EdgeR = FPSchematic::FPSchematicZoneEdgeForPair((k + 1) % 12, k);
+            if (std::abs(EdgeR - EdgeOf(k)) > 1e-9) return false;
+        }
+        return true;
+    }());
+
+    // The committed state is the canonical band state shifted right by the
+    // Schmitt margin: inside every hysteresis sliver [edge, edge + 1.5) the
+    // machine still holds the PREVIOUS state, at the commit key it flips.
+    TEST("vparity: committed state flips exactly at edge + 1.5", [&]() {
+        for (int k = 0; k < 12; ++k)
+        {
+            const double Edge = FPSchematic::FPSchematicZoneEdgeForPair(k, (k + 1) % 12);
+            if (FPSchematic::FPSchematicForwardStateAt(Edge + 0.75, 0.0) != k) return false;
+            if (FPSchematic::FPSchematicForwardStateAt(Edge + 1.25, 0.0) != k) return false;
+            if (FPSchematic::FPSchematicForwardStateAt(Edge + 1.5, 0.0) != (k + 1) % 12) return false;
+            if (FPSchematic::FPSchematicForwardStateAt(Edge + 3.0, 0.0) != (k + 1) % 12) return false;
+        }
+        return true;
+    }());
+
+    // Past the +-180 wrap the machine committed Back at 181.5 and holds it;
+    // the canonical wrap band (|yaw| > 180) reads Back too.
+    TEST("vparity: past the wrap the committed state holds Back", [&]() {
+        if (FPSchematic::FPSchematicForwardStateAt(181.4, 0.0) != 5) return false;
+        if (FPSchematic::FPSchematicForwardStateAt(181.6, 0.0) != 6) return false;
+        if (FPSchematic::FPSchematicForwardStateAt(200.0, 0.0) != 6) return false;
+        if (FPSchematic::FPSchematicForwardStateAt(360.0, 0.0) != 6) return false;
+        if (FPSchematic::FPSchematicForwardStateAt(-200.0, 0.0) != 6) return false;
+        return true;
+    }());
+
+    // The pitch pole commits at threshold +- 1.5: inside (45, 46.5) the
+    // committed state is still the ground state, at +-46.5 it is the pole.
+    TEST("vparity: pitch sliver (45, 46.5) reads the ground state", [&]() {
+        if (FPSchematic::FPSchematicForwardStateAt(30.0, 45.0) != 1) return false;
+        if (FPSchematic::FPSchematicForwardStateAt(30.0, 45.5) != 1) return false;
+        if (FPSchematic::FPSchematicForwardStateAt(30.0, 46.4) != 1) return false;
+        if (FPSchematic::FPSchematicForwardStateAt(30.0, 46.5) != 12) return false;
+        if (FPSchematic::FPSchematicForwardStateAt(30.0, 60.0) != 12) return false;
+        if (FPSchematic::FPSchematicForwardStateAt(30.0, -45.5) != 1) return false;
+        if (FPSchematic::FPSchematicForwardStateAt(30.0, -46.5) != 13) return false;
+        return true;
+    }());
+
+    // The dominant card the runtime bakes at every pose center is the
+    // COMMITTED state's cell — the pose-key resolver would show the band
+    // state (Narrow at 22.5, 3Q at 45, ...) instead.
+    TEST("vparity: dominant cell = committed cell at pose centers", [&]() {
+        if (ResolveDominantCellKey("Eye_Near", 22.5, 0.0) != "Eye_Near_Front_Y00_P00") return false;
+        if (ResolveDominantCellKey("Eye_Near", 45.0, 0.0) != "Eye_Near_Narrow_Y22_P00") return false;
+        if (ResolveDominantCellKey("Eye_Near", 67.5, 0.0) != "Eye_Near_3Q_Y45_P00") return false;
+        if (ResolveDominantCellKey("Eye_Near", 90.0, 0.0) != "Eye_Near_Sliver_Y67_P00") return false;
+        if (ResolveDominantCellKey("Eye_Near", 135.0, 0.0) != "Eye_Near_Profile_Y90_P00") return false;
+        if (ResolveDominantCellKey("Eye_Near", 180.0, 0.0) != "Eye_Near_Back3Q_Y135_P00") return false;
+        if (ResolveDominantCellKey("Eye_Near", -22.5, 0.0) != "Eye_Near_Narrow_L_Y22_P00") return false;
+        if (ResolveDominantCellKey("Eye_Near", -45.0, 0.0) != "Eye_Near_3Q_L_Y45_P00") return false;
+        if (ResolveDominantCellKey("Eye_Near", -67.5, 0.0) != "Eye_Near_Profile_L_Y90_P00") return false;
+        if (ResolveDominantCellKey("Eye_Near", -90.0, 0.0) != "Eye_Near_Sliver_L_Y67_P00") return false;
+        if (ResolveDominantCellKey("Eye_Near", -135.0, 0.0) != "Eye_Near_Back3Q_L_Y135_P00") return false;
+        if (ResolveDominantCellKey("Eye_Near", -180.0, 0.0) != "Eye_Near_Back_Y180_P00") return false;
+        return true;
+    }());
+
+    // The flip happens at the commit keys (edge + 1.5), never at the pose-key
+    // edges: at 23 the camera still bakes Front, at 24 it bakes Narrow.
+    TEST("vparity: dominant card flips at the commit keys", [&]() {
+        if (ResolveDominantCellKey("Eye_Near", 23.0, 0.0) != "Eye_Near_Front_Y00_P00") return false;
+        if (ResolveDominantCellKey("Eye_Near", 24.0, 0.0) != "Eye_Near_Narrow_Y22_P00") return false;
+        if (ResolveDominantCellKey("Eye_Near", 46.4, 0.0) != "Eye_Near_Narrow_Y22_P00") return false;
+        if (ResolveDominantCellKey("Eye_Near", 46.6, 0.0) != "Eye_Near_3Q_Y45_P00") return false;
+        if (ResolveDominantCellKey("Eye_Near", 91.4, 0.0) != "Eye_Near_Sliver_Y67_P00") return false;
+        if (ResolveDominantCellKey("Eye_Near", 91.6, 0.0) != "Eye_Near_Profile_Y90_P00") return false;
+        if (ResolveDominantCellKey("Eye_Near", -21.0, 0.0) != "Eye_Near_Front_Y00_P00") return false;
+        if (ResolveDominantCellKey("Eye_Near", -20.8, 0.0) != "Eye_Near_Front_Y00_P00") return false;
+        if (ResolveDominantCellKey("Eye_Near", -43.6, 0.0) != "Eye_Near_3Q_L_Y45_P00") return false;
+        if (ResolveDominantCellKey("Eye_Near", -43.4, 0.0) != "Eye_Near_Narrow_L_Y22_P00") return false;
+        // the pitch pole commits at threshold +- 1.5 too:
+        if (ResolveDominantCellKey("Eye_Near", 0.0, 46.4) != "Eye_Near_Front_Y00_P45") return false;
+        if (ResolveDominantCellKey("Eye_Near", 0.0, 46.6) != "Eye_Near_Top_Y00_P90") return false;
+        return true;
+    }());
+
+    // Left-half cells are the authored _L mirror files with the right-half
+    // mirror yaw tokens — the same keys the art library ships and the
+    // runtime preset resolves (no render-time mirror flag needed).
+    TEST("vparity: left-half cells are the authored _L mirror files", [&]() {
+        if (FeatureCellKey("Eye_Near", 7, 0) != "Eye_Near_Back3Q_L_Y135_P00") return false;
+        if (FeatureCellKey("Eye_Near", 8, 0) != "Eye_Near_Sliver_L_Y67_P00") return false;
+        if (FeatureCellKey("Eye_Near", 9, 0) != "Eye_Near_Profile_L_Y90_P00") return false;
+        if (FeatureCellKey("Eye_Near", 10, 0) != "Eye_Near_3Q_L_Y45_P00") return false;
+        if (FeatureCellKey("Eye_Near", 11, 0) != "Eye_Near_Narrow_L_Y22_P00") return false;
+        return true;
+    }());
+}
+
+void TestVectorCellPair() {
+    printf("\n=== Vector Cell Pair (rotation-driven art crossfade) ===\n");
+    using namespace FPSvg;
+
+    static const char* kFeatures[17] = {
+        "FaceBase", "Nose", "HairFront", "HairBack", "BackHair",
+        "Eye_Near", "Eye_Far", "Brow_Near", "Brow_Far",
+        "Cheek_Near", "Cheek_Far", "Ear_Near", "Ear_Far",
+        "Mouth", "Teeth", "Chin", "Neck"
+    };
+
+    // The pair mirrors the RUNTIME's at-rest committed state (Phase 2 parity):
+    // the band state shifted right by the Schmitt margin (commit at
+    // edge + 1.5), so at every state center the DOMINANT card is the cell of
+    // the state the machine actually holds there — NOT the band state of the
+    // pose-key resolver (at the Narrow/3Q/... centers the machine still holds
+    // the PREVIOUS card, still fading at alpha 0 because every center is
+    // >= 2.25 deg away from any swap window). The pitch poles commit at
+    // threshold +- 1.5, so past the trigger the pole card dominates at 100%.
+    // The committed state at every state center, straight from the committed
+    // resolver itself (right-half centers hold the previous card, left-half
+    // centers hold their own state, Front holds Front, +-180 resolves per the
+    // wrap band) — the pair's dominant card must be exactly that cell.
+    TEST("vpair: dominant card at every state center = the committed cell", [&]() {
+        for (int s = 0; s < 12; ++s)
+            for (int i = 0; i < 17; ++i)
+            {
+                const double Cy = FPSchematic::FPSchematicStateCenterYaw(s);
+                const double Cp = FPSchematic::FPSchematicStateCenterPitch(s);
+                const int Committed = FPSchematic::FPSchematicForwardStateAt(Cy, 0.0);
+                FViewCellPair P;
+                if (!ResolveViewCellPair(kFeatures[i], Cy, Cp, P) || !P.bValid) return false;
+                const std::string Expected = FeatureCellKey(
+                    kFeatures[i], CollapseViewStateForFeature(kFeatures[i], Committed),
+                    PitchBandForDeg(Cp));
+                const std::string& Dominant =
+                    (P.BlendAlpha >= 0.5) ? P.CurKey : P.PrevKey;
+                if (Dominant != Expected) return false;
+                if (P.BlendAlpha != 0.0) return false;
+                if (P.bUnderPlane) return false;
+            }
+        FViewCellPair P;
+        ResolveViewCellPair("FaceBase", 0.0, 90.0, P);
+        if (P.PrevKey != "FaceBase_Front_Y00_P45" || P.CurKey != "FaceBase_Top_Y00_P90")
+            return false;
+        if (P.BlendAlpha != 1.0 || P.bUnderPlane) return false;
+        ResolveViewCellPair("FaceBase", 0.0, -90.0, P);
+        if (P.PrevKey != "FaceBase_Front_Y00_Pn45"
+            || P.CurKey != "FaceBase_UnderPlane_Y00_Pn45") return false;
+        if (P.BlendAlpha != 1.0 || !P.bUnderPlane) return false;
+        return true;
+    }());
+
+    // The pair flips exactly at the COMMIT keys (edge + 1.5, coincident with
+    // the crossfade alpha = 0.5 key), on both halves and across the +-180
+    // back wrap — the pair never flips at the pose-key band edges anymore.
+    TEST("vpair: pair flips at the commit keys (edge + 1.5), alpha 0.5", [&]() {
+        FViewCellPair P;
+        // Front | Narrow edge 22.5: window [23.25, 24.75], commit at 24.
+        ResolveViewCellPair("Eye_Near", 24.0, 0.0, P);
+        if (P.PrevKey != "Eye_Near_Front_Y00_P00" || P.CurKey != "Eye_Near_Narrow_Y22_P00")
+            return false;
+        if (P.BlendAlpha != 0.5) return false;
+        ResolveViewCellPair("Eye_Near", 23.25, 0.0, P);
+        if (P.PrevKey != "Eye_Near_Front_Y00_P00" || P.CurKey != "Eye_Near_Front_Y00_P00")
+            return false;
+        if (P.BlendAlpha != 0.0) return false;
+        ResolveViewCellPair("Eye_Near", 24.75, 0.0, P);
+        if (P.PrevKey != "Eye_Near_Front_Y00_P00" || P.CurKey != "Eye_Near_Narrow_Y22_P00")
+            return false;
+        if (P.BlendAlpha != 1.0) return false;
+        ResolveViewCellPair("Eye_Near", 25.5, 0.0, P);
+        if (P.PrevKey != "Eye_Near_Narrow_Y22_P00" || P.CurKey != "Eye_Near_Narrow_Y22_P00")
+            return false;
+        if (P.BlendAlpha != 0.0) return false;
+        // Narrow | 3Q edge 45: commit at 46.5.
+        ResolveViewCellPair("Eye_Near", 46.5, 0.0, P);
+        if (P.PrevKey != "Eye_Near_Narrow_Y22_P00" || P.CurKey != "Eye_Near_3Q_Y45_P00")
+            return false;
+        if (P.BlendAlpha != 0.5) return false;
+        // 3Q | Sliver edge 67.5: commit at 69.
+        ResolveViewCellPair("Eye_Near", 69.0, 0.0, P);
+        if (P.PrevKey != "Eye_Near_3Q_Y45_P00" || P.CurKey != "Eye_Near_Sliver_Y67_P00")
+            return false;
+        if (P.BlendAlpha != 0.5) return false;
+        // Sliver | Profile edge 90: commit at 91.5.
+        ResolveViewCellPair("Eye_Near", 91.5, 0.0, P);
+        if (P.PrevKey != "Eye_Near_Sliver_Y67_P00" || P.CurKey != "Eye_Near_Profile_Y90_P00")
+            return false;
+        if (P.BlendAlpha != 0.5) return false;
+        // Profile | BackR edge 135: commit at 136.5.
+        ResolveViewCellPair("Eye_Near", 136.5, 0.0, P);
+        if (P.PrevKey != "Eye_Near_Profile_Y90_P00" || P.CurKey != "Eye_Near_Back3Q_Y135_P00")
+            return false;
+        if (P.BlendAlpha != 0.5) return false;
+        // BackR | Back edge 180: commit at 181.5 (camera yaw past the wrap).
+        ResolveViewCellPair("Eye_Near", 181.5, 0.0, P);
+        if (P.PrevKey != "Eye_Near_Back3Q_Y135_P00" || P.CurKey != "Eye_Near_Back_Y180_P00")
+            return false;
+        if (P.BlendAlpha != 0.5) return false;
+        // Back | BackL wrap edge -180: commit at -178.5.
+        ResolveViewCellPair("Eye_Near", -178.5, 0.0, P);
+        if (P.PrevKey != "Eye_Near_Back_Y180_P00" || P.CurKey != "Eye_Near_Back3Q_L_Y135_P00")
+            return false;
+        if (P.BlendAlpha != 0.5) return false;
+        // BackL | ProfileL edge -135: commit at -133.5.
+        ResolveViewCellPair("Eye_Near", -133.5, 0.0, P);
+        if (P.PrevKey != "Eye_Near_Back3Q_L_Y135_P00" || P.CurKey != "Eye_Near_Sliver_L_Y67_P00")
+            return false;
+        if (P.BlendAlpha != 0.5) return false;
+        // ProfileL | SliverL edge -90: commit at -88.5.
+        ResolveViewCellPair("Eye_Near", -88.5, 0.0, P);
+        if (P.PrevKey != "Eye_Near_Sliver_L_Y67_P00" || P.CurKey != "Eye_Near_Profile_L_Y90_P00")
+            return false;
+        if (P.BlendAlpha != 0.5) return false;
+        // SliverL | 3/4L edge -67.5: commit at -66.
+        ResolveViewCellPair("Eye_Near", -66.0, 0.0, P);
+        if (P.PrevKey != "Eye_Near_Profile_L_Y90_P00" || P.CurKey != "Eye_Near_3Q_L_Y45_P00")
+            return false;
+        if (P.BlendAlpha != 0.5) return false;
+        // 3/4L | NarrowL edge -45: commit at -43.5.
+        ResolveViewCellPair("Eye_Near", -43.5, 0.0, P);
+        if (P.PrevKey != "Eye_Near_3Q_L_Y45_P00" || P.CurKey != "Eye_Near_Narrow_L_Y22_P00")
+            return false;
+        if (P.BlendAlpha != 0.5) return false;
+        // NarrowL | Front edge -22.5: commit at -21.
+        ResolveViewCellPair("Eye_Near", -21.0, 0.0, P);
+        if (P.PrevKey != "Eye_Near_Narrow_L_Y22_P00" || P.CurKey != "Eye_Near_Front_Y00_P00")
+            return false;
+        if (P.BlendAlpha != 0.5) return false;
+        return true;
+    }());
+
+    // The blend weight IS the runtime's parameter-space window: linear
+    // 0->1 across [edge + 0.75, edge + 2.25] (zero at the pose-key edges,
+    // 0.5 at the commit). The old zone-midpoint smoothstep pins are retired
+    // with the bracket model: at the old midpoints the pair is a single
+    // committed card at alpha 0.
+    TEST("vpair: alpha is the Schmitt-window linear ramp", [&]() {
+        FViewCellPair P;
+        ResolveViewCellPair("Eye_Near", 23.5, 0.0, P);
+        if (std::abs(P.BlendAlpha - 1.0 / 6.0) > 1e-9) return false;
+        if (P.PrevKey != "Eye_Near_Front_Y00_P00" || P.CurKey != "Eye_Near_Narrow_Y22_P00")
+            return false;
+        ResolveViewCellPair("Eye_Near", 24.5, 0.0, P);
+        if (std::abs(P.BlendAlpha - 5.0 / 6.0) > 1e-9) return false;
+        ResolveViewCellPair("Eye_Near", 11.25, 0.0, P);
+        if (P.PrevKey != "Eye_Near_Front_Y00_P00" || P.CurKey != "Eye_Near_Front_Y00_P00")
+            return false;
+        if (P.BlendAlpha != 0.0) return false;
+        ResolveViewCellPair("Eye_Near", 33.75, 0.0, P);
+        if (P.PrevKey != "Eye_Near_Narrow_Y22_P00" || P.CurKey != "Eye_Near_Narrow_Y22_P00")
+            return false;
+        if (P.BlendAlpha != 0.0) return false;
+        ResolveViewCellPair("Eye_Near", 56.25, 0.0, P);
+        if (P.PrevKey != "Eye_Near_3Q_Y45_P00" || P.CurKey != "Eye_Near_3Q_Y45_P00")
+            return false;
+        if (P.BlendAlpha != 0.0) return false;
+        ResolveViewCellPair("Eye_Near", 78.75, 0.0, P);
+        if (P.PrevKey != "Eye_Near_Sliver_Y67_P00" || P.CurKey != "Eye_Near_Sliver_Y67_P00")
+            return false;
+        if (P.BlendAlpha != 0.0) return false;
+        ResolveViewCellPair("Eye_Near", 112.5, 0.0, P);
+        if (P.PrevKey != "Eye_Near_Profile_Y90_P00" || P.CurKey != "Eye_Near_Profile_Y90_P00")
+            return false;
+        if (P.BlendAlpha != 0.0) return false;
+        ResolveViewCellPair("Eye_Near", 157.5, 0.0, P);
+        if (P.PrevKey != "Eye_Near_Back3Q_Y135_P00" || P.CurKey != "Eye_Near_Back3Q_Y135_P00")
+            return false;
+        if (P.BlendAlpha != 0.0) return false;
+        ResolveViewCellPair("Eye_Near", 180.0, 0.0, P);
+        if (P.PrevKey != "Eye_Near_Back3Q_Y135_P00" || P.CurKey != "Eye_Near_Back3Q_Y135_P00")
+            return false;
+        if (P.BlendAlpha != 0.0) return false;
+        return true;
+    }());
+
+    // Sub-threshold collapse: a feature with no Y22 row resolves the Narrow
+    // view onto the 3Q cell; no Y67 row resolves Sliver onto Profile — the
+    // pair never names a cell the feature has no art file for.
+    TEST("vpair: no-Y22 feature collapses Narrow onto the 3Q cell", [&]() {
+        FViewCellPair P;
+        ResolveViewCellPair("FaceBase", 30.0, 0.0, P);
+        if (P.PrevKey != "FaceBase_3Q_Y45_P00" || P.CurKey != "FaceBase_3Q_Y45_P00")
+            return false;
+        if (P.BlendAlpha != 0.0) return false;
+        ResolveViewCellPair("FaceBase", 80.0, 0.0, P);
+        if (P.PrevKey != "FaceBase_Profile_Y90_P00" || P.CurKey != "FaceBase_Profile_Y90_P00")
+            return false;
+        if (P.BlendAlpha != 0.0) return false;
+        return true;
+    }());
+    TEST("vpair: Y22-only feature (Proj) keeps Narrow, collapses Sliver", [&]() {
+        FViewCellPair P;
+        ResolveViewCellPair("Proj", 40.0, 0.0, P);
+        if (P.PrevKey != "Proj_Narrow_Y22_P00" || P.CurKey != "Proj_Narrow_Y22_P00")
+            return false;
+        if (P.BlendAlpha != 0.0) return false;
+        ResolveViewCellPair("Proj", 80.0, 0.0, P);
+        if (P.PrevKey != "Proj_Profile_Y90_P00" || P.CurKey != "Proj_Profile_Y90_P00")
+            return false;
+        return true;
+    }());
+    TEST("vpair: eye keeps all rows; left-half pairs follow the state table", [&]() {
+        FViewCellPair P;
+        ResolveViewCellPair("Eye_Near", 80.0, 0.0, P);
+        if (P.PrevKey != "Eye_Near_Sliver_Y67_P00" || P.CurKey != "Eye_Near_Sliver_Y67_P00")
+            return false;
+        // Left half: the committed bands are the canonical bands shifted by
+        // the Schmitt margin — -100 is LeftProfile (Sliver_L cell), -80 and
+        // -67.5 are SliverLeft (Profile_L cell); the cells are the mirror-
+        // partner-named files the runtime preset resolves.
+        ResolveViewCellPair("Eye_Far", -100.0, 0.0, P);
+        if (P.PrevKey != "Eye_Far_Sliver_L_Y67_P00" || P.CurKey != "Eye_Far_Sliver_L_Y67_P00")
+            return false;
+        if (P.BlendAlpha != 0.0) return false;
+        ResolveViewCellPair("Eye_Far", -80.0, 0.0, P);
+        if (P.PrevKey != "Eye_Far_Profile_L_Y90_P00" || P.CurKey != "Eye_Far_Profile_L_Y90_P00")
+            return false;
+        if (P.BlendAlpha != 0.0) return false;
+        ResolveViewCellPair("Eye_Far", -67.5, 0.0, P);
+        if (P.PrevKey != "Eye_Far_Profile_L_Y90_P00" || P.CurKey != "Eye_Far_Profile_L_Y90_P00")
+            return false;
+        if (P.BlendAlpha != 0.0) return false;
+        return true;
+    }());
+
+    // Pitch: the poles commit at threshold +- 1.5 (alpha 0.5 at the commit,
+    // 100% once past threshold +- 2.25); below the threshold the pair is the
+    // ground committed pair at the current pitch band. Inside the Schmitt
+    // sliver (45, 46.5) the pair is (ground, Top) fading at the runtime's
+    // window alpha.
+    TEST("vpair: pitch — poles commit at threshold +- 1.5", [&]() {
+        FViewCellPair P;
+        ResolveViewCellPair("FaceBase", 0.0, 60.0, P);
+        if (P.PrevKey != "FaceBase_Front_Y00_P45" || P.CurKey != "FaceBase_Top_Y00_P90")
+            return false;
+        if (P.BlendAlpha != 1.0 || P.bUnderPlane) return false;
+        ResolveViewCellPair("FaceBase", 0.0, 47.25, P);
+        if (P.BlendAlpha != 1.0) return false;
+        ResolveViewCellPair("FaceBase", 0.0, 46.5, P);
+        if (P.PrevKey != "FaceBase_Front_Y00_P45" || P.CurKey != "FaceBase_Top_Y00_P90")
+            return false;
+        if (P.BlendAlpha != 0.5 || P.bUnderPlane) return false;
+        ResolveViewCellPair("FaceBase", 0.0, 46.0, P);
+        if (P.PrevKey != "FaceBase_Front_Y00_P45" || P.CurKey != "FaceBase_Top_Y00_P90")
+            return false;
+        if (std::abs(P.BlendAlpha - 1.0 / 6.0) > 1e-9) return false;
+        ResolveViewCellPair("FaceBase", 0.0, 45.0, P);
+        if (P.PrevKey != "FaceBase_Front_Y00_P45" || P.CurKey != "FaceBase_Front_Y00_P45")
+            return false;
+        if (P.BlendAlpha != 0.0) return false;
+        ResolveViewCellPair("FaceBase", 0.0, -60.0, P);
+        if (P.PrevKey != "FaceBase_Front_Y00_Pn45"
+            || P.CurKey != "FaceBase_UnderPlane_Y00_Pn45") return false;
+        if (P.BlendAlpha != 1.0 || !P.bUnderPlane) return false;
+        ResolveViewCellPair("FaceBase", 0.0, -46.5, P);
+        if (P.PrevKey != "FaceBase_Front_Y00_Pn45"
+            || P.CurKey != "FaceBase_UnderPlane_Y00_Pn45") return false;
+        if (P.BlendAlpha != 0.5 || !P.bUnderPlane) return false;
+        ResolveViewCellPair("Eye_Near", 30.0, 60.0, P);
+        if (P.PrevKey != "Eye_Near_Narrow_Y22_P45" || P.CurKey != "Eye_Near_Top_Y00_P90")
+            return false;
+        return true;
+    }());
+    TEST("vpair: below the pitch threshold stays a ground pair with the band", [&]() {
+        FViewCellPair P;
+        ResolveViewCellPair("FaceBase", 0.0, 40.0, P);
+        if (P.PrevKey != "FaceBase_Front_Y00_P45" || P.CurKey != "FaceBase_Front_Y00_P45")
+            return false;
+        if (P.BlendAlpha != 0.0) return false;
+        ResolveViewCellPair("FaceBase", 0.0, -40.0, P);
+        if (P.PrevKey != "FaceBase_Front_Y00_Pn45" || P.CurKey != "FaceBase_Front_Y00_Pn45")
+            return false;
+        if (P.BlendAlpha != 0.0) return false;
+        ResolveViewCellPair("Eye_Near", 20.0, 44.9, P);
+        if (P.PrevKey != "Eye_Near_Front_Y00_P45" || P.CurKey != "Eye_Near_Front_Y00_P45")
+            return false;
+        return true;
+    }());
+
+    // Cross-contract consistency: the pair's DOMINANT cell IS the single-cell
+    // resolver — both entry points describe the same at-rest committed card,
+    // over the whole ring and the pitch bands.
+    TEST("vpair: dominant cell == ResolveDominantCellKey everywhere", [&]() {
+        for (int i = 0; i < 17; ++i)
+            for (double y = -180.0; y <= 180.0; y += 5.0)
+                for (double pitch = -60.0; pitch <= 60.0; pitch += 30.0)
+                {
+                    FViewCellPair P;
+                    if (!ResolveViewCellPair(kFeatures[i], y, pitch, P)) return false;
+                    const std::string Want =
+                        ResolveDominantCellKey(kFeatures[i], y, pitch);
+                    const std::string& Dominant =
+                        (P.BlendAlpha >= 0.5) ? P.CurKey : P.PrevKey;
+                    if (Dominant != Want) return false;
+                }
+        return true;
+    }());
+
+    // The legacy wide-band single-cell helper (ResolveViewCell) still lingers
+    // on the previous card inside the Schmitt slivers and on the wide
+    // Narrow/Sliver bands — the documented divergence the committed contract
+    // fixes: the legacy model would show the 3Q card at yaw 40 (the OLD pair
+    // defect this contract removes) while the runtime bakes the Narrow card.
+    TEST("vpair: committed contract beats the legacy wide band", [&]() {
+        FViewCell VC;
+        if (!ResolveViewCell("Eye_Near", 40.0, 0.0, VC)) return false;
+        if (VC.Key != "Eye_Near_Narrow_Y22_P00") return false;
+        FViewCellPair P;
+        ResolveViewCellPair("Eye_Near", 40.0, 0.0, P);
+        if (P.PrevKey != "Eye_Near_Narrow_Y22_P00" || P.CurKey != "Eye_Near_Narrow_Y22_P00")
+            return false;
+        if (P.BlendAlpha != 0.0) return false;
+        if (!ResolveViewCell("Eye_Near", 100.0, 0.0, VC)) return false;
+        if (VC.Key != "Eye_Near_Sliver_Y67_P00") return false;
+        ResolveViewCellPair("Eye_Near", 100.0, 0.0, P);
+        if (P.PrevKey != "Eye_Near_Profile_Y90_P00" || P.CurKey != "Eye_Near_Profile_Y90_P00")
+            return false;
+        if (!ResolveViewCell("Eye_Near", 23.0, 0.0, VC)) return false;
+        if (VC.Key != "Eye_Near_Narrow_Y22_P00") return false;
+        ResolveViewCellPair("Eye_Near", 23.0, 0.0, P);
+        if (P.PrevKey != "Eye_Near_Front_Y00_P00" || P.CurKey != "Eye_Near_Front_Y00_P00")
+            return false;
+        return true;
+    }());
+
+    // Sweep: the pair's cells are always keys the feature can actually have
+    // (no Narrow/Sliver state tokens for row-less features) and every key
+    // round-trips through ParseCellKey back to the feature token.
+    std::string F, S, Y, P;
+    TEST("vpair: sweep — no collapsed cells named, all keys round-trip", [&]() {
+        for (int i = 0; i < 17; ++i)
+            for (double y = -180.0; y <= 180.0; y += 5.0)
+                for (double pitch = -60.0; pitch <= 60.0; pitch += 30.0)
+                {
+                    FViewCellPair C;
+                    if (!ResolveViewCellPair(kFeatures[i], y, pitch, C)) return false;
+                    if (!ParseCellKey(C.PrevKey.c_str(), F, S, Y, P)) return false;
+                    if (F != kFeatures[i]) return false;
+                    if (!FeatureHasYawRow(kFeatures[i], "Y22") && Y == "Y22") return false;
+                    if (!FeatureHasYawRow(kFeatures[i], "Y67") && Y == "Y67") return false;
+                    if (!ParseCellKey(C.CurKey.c_str(), F, S, Y, P)) return false;
+                    if (F != kFeatures[i]) return false;
+                    if (!FeatureHasYawRow(kFeatures[i], "Y22") && Y == "Y22") return false;
+                    if (!FeatureHasYawRow(kFeatures[i], "Y67") && Y == "Y67") return false;
+                }
+        return true;
+    }());
+
+    // Negative controls: unknown/empty features are rejected outright.
+    TEST("vpair: unknown and empty features are rejected", [&]() {
+        FViewCellPair P;
+        if (ResolveViewCellPair("Bogus", 30.0, 0.0, P)) return false;
+        if (P.bValid) return false;
+        if (ResolveViewCellPair("", 30.0, 0.0, P)) return false;
+        if (ResolveViewCellPair(nullptr, 30.0, 0.0, P)) return false;
+        if (!ResolveDominantCellKey("Bogus", 30.0, 0.0).empty()) return false;
+        if (!ResolveDominantCellKey("", 30.0, 0.0).empty()) return false;
+        if (!ResolveDominantCellKey(nullptr, 30.0, 0.0).empty()) return false;
+        return true;
+    }());
+}
+
+void TestVectorStructure() {
+    printf("\n=== Vector Structure (grid grouping, ImportFromGridSvg mirror) ===\n");
+    using namespace FPSvg;
+
+    // A grid-style fixture: two <g id="<cell key>"> cells, one with two
+    // paths (closed fill + stroke-only accent), plus one stray path outside
+    // any group (the import must ignore it).
+    const char* SvgGrid =
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 1000 1000\">"
+        "  <g id=\"Eye_Near_Front_Y00_P00\">"
+        "    <path d=\"M100,200 L300,200 L200,300 Z\" fill=\"#16181d\"/>"
+        "    <path d=\"M120,220 C150,250 250,250 280,220\" fill=\"none\" "
+        "          stroke=\"#d0d4da\" stroke-width=\"6\"/>"
+        "  </g>"
+        "  <g id=\"Eye_Near_Closed_Y45_P00\">"
+        "    <path d=\"M100,250 L300,250\" stroke=\"#16181d\" stroke-width=\"8\"/>"
+        "  </g>"
+        "  <path d=\"M0,0 L10,10\" fill=\"#ff0000\"/>"
+        "</svg>";
+    FDocument Doc;
+    TEST("vstruct: grid fixture parses", [&]() {
+        return ParseDocument(SvgGrid, strlen(SvgGrid), Doc);
+    }());
+    TEST("vstruct: 4 paths — 3 in cells + 1 stray outside any group", [&]() {
+        return Doc.Paths.size() == 4;
+    }());
+
+    std::string F, S, Y, P;
+    // Grouping mirror of UFaceVectorArt::ImportFromGridSvg: group paths by
+    // GroupId, skip empty ids, derive the feature from the first cell key.
+    std::map<std::string, int> CellPathCounts;
+    std::string FirstKey;
+    int Stray = 0;
+    for (const FPath& Path : Doc.Paths)
+    {
+        if (Path.GroupId.empty()) { ++Stray; continue; }
+        if (FirstKey.empty()) FirstKey = Path.GroupId;
+        CellPathCounts[Path.GroupId]++;
+    }
+    TEST("vstruct: grouping by group id yields exactly the two cells", [&]() {
+        return CellPathCounts.size() == 2
+            && CellPathCounts["Eye_Near_Front_Y00_P00"] == 2
+            && CellPathCounts["Eye_Near_Closed_Y45_P00"] == 1
+            && Stray == 1;
+    }());
+    TEST("vstruct: first cell key derives the feature token", [&]() {
+        if (!ParseCellKey(FirstKey.c_str(), F, S, Y, P)) return false;
+        return F == "Eye_Near" && S == "Front" && Y == "Y00" && P == "P00";
+    }());
+    TEST("vstruct: stroke-only accent path keeps fill=false + stroke", [&]() {
+        const FPath* Accent = nullptr;
+        for (const FPath& Path : Doc.Paths)
+            if (Path.GroupId == "Eye_Near_Front_Y00_P00" && !Path.bHasFill) Accent = &Path;
+        if (!Accent) return false;
+        return Accent->bHasStroke && std::abs(Accent->StrokeWidth - 6.0) < 1e-6
+            && std::abs(Accent->StrokeR - 0xd0 / 255.0) < 1e-6;
+    }());
+    TEST("vstruct: closed fill triangle reports bClosed + fill", [&]() {
+        for (const FPath& Path : Doc.Paths)
+            if (Path.GroupId == "Eye_Near_Front_Y00_P00" && Path.bHasFill)
+                return Path.bClosed && std::abs(Path.FillB - 0x1d / 255.0) < 1e-6;
+        return false;
+    }());
+    TEST("vstruct: viewBox metrics survive into the document", [&]() {
+        return std::abs(Doc.Width - 1000.0) < 1e-9 && std::abs(Doc.Height - 1000.0) < 1e-9
+            && std::abs(Doc.VbW - 1000.0) < 1e-9 && std::abs(Doc.VbH - 1000.0) < 1e-9;
+    }());
+    TEST("vstruct: extra-cell keys (viseme/blink) are valid cell keys", [&]() {
+        return ParseCellKey("Eye_Near_Closed_Y45_P00", F, S, Y, P)
+            && F == "Eye_Near" && S == "Closed" && Y == "Y45" && P == "P00";
+    }());
+
+    // Round-trip over the authored grid contract: every state index resolves
+    // a key that parses back to the same state, and left states mirror.
+    TEST("vstruct: every FeatureCellKey round-trips through ParseCellKey", [&]() {
+        for (int idx = 0; idx < 14; ++idx)
+            for (int band = 0; band < 3; ++band)
+            {
+                const std::string Key = FeatureCellKey("Eye_Near", idx, band);
+                if (!ParseCellKey(Key.c_str(), F, S, Y, P)) return false;
+                if (F != "Eye_Near") return false;
+                if (idx == 12 && P != "P90") return false;
+                if (idx == 13 && P != "Pn45") return false;
+            }
+        return true;
+    }());
+}
+
+void TestPhase5AlbedoBake() {
+    printf("\n=== Phase 5 — runtime albedo bake (tag composite + pure rasterizer) ===\n");
+    using namespace FPSvg;
+
+    const auto Near = [](int A, int B, int Tol) { return std::abs(A - B) <= Tol; };
+    auto Alpha = [](const std::vector<uint8_t>& RGBA, int Size, int X, int Y) -> int {
+        return RGBA[((size_t)Y * (size_t)Size + (size_t)X) * 4 + 3];
+    };
+    auto Chan = [](const std::vector<uint8_t>& RGBA, int Size, int X, int Y, int C) -> int {
+        return RGBA[((size_t)Y * (size_t)Size + (size_t)X) * 4 + C];
+    };
+    auto P5Ring = [](const std::vector<FPoint>& Pts, bool bClosed,
+                     bool bFill, double FR, double FG, double FB, double FA,
+                     bool bStroke, double SW, double SR, double SG, double SB, double SA) {
+        FPath P;
+        P.bClosed = bClosed;
+        P.bHasFill = bFill; P.FillR = FR; P.FillG = FG; P.FillB = FB; P.FillA = FA;
+        P.bHasStroke = bStroke; P.StrokeR = SR; P.StrokeG = SG; P.StrokeB = SB;
+        P.StrokeA = SA; P.StrokeWidth = SW;
+        if (Pts.empty()) return P;
+        P.Cmds.push_back(ECmd::MoveTo); P.Pts.push_back(Pts[0]);
+        for (size_t i = 1; i < Pts.size(); ++i)
+        {
+            P.Cmds.push_back(ECmd::LineTo); P.Pts.push_back(Pts[i]);
+        }
+        return P;
+    };
+    auto Square = [](double X0, double Y0, double X1, double Y1) {
+        std::vector<FPoint> Pts = { { X0, Y0 }, { X1, Y0 }, { X1, Y1 }, { X0, Y1 } };
+        return Pts;
+    };
+
+    const char* kExpectedTags[10] = { "Eyes", "Brows", "Mouth", "Bangs", "Nose",
+                                      "Cheeks", "Head", "Hair", "BackHair", "Ears" };
+    TEST("p5: tag table is the canonical 10 base-preset tags in painter order", [&]() {
+        if (TagCount() != 10) return false;
+        for (int i = 0; i < 10; ++i)
+            if (strcmp(TagFeatureTable()[i].Tag, kExpectedTags[i]) != 0) return false;
+        return true;
+    }());
+    TEST("p5: tag feature membership matches the layer card contents", [&]() {
+        if (TagFeatureCount("Eyes") != 2 || TagFeatureCount("Bangs") != 1 ||
+            TagFeatureCount("Head") != 3 || TagFeatureCount("Hair") != 1 ||
+            TagFeatureCount("Ears") != 2 || TagFeatureCount("BackHair") != 1 ||
+            TagFeatureCount("Mouth") != 2 || TagFeatureCount("Cheeks") != 2)
+            return false;
+        if (strcmp(TagFeatureAt("Eyes", 0), "Eye_Far") != 0 ||
+            strcmp(TagFeatureAt("Eyes", 1), "Eye_Near") != 0 ||
+            strcmp(TagFeatureAt("Nose", 0), "Nose") != 0 ||
+            strcmp(TagFeatureAt("Mouth", 0), "Teeth") != 0 ||
+            strcmp(TagFeatureAt("Head", 0), "FaceBase") != 0 ||
+            strcmp(TagFeatureAt("Head", 1), "Chin") != 0 ||
+            strcmp(TagFeatureAt("Head", 2), "Neck") != 0)
+            return false;
+        return true;
+    }());
+    TEST("p5: unknown tags and out-of-range indices return null", [&]() {
+        return TagFeatureCount("Unknown") == 0 && TagFeatureAt("Eyes", 2) == nullptr
+            && TagFeatureAt("Eyes", -1) == nullptr && TagFeatureAt("Unknown", 0) == nullptr;
+    }());
+
+    TEST("p5: tag feature cells collapse per-feature yaw rows", [&]() {
+        return TagFeatureCellKey("Eye_Near", 1, 0) == "Eye_Near_Narrow_Y22_P00"
+            && TagFeatureCellKey("Brow_Far", 1, 0) == "Brow_Far_3Q_Y45_P00"
+            && TagFeatureCellKey("Nose", 3, 0) == "Nose_Profile_Y90_P00"
+            && TagFeatureCellKey("Nose", 1, 0) == "Nose_3Q_Y45_P00"
+            && TagFeatureCellKey("Mouth", 3, 2) == "Mouth_Profile_Y90_Pn45"
+            && TagFeatureCellKey("Eye_Far", 3, 0) == "Eye_Far_Sliver_Y67_P00"
+            && TagFeatureCellKey("Eye_Far", 9, 0) == "Eye_Far_Profile_L_Y90_P00"
+            && TagFeatureCellKey("Brow_Far", 11, 0) == "Brow_Far_3Q_L_Y45_P00"
+            && TagFeatureCellKey("Brow_Far", 0, 0) == "Brow_Far_Front_Y00_P00"
+            && TagFeatureCellKey("Brow_Far", 4, 1) == "Brow_Far_Profile_Y90_P45";
+    }());
+    TEST("p5: Top/UnderPlane tag cells use the special pitch tokens", [&]() {
+        return TagFeatureCellKey("Mouth", 12, 0) == "Mouth_Top_Y00_P90"
+            && TagFeatureCellKey("Mouth", 13, 0) == "Mouth_UnderPlane_Y00_Pn45"
+            && TagFeatureCellKey("Brow_Far", 13, 0) == "Brow_Far_UnderPlane_Y00_Pn45";
+    }());
+    TEST("p5: the albedo slot key is the tag-level cell key", [&]() {
+        return ResolveVectorAlbedoKey("Eyes", 0, 0) == "Eyes_Front_Y00_P00"
+            && ResolveVectorAlbedoKey("Head", 12, 0) == "Head_Top_Y00_P90"
+            && ResolveVectorAlbedoKey("Ears", 13, 0) == "Ears_UnderPlane_Y00_Pn45"
+            && ResolveVectorAlbedoKey("Bangs", 2, 1) == "Bangs_3Q_Y45_P45"
+            && ResolveVectorAlbedoKey("BackHair", 6, 0) == "BackHair_Back_Y180_P00";
+    }());
+
+    FDocument RedDoc;
+    RedDoc.Width = RedDoc.Height = RedDoc.VbW = RedDoc.VbH = 1.0;
+    RedDoc.Paths.push_back(P5Ring(Square(0.0, 0.0, 1.0, 1.0), true,
+                                  true, 1.0, 0.0, 0.0, 1.0, false, 0.0, 0, 0, 0, 0));
+    std::vector<uint8_t> Img;
+    RasterizeDocument(RedDoc, 32, 4, Img);
+    TEST("p5: full-canvas fill renders opaque red everywhere", [&]() {
+        for (int Y = 0; Y < 32; ++Y)
+            for (int X = 0; X < 32; ++X)
+            {
+                if (Alpha(Img, 32, X, Y) != 255) return false;
+                if (Chan(Img, 32, X, Y, 0) != 255 || Chan(Img, 32, X, Y, 1) != 0)
+                    return false;
+            }
+        return true;
+    }());
+
+    FDocument HoleDoc = RedDoc;
+    FPath Hole = P5Ring(Square(0.0, 0.0, 1.0, 1.0), true,
+                        true, 1.0, 0.0, 0.0, 1.0, false, 0.0, 0, 0, 0, 0);
+    Hole.Cmds.push_back(ECmd::MoveTo);
+    Hole.Pts.push_back(FPoint(0.35, 0.35));
+    for (const FPoint& p : std::vector<FPoint>({ { 0.65, 0.35 }, { 0.65, 0.65 }, { 0.35, 0.65 } }))
+    {
+        Hole.Cmds.push_back(ECmd::LineTo);
+        Hole.Pts.push_back(p);
+    }
+    HoleDoc.Paths[0] = Hole;
+    std::vector<uint8_t> HoleImg;
+    RasterizeDocument(HoleDoc, 32, 4, HoleImg);
+    TEST("p5: even-odd fill carves the sub-contour hole", [&]() {
+        if (Alpha(HoleImg, 32, 16, 16) != 0) return false;        // inside the hole
+        if (Alpha(HoleImg, 32, 10, 16) != 255) return false;      // outside the hole, in the band
+        if (Alpha(HoleImg, 32, 4, 16) != 255) return false;       // near the outer edge
+        if (Alpha(HoleImg, 32, 1, 1) != 255) return false;        // corner
+        const int Aa = Alpha(HoleImg, 32, 11, 16);                // straddles x=0.35
+        return Aa > 0 && Aa < 255;
+    }());
+
+    FDocument StrokeDoc = RedDoc;
+    StrokeDoc.Paths[0] = P5Ring(Square(0.2, 0.2, 0.8, 0.8), true,
+                                false, 0, 0, 0, 0,
+                                true, 0.04, 1.0, 1.0, 1.0, 1.0);
+    std::vector<uint8_t> StrokeImg;
+    RasterizeDocument(StrokeDoc, 64, 4, StrokeImg);
+    TEST("p5: stroke-only ring paints along the centerline band only", [&]() {
+        if (Alpha(StrokeImg, 64, 32, 32) != 0) return false;          // interior empty
+        if (Alpha(StrokeImg, 64, 32, 12) != 255) return false;        // on the band
+        if (Alpha(StrokeImg, 64, 32, 13) != 255) return false;        // on the band
+        if (Alpha(StrokeImg, 64, 32, 10) != 0) return false;          // 3px off the band
+        if (Alpha(StrokeImg, 64, 32, 14) != 0) return false;          // 1px past the band edge
+        const int Aa = Alpha(StrokeImg, 64, 32, 11);                  // band edge AA
+        return Aa > 0 && Aa < 255;
+    }());
+
+    FDocument CapDoc = RedDoc;
+    CapDoc.Paths[0] = P5Ring({ { 0.2, 0.5 }, { 0.8, 0.5 } }, false,
+                             false, 0, 0, 0, 0,
+                             true, 0.04, 1.0, 1.0, 1.0, 1.0);
+    std::vector<uint8_t> CapImg;
+    RasterizeDocument(CapDoc, 64, 4, CapImg);
+    TEST("p5: open strokes get round caps at both endpoints", [&]() {
+        if (Alpha(CapImg, 64, 32, 32) != 255) return false;           // mid-line
+        if (Alpha(CapImg, 64, 49, 32) != 255) return false;           // inside the segment
+        if (Alpha(CapImg, 64, 51, 32) != 255) return false;           // cap disk past the end
+        if (Alpha(CapImg, 64, 53, 32) != 0) return false;             // past the cap radius
+        if (Alpha(CapImg, 64, 32, 29) != 0) return false;             // off the line
+        return Alpha(CapImg, 64, 15, 32) == 255;                      // segment interior
+    }());
+
+    FDocument BlueDoc = RedDoc;
+    BlueDoc.Paths[0] = P5Ring(Square(0.0, 0.0, 1.0, 1.0), true,
+                              true, 0.0, 0.0, 1.0, 0.5, false, 0.0, 0, 0, 0, 0);
+    std::vector<const FDocument*> Comp = { &RedDoc, &BlueDoc };
+    std::vector<uint8_t> OverImg;
+    TEST("p5: compose + rasterize over-composites painter order", [&]() {
+        if (!RasterizeAlbedoForTag(Comp, 32, 4, OverImg)) return false;
+        const int A = Alpha(OverImg, 32, 16, 16);
+        const int R = Chan(OverImg, 32, 16, 16, 0);
+        const int B = Chan(OverImg, 32, 16, 16, 2);
+        return A == 255 && Near(R, 128, 2) && Near(B, 128, 2)
+            && Chan(OverImg, 32, 16, 16, 1) == 0;
+    }());
+    TEST("p5: empty resolves return false and zero the buffer", [&]() {
+        std::vector<const FDocument*> Nulls(2, nullptr);
+        std::vector<uint8_t> Empty;
+        if (RasterizeAlbedoForTag(Nulls, 16, 4, Empty)) return false;
+        for (uint8_t v : Empty) if (v != 0) return false;
+        const FDocument EmptyDoc;
+        std::vector<const FDocument*> OnlyEmpty(1, &EmptyDoc);
+        if (RasterizeAlbedoForTag(OnlyEmpty, 16, 4, Empty)) return false;
+        return true;
+    }());
+
+    FDocument LeftDoc = RedDoc;
+    LeftDoc.Paths[0] = P5Ring(Square(0.0, 0.0, 0.5, 1.0), true,
+                              true, 1.0, 0.0, 0.0, 1.0, false, 0.0, 0, 0, 0, 0);
+    FDocument RightDoc = RedDoc;
+    RightDoc.Paths[0] = P5Ring(Square(0.5, 0.0, 1.0, 1.0), true,
+                               true, 0.0, 0.0, 1.0, 1.0, false, 0.0, 0, 0, 0, 0);
+    const FDocument Comp2 = ComposeDocuments({ &LeftDoc, &RightDoc });
+    std::vector<uint8_t> SplitImg;
+    RasterizeDocument(Comp2, 32, 4, SplitImg);
+    TEST("p5: compose concatenates paths in painter order with doc metrics", [&]() {
+        if (Comp2.Paths.size() != 2) return false;
+        if (std::abs(Comp2.Width - 1.0) > 1e-12 || std::abs(Comp2.Height - 1.0) > 1e-12) return false;
+        if (Chan(SplitImg, 32, 8, 16, 0) != 255 || Chan(SplitImg, 32, 8, 16, 2) != 0) return false;
+        if (Chan(SplitImg, 32, 24, 16, 2) != 255 || Chan(SplitImg, 32, 24, 16, 0) != 0) return false;
+        return Alpha(SplitImg, 32, 8, 16) == 255 && Alpha(SplitImg, 32, 24, 16) == 255;
+    }());
+
+    FDocument CircDoc = RedDoc;
+    CircDoc.Paths[0].Cmds.clear();
+    CircDoc.Paths[0].Pts.clear();
+    CircDoc.Paths[0].bHasFill = true;
+    CircDoc.Paths[0].FillR = 0.0; CircDoc.Paths[0].FillG = 1.0; CircDoc.Paths[0].FillB = 0.0;
+    CircDoc.Paths[0].FillA = 1.0;
+    {
+        FPath& C = CircDoc.Paths[0];
+        C.Cmds.push_back(ECmd::MoveTo); C.Pts.push_back(FPoint(0.15, 0.5));
+        const double K = 0.5522847498307936 * 0.35;
+        auto Arc = [&](double c1x, double c1y, double c2x, double c2y, double x, double y) {
+            C.Cmds.push_back(ECmd::CubicTo); C.Pts.push_back(FPoint(c1x, c1y));
+            C.Cmds.push_back(ECmd::CubicTo); C.Pts.push_back(FPoint(c2x, c2y));
+            C.Cmds.push_back(ECmd::CubicTo); C.Pts.push_back(FPoint(x, y));
+        };
+        Arc(0.15, 0.5 - K, 0.5 - K, 0.15, 0.5, 0.15);
+        Arc(0.5 + K, 0.15, 0.85, 0.5 - K, 0.85, 0.5);
+        Arc(0.85, 0.5 + K, 0.5 + K, 0.85, 0.5, 0.85);
+        Arc(0.5 - K, 0.85, 0.15, 0.5 + K, 0.15, 0.5);
+    }
+    std::vector<uint8_t> CircImg;
+    RasterizeDocument(CircDoc, 64, 4, CircImg);
+    TEST("p5: cubic control points flatten into a filled disc", [&]() {
+        if (Alpha(CircImg, 64, 32, 32) != 255) return false;       // center
+        if (Alpha(CircImg, 64, 32, 22) != 255) return false;       // inside the radius
+        if (Alpha(CircImg, 64, 32, 6) != 0) return false;          // past the radius
+        if (Alpha(CircImg, 64, 2, 2) != 0) return false;           // corner
+        const int Aa = Alpha(CircImg, 64, 32, 9);                  // radius edge AA
+        return Aa > 0 && Aa < 255;
+    }());
+
+    FDocument NormDoc = RedDoc;
+    NormDoc.Width = 300.0; NormDoc.VbW = 300.0;
+    NormDoc.Paths[0] = P5Ring(Square(0.2, 0.2, 0.8, 0.8), true,
+                              false, 0, 0, 0, 0,
+                              true, 12.0, 1.0, 1.0, 1.0, 1.0);
+    std::vector<uint8_t> NormImg;
+    RasterizeDocument(NormDoc, 64, 4, NormImg);
+    TEST("p5: stroke width is normalized by the document width", [&]() {
+        if (Alpha(NormImg, 64, 32, 12) != 255) return false;       // 12/300 = 0.04 UV band
+        if (Alpha(NormImg, 64, 32, 13) != 255) return false;       // on the band
+        if (Alpha(NormImg, 64, 32, 14) != 0) return false;         // 1px past the band edge
+        const int Aa = Alpha(NormImg, 64, 32, 11);                 // band edge AA
+        if (Aa <= 0 || Aa >= 255) return false;
+        return Alpha(NormImg, 64, 32, 32) == 0;                    // interior empty
+    }());
+
+    const char* SvgTwo =
+        "<svg width=\"300\" height=\"300\" viewBox=\"0 0 300 300\">"
+        "<path d=\"M 30 30 L 270 30 L 270 270 L 30 270 Z\" fill=\"#ff0000\"/>"
+        "<path d=\"M 75 75 L 225 75 L 225 225 L 75 225 Z\" fill=\"#0000ff\"/>"
+        "</svg>";
+    FDocument SvgDoc;
+    std::vector<uint8_t> SvgImg;
+    TEST("p5: parsed svg text rasterizes through the same painter", [&]() {
+        if (!ParseDocument(SvgTwo, strlen(SvgTwo), SvgDoc)) return false;
+        if (SvgDoc.Paths.size() != 2) return false;
+        RasterizeDocument(SvgDoc, 32, 4, SvgImg);
+        const int R = Chan(SvgImg, 32, 7, 16, 0);
+        const int B = Chan(SvgImg, 32, 7, 16, 2);
+        if (R != 255 || B != 0) return false;                       // red outer band
+        const int R2 = Chan(SvgImg, 32, 16, 16, 0);
+        const int B2 = Chan(SvgImg, 32, 16, 16, 2);
+        if (R2 != 0 || B2 != 255) return false;                     // blue interior
+        return Alpha(SvgImg, 32, 7, 16) == 255 && Alpha(SvgImg, 32, 16, 16) == 255;
+    }());
+
+    printf("\n=== End Phase 5 — runtime albedo bake ===\n");
+}
+
 int main() {
     printf("===== Face Parallax Math Tests =====\n\n");
 
@@ -11031,6 +16479,8 @@ int main() {
     TestPinProjection();
     TestBatchOperations();
     TestZoneBoundaries();
+    TestParameterSpaceCrossfade();
+    TestParameterSpaceTriggers();
     TestCustomZoneBoundaryMultipliers();
     TestBlendPreview();
     TestStatusMatrix();
@@ -11109,15 +16559,44 @@ int main() {
     TestSchematicFilters();
     TestEdgeMapMirrors();
     TestYawRule();
+    TestReferenceCross();
+    TestAnchorSpheres();
+    TestSchematicThreeQuarterCards();
+TestSchematicForeshorten();
+TestChinAuthorAnchor();
+TestGapRhythm();
+TestProfileContourMerge();
     TestPhase0GlyphFix();
+    TestPhase1ConstructionGeometry();
     TestPhase1ZoneScrub();
     TestPhaseCUpDownScrub();
     TestPhase2Orientation();
+    TestPhase2AuthoredFeatureMatrix();
     TestAuthoredOrientation();
     TestAnchorClass();
     TestPhase3Visibility();
     TestPhase4SilhouetteDelta();
     TestPhase6PoseValidation();
+    TestPhaseA7MaskRead();
+    TestPhase7ArtSwap();
+    TestPhase8ParallaxSwap();
+    TestY22Y67SubThresholds();
+    TestArtLibrary();
+    TestSVGPaintSmooth();
+    TestPhaseIISchmittStep();
+    TestPhaseIIProximity();
+    TestPhaseIIAnchorRead();
+    TestPhaseIIPinLag();
+    TestPhaseIIShapeContrast();
+    TestPhaseA8Asymmetry();
+    TestPhaseA10FillChains();
+    TestPhaseB12Residual();
+    TestVectorSvgParse();
+    TestVectorGridSpec();
+    TestVectorParity();
+    TestVectorCellPair();
+    TestVectorStructure();
+    TestPhase5AlbedoBake();
 
     printf("\n===== Results: %d/%d passed (%d failed) =====\n",
         g_passed, g_total, g_total - g_passed);

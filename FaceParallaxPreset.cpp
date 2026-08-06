@@ -650,3 +650,123 @@ void UFaceParallaxPreset::SetNestedAltTextures(EFaceAngleState State, FName Laye
     if (AltTextures.Num() > 1) Nested.AltTextures.Normal = AltTextures[1];
     if (AltTextures.Num() > 2) Nested.AltTextures.Depth = AltTextures[2];
 }
+
+bool UFaceParallaxPreset::HasVectorArtForFeature(FName Feature) const
+{
+    return LibraryVectorArt.Contains(Feature);
+}
+
+void UFaceParallaxPreset::SetLibraryVectorArt(FName FeatureToken, UFaceVectorArt* Asset)
+{
+    if (Asset)
+    {
+        LibraryVectorArt.Add(FeatureToken, Asset);
+    }
+    else
+    {
+        LibraryVectorArt.Remove(FeatureToken);
+    }
+    MarkPackageDirty();
+}
+
+void UFaceParallaxPreset::ClearLibraryVectorArt()
+{
+    if (LibraryVectorArt.Num() > 0)
+    {
+        LibraryVectorArt.Reset();
+        MarkPackageDirty();
+    }
+}
+
+bool UFaceParallaxPreset::HasVectorOverride(const FString& CellKey) const
+{
+    return VectorArtOverrides.Contains(CellKey);
+}
+
+void UFaceParallaxPreset::SetVectorOverride(const FString& CellKey, UFaceVectorArt* Asset)
+{
+    if (!Asset || CellKey.IsEmpty()) return;
+    VectorArtOverrides.Add(CellKey, Asset);
+    MarkPackageDirty();
+}
+
+void UFaceParallaxPreset::ClearVectorOverride(const FString& CellKey)
+{
+    VectorArtOverrides.Remove(CellKey);
+    MarkPackageDirty();
+}
+
+void UFaceParallaxPreset::ClearFeatureOverrides(FName Feature)
+{
+    const std::string FeatureStr = TCHAR_TO_UTF8(*Feature.ToString());
+    TArray<FString> ToRemove;
+    for (const TPair<FString, TSoftObjectPtr<UFaceVectorArt>>& Pair : VectorArtOverrides)
+    {
+        std::string CellFeature, StateToken, YawToken, PitchToken;
+        const std::string KeyStr = TCHAR_TO_UTF8(*Pair.Key);
+        if (FPSvg::ParseCellKey(KeyStr.c_str(), CellFeature, StateToken, YawToken, PitchToken))
+        {
+            if (CellFeature == FeatureStr)
+            {
+                ToRemove.Add(Pair.Key);
+            }
+        }
+    }
+    for (const FString& Key : ToRemove)
+    {
+        VectorArtOverrides.Remove(Key);
+    }
+    if (ToRemove.Num() > 0)
+    {
+        MarkPackageDirty();
+    }
+}
+
+void UFaceParallaxPreset::ClearAllVectorOverrides()
+{
+    if (VectorArtOverrides.Num() > 0)
+    {
+        VectorArtOverrides.Reset();
+        MarkPackageDirty();
+    }
+}
+
+FFaceVectorArtPaths UFaceParallaxPreset::ResolveVectorCell(const FString& CellKey) const
+{
+    FFaceVectorArtPaths Result;
+    if (const TSoftObjectPtr<UFaceVectorArt>* Override = VectorArtOverrides.Find(CellKey))
+    {
+        if (UFaceVectorArt* Asset = Override->LoadSynchronous())
+        {
+            if (const FFaceVectorArtPaths* Cell = Asset->FindCell(CellKey))
+            {
+                return *Cell;
+            }
+        }
+    }
+    std::string CellFeature, StateToken, YawToken, PitchToken;
+    const std::string KeyStr = TCHAR_TO_UTF8(*CellKey);
+    if (FPSvg::ParseCellKey(KeyStr.c_str(), CellFeature, StateToken, YawToken, PitchToken))
+    {
+        if (const TSoftObjectPtr<UFaceVectorArt>* Library = LibraryVectorArt.Find(FName(CellFeature.c_str())))
+        {
+            if (UFaceVectorArt* Asset = Library->LoadSynchronous())
+            {
+                if (const FFaceVectorArtPaths* Cell = Asset->FindCell(CellKey))
+                {
+                    return *Cell;
+                }
+            }
+        }
+    }
+    return Result;
+}
+
+FFaceVectorArtPaths UFaceParallaxPreset::ResolveVectorArtForCell(FName Feature, int32 StateIndex, int32 PitchBand) const
+{
+    FFaceVectorArtPaths Result;
+    if (StateIndex < 0 || StateIndex > 13) return Result;
+    const std::string Key = FPSvg::FeatureCellKey(TCHAR_TO_UTF8(*Feature.ToString()), StateIndex, PitchBand);
+    if (Key.empty()) return Result;
+    return ResolveVectorCell(UTF8_TO_TCHAR(Key.c_str()));
+}

@@ -3,6 +3,7 @@
 #include "FaceParallaxPreviewActor.h"
 #include "FaceParallaxComponent.h"
 #include "FaceParallaxPreset.h"
+#include "FaceParallaxSvgParse.h"
 #include "DepthDebugVisualizerComponent.h"
 #include "Engine/Texture2D.h"
 #include "Engine/TextureRenderTarget2D.h"
@@ -978,7 +979,7 @@ bool UFaceParallaxEditorWidget::GetOutlineOverlayVisible() const
 void UFaceParallaxEditorWidget::RefreshOutlineViewChecks()
 {
     UFaceParallaxComponent* Comp = GetParallaxComponent();
-    for (int32 i = 0; i < OutlineViewChecks.Num() && i < 10; ++i)
+    for (int32 i = 0; i < OutlineViewChecks.Num() && i < 14; ++i)
     {
         if (OutlineViewChecks[i].IsValid())
         {
@@ -1043,14 +1044,31 @@ void UFaceParallaxEditorWidget::RebuildZoneDiagram()
 {
     if (!ZoneDiagramWidget.IsValid()) return;
     UFaceParallaxComponent* Comp = GetParallaxComponent();
-    float HZW = Comp ? Comp->HalfZoneWidth : 22.5f;
-    float BlendW = Comp ? Comp->BlendWindowWidth : 5.0f;
+    float HZW = Comp ? Comp->HalfZoneWidth : 45.0f;
+    float BlendW = Comp ? Comp->BlendWindowWidth : 0.75f;
 
-    // Build horizontal zones: 8 zones across 180 degrees
+    // Req 5: the strip reads in camera-orbit order starting at the LEFT
+    // profile - Left -> 3/4L -> Front -> 3/4R -> Right -> BackR -> Back ->
+    // BackL - so a full 360 turn is a continuous left-to-right sweep with no
+    // jump. BkL is emitted LAST: its [-180,-135] span lands at the right edge,
+    // wrapping back to the Left profile at the left edge (the overlay's pixel
+    // mapping rebases yaw via FPLayout::FPZoneStripPixelForYaw, left edge =
+    // -135). The Back state is the yaw=180 point itself; it gets a fixed-width
+    // tail chip next to the wrap so the label always shows.
     struct FZoneSeg { FString Label; float Start; float End; FLinearColor Color; };
     TArray<FZoneSeg> Segs;
     float HalfTotal = 180.0f;
-    float Z2 = HZW * 2.0f, Z3 = HZW * 3.0f, Z4 = HZW * 4.0f, Z5 = HZW * 5.0f, Z6 = HZW * 6.0f, Z7 = HZW * 7.0f;
+    const TArray<float>& Mults = Comp ? Comp->ZoneBoundaryMultipliers : TArray<float>();
+    const float B1 = UFaceParallaxComponent::GetBoundaryOrDefault(Mults, 0) * HZW;
+    const float B2 = UFaceParallaxComponent::GetBoundaryOrDefault(Mults, 1) * HZW;
+    const float B3 = UFaceParallaxComponent::GetBoundaryOrDefault(Mults, 2) * HZW;
+    const float B4 = UFaceParallaxComponent::GetBoundaryOrDefault(Mults, 3) * HZW;
+    // WI1 sub-threshold boundaries, derived from the first primary boundary
+    // (matches the component's DetermineStateFromAngles): the Narrow zone
+    // opens at B1/2 (22.5 at defaults), the Sliver zone at 1.5*B1 (67.5) —
+    // so the 14-state strip reads 22.5/45/67.5/90/135/180.
+    const float N = B1 * 0.5f;
+    const float S = B1 * 1.5f;
 
     auto AddSeg = [&](float S, float E, const FString& L, FLinearColor C)
     {
@@ -1060,14 +1078,24 @@ void UFaceParallaxEditorWidget::RebuildZoneDiagram()
         Segs.Add({L, S, E, C});
     };
 
-    AddSeg(-Z7, -Z5, TEXT("BkL"), FLinearColor(0.5f,0.5f,0.7f));
-    AddSeg(-Z5, -Z3, TEXT("ProfL"), FLinearColor(0.4f,0.6f,1.0f));
-    AddSeg(-Z3, -HZW, TEXT("3/4L"), FLinearColor(0.5f,0.7f,1.0f));
-    AddSeg(-HZW, HZW, TEXT("Front"), FLinearColor(0.6f,0.8f,1.0f));
-    AddSeg(HZW, Z3, TEXT("3/4R"), FLinearColor(0.5f,0.7f,1.0f));
-    AddSeg(Z3, Z5, TEXT("ProfR"), FLinearColor(0.4f,0.6f,1.0f));
-    AddSeg(Z5, Z7, TEXT("BkR"), FLinearColor(0.5f,0.5f,0.7f));
-    AddSeg(Z7, HalfTotal, TEXT("Back"), FLinearColor(0.4f,0.4f,0.6f));
+    // The Back tail keeps a fixed width (≈ "Back" label + padding at the
+    // diagram's 7px font) so the read next to the wrap stays visible; BkR
+    // ends where the tail starts so the two never overlap.
+    const float BackTailDeg = 10.0f;
+    const float BackStart = FMath::Min(B4, HalfTotal - BackTailDeg);
+
+    AddSeg(-B4, -B3, TEXT("BkL"), FLinearColor(0.5f,0.5f,0.7f));
+    AddSeg(-B3, -B2, TEXT("ProfL"), FLinearColor(0.4f,0.6f,1.0f));
+    AddSeg(-B2, -S, TEXT("SlivL"), FLinearColor(0.45f,0.65f,1.0f));
+    AddSeg(-S, -B1, TEXT("3/4L"), FLinearColor(0.5f,0.7f,1.0f));
+    AddSeg(-B1, -N, TEXT("NarL"), FLinearColor(0.55f,0.75f,1.0f));
+    AddSeg(-N, N, TEXT("Front"), FLinearColor(0.6f,0.8f,1.0f));
+    AddSeg(N, B1, TEXT("NarR"), FLinearColor(0.55f,0.75f,1.0f));
+    AddSeg(B1, S, TEXT("3/4R"), FLinearColor(0.5f,0.7f,1.0f));
+    AddSeg(S, B2, TEXT("SlivR"), FLinearColor(0.45f,0.65f,1.0f));
+    AddSeg(B2, B3, TEXT("ProfR"), FLinearColor(0.4f,0.6f,1.0f));
+    AddSeg(B3, BackStart, TEXT("BkR"), FLinearColor(0.5f,0.5f,0.7f));
+    AddSeg(BackStart, HalfTotal, TEXT("Back"), FLinearColor(0.4f,0.4f,0.6f));
 
     TSharedRef<SHorizontalBox> Bar = SNew(SHorizontalBox);
     float TotalAngle = HalfTotal * 2.0f;
@@ -1098,7 +1126,8 @@ void UFaceParallaxEditorWidget::RebuildZoneDiagram()
     }
 
     // Compose the diagram: color bar below, drag layer above (P3). The
-    // overlay paints the 8 boundary lines + yaw cursor itself. The content is
+    // overlay paints the 12 boundary lines (6 angles, mirrored) + yaw cursor
+    // itself. The content is
     // swapped INTO the slotted SBox in place so the visible tree always shows
     // the current bar (never an orphaned rebuild).
     TSharedRef<SWidget> Diagram = Bar;
@@ -1123,7 +1152,7 @@ void UFaceParallaxEditorWidget::ApplyZoneBoundaryDrag(int32 Idx, float Multiplie
     if (!Comp->ZoneBoundaryMultipliers.IsValidIndex(Idx))
     {
         Comp->ZoneBoundaryMultipliers.SetNum(4);
-        static const float DefaultZoneMults[4] = {1.0f, 3.0f, 5.0f, 7.0f};
+        static const float DefaultZoneMults[4] = {1.0f, 2.0f, 3.0f, 4.0f};
         for (int32 i = 0; i < 4; ++i)
             if (Comp->ZoneBoundaryMultipliers[i] == 0.0f)
                 Comp->ZoneBoundaryMultipliers[i] = DefaultZoneMults[i];
@@ -2116,6 +2145,13 @@ TSharedRef<SVerticalBox> UFaceParallaxEditorWidget::BuildPanelCanvas(const TShar
             RebuildSchematicFilterRow();
         }
 
+        // Req 4: the 360 rotation bar lives ABOVE the schematic canvas, not at
+        // the widget top. BuildPanelZoneDiagram mounts the yaw label + 20px
+        // zone strip (with the boundary-drag overlay) as the row between the
+        // filter row and the canvas, so the rotation control sits directly
+        // over the face it rotates.
+        BuildPanelZoneDiagram(CenterCol);
+
         // Preview canvas (overlays: outline, onion skin, edge detection, gizmo)
         PreviewImageWidget = SNew(SImage).Image(&PreviewBrush);
         OutlinePreviewImage = SNew(SImage)
@@ -2176,8 +2212,25 @@ TSharedRef<SVerticalBox> UFaceParallaxEditorWidget::BuildPanelCanvas(const TShar
         // P23: the canvas is aspect-locked SQUARE (mirrors the 1024x1024 render
         // target) — the face schematic can never be stretched; the slot centers
         // the 450px box in the center column.
+        // Phase C + review Req 4: the dedicated up/down view slider — a
+        // vertical pitch strip mounted LEFT of the canvas (the vertical mirror
+        // of the yaw zone bar above the schematic canvas). Drag up lifts the head
+        // toward the Top view, down toward Bottom; releases snap to the
+        // canonical state center (the pure FPZoneScrubPitchAfterDrag contract,
+        // no wrap). The strip spans the canvas height (450px = 2.5px/deg) so
+        // the pitch axis tracks the face it rotates; the 12px strip + canvas
+        // keep the row inside the 468px center column (12 + 2 gap + 450 + 4
+        // slot padding = exactly CenterColumnMinWidth).
+        PitchDragOverlay = SNew(SFacePitchStrip);
+        PitchDragOverlay->Owner = this;
+        TSharedRef<SHorizontalBox> CanvasRow = SNew(SHorizontalBox);
+        CanvasRow->AddSlot().Padding(FMargin(0,2,2,2)).AutoWidth().VAlign(VAlign_Center)
+            [SNew(SBox).WidthOverride(12).HeightOverride(450)
+                [PitchDragOverlay.ToSharedRef()]];
+        CanvasRow->AddSlot().FillWidth(1.0f).VAlign(VAlign_Center)
+            [SNew(SBox).HAlign(HAlign_Center)[PreviewHost.ToSharedRef()]];
         CenterCol->AddSlot().AutoHeight().Padding(FMargin(2)).HAlign(HAlign_Center)
-            [PreviewHost.ToSharedRef()];
+            [CanvasRow];
         // Resizing is only allowed at the very outside of the widget (the
         // window/tab edge — no internal splitter anywhere, rail included).
         // The canvas itself is fixed at the 450px design constant: an interior
@@ -2370,9 +2423,10 @@ void UFaceParallaxEditorWidget::RefreshHotspotRegions()
 }
 
 // Redesign: repaint the canvas schematic default view. P1 one-map: EVERY
-// part keeps its glyph — artful parts draw solid (their art replaced the
-// outline on the live preview, but the map stays complete and clickable),
-// artless parts stay dashed. Glyphs are transformed by the mapped layer's
+// part keeps its glyph — Review Req 2: every glyph paints per-edge (exposed
+// edges solid, edges hidden behind a front layer dashed — the placeholder
+// glyphs ARE the character, so there is no artless "stays dashed" state).
+// Glyphs are transformed by the mapped layer's
 // effective transform for the active view state (same UV chain as
 // RefreshHotspotRegions, so the schematic hugs the rendered head in every
 // view). Unmapped parts keep the default template pose. Phase 0/3: also
@@ -2385,10 +2439,19 @@ void UFaceParallaxEditorWidget::RefreshSchematic()
     std::vector<FPSchematic::FPSchematicPart> Parts = FPSchematic::DefaultPartSchematics();
     std::vector<std::string> Tags;
     std::vector<char> PartStatus;
+    std::vector<float> PartAlpha;
+    std::vector<FFaceVectorArtPaths> VecCur;
+    std::vector<FFaceVectorArtPaths> VecPrev;
+    std::vector<float> VecBlend;
     Tags.reserve(Parts.size());
     PartStatus.reserve(Parts.size());
+    PartAlpha.reserve(Parts.size());
+    VecCur.reserve(Parts.size());
+    VecPrev.reserve(Parts.size());
+    VecBlend.reserve(Parts.size());
     double BMinX = 2.0, BMinY = 2.0, BMaxX = -1.0, BMaxY = -1.0;
     bool bHaveFocusBox = false;
+    int32 ResolvedState = 0;   // Req 2: the state the occlusion paint needs
     const FString SelTag = SelectedLayerName.IsValid() ? SelectedLayerName.ToString() : FString();
     if (ActivePreset)
     {
@@ -2406,15 +2469,25 @@ void UFaceParallaxEditorWidget::RefreshSchematic()
         }
         else if (PreviewActor.IsValid() && PreviewActor->FaceParallax)
         {
-            OriYaw = PreviewActor->FaceParallax->GetZoneCenterYaw(ActiveViewState);
+            OriYaw = PreviewActor->FaceParallax->GetYawKeyForState(ActiveViewState);
             OriPitch = PreviewActor->FaceParallax->GetZoneCenterPitch(ActiveViewState);
         }
+        // Phase 7 widget parity: resolve the SAME state the runtime's
+        // DetermineStateFromAngles resolves for these angles (FPSchematicStateAtAngles
+        // is the default-geometry mirror), so the preview's per-part art
+        // availability always matches what the component will show.
+        const int32 StateIdx = FPSchematic::FPSchematicStateAtAngles(OriYaw, OriPitch);
+        ResolvedState = StateIdx;
         for (FPSchematic::FPSchematicPart& P : Parts)
         {
             if (!P.Name || !P.Name[0] || P.Outline.empty())
             {
                 Tags.emplace_back();
                 PartStatus.push_back(0);
+                PartAlpha.push_back(1.0f);
+                VecCur.emplace_back();
+                VecPrev.emplace_back();
+                VecBlend.push_back(0.0f);
                 continue;
             }
             const FString PartName = UTF8_TO_TCHAR(P.Name);
@@ -2423,6 +2496,10 @@ void UFaceParallaxEditorWidget::RefreshSchematic()
             {
                 Tags.emplace_back();
                 PartStatus.push_back(0);
+                PartAlpha.push_back(1.0f);
+                VecCur.emplace_back();
+                VecPrev.emplace_back();
+                VecBlend.push_back(0.0f);
                 continue;
             }
             const std::string ResolvedTag = TCHAR_TO_UTF8(*LayerTag.ToString());
@@ -2431,6 +2508,65 @@ void UFaceParallaxEditorWidget::RefreshSchematic()
             const FFaceTextureSet Tex = ActivePreset->GetSlot(ActiveViewState, LayerTag).Textures;
             PartStatus.push_back((char)FPLayout::AssignCellState(
                 Tex.Albedo != nullptr, Tex.Normal != nullptr, Tex.Depth != nullptr));
+            // Phase 7: per-part art availability = tag renders in the resolved
+            // state AND that state's slot actually has art (FPSchematicLayerArtAlpha).
+            // Glyphs with alpha 0 are what the runtime HIDES — drawn dimmed so
+            // the preview shows the same swap/back-half logic as the component.
+            // Vector-art viewer: resolve the part's SVG cell pair for the
+            // current orientation via the pure contract (Phase 2 parity: the
+            // pair mirrors the RUNTIME's at-rest committed state —
+            // FPSchematicForwardStateAt shifted right by the Schmitt margin —
+            // with the two-card fade in the runtime's own parameter-space
+            // window (FPSchematicCrossfadeAlpha at the pair's band edge), so
+            // the dominant card is exactly the albedo the runtime bakes; the
+            // legacy bracket-pair smoothstep model is retired), then fetch
+            // the actual art from the preset (override wins, else the
+            // per-feature library). Empty paths fall back to the ring glyph
+            // in paint.
+            const char* Feature = FPSvg::FeatureTokenForPart(P.Name);
+            FPSvg::FViewCellPair CellPair;
+            const bool bVecCell = Feature && ActivePreset->bUseVectorArtViewer
+                && FPSvg::ResolveViewCellPair(Feature, OriYaw, OriPitch, CellPair);
+            bool bHasArt;
+            if (bVecCell)
+            {
+                // Guide IX.5: in vector mode the "has art" gate reflects the
+                // REAL art source — the resolved cell existing in the library
+                // (override first, else the per-feature library) — not the
+                // raster slots, which the vector pipeline leaves empty.
+                const FString CurKey(UTF8_TO_TCHAR(CellPair.CurKey.c_str()));
+                const FFaceVectorArtPaths CurCell = ActivePreset->ResolveVectorCell(CurKey);
+                bHasArt = CurCell.IsValid();
+                if (!CurCell.IsValid())
+                {
+                    // Consumption-side fallback flag (guide IX.3): a resolved
+                    // cell that doesn't exist falls back to the ring glyph —
+                    // say so once per feature so "no SVG" (missing cell) is
+                    // distinguishable from "stale data" (the deploy probes).
+                    static TSet<FString> gLoggedVectorFallbacks;
+                    if (!gLoggedVectorFallbacks.Contains(FString(Feature)))
+                    {
+                        gLoggedVectorFallbacks.Add(FString(Feature));
+                        UE_LOG(LogTemp, Warning,
+                            TEXT("VectorArt: resolved cell '%s' missing for feature %s — ring fallback"),
+                            *CurKey, UTF8_TO_TCHAR(Feature));
+                    }
+                }
+                VecCur.push_back(CurCell);
+                VecPrev.push_back(ActivePreset->ResolveVectorCell(
+                    UTF8_TO_TCHAR(CellPair.PrevKey.c_str())));
+                VecBlend.push_back((float)CellPair.BlendAlpha);
+            }
+            else
+            {
+                bHasArt = ActivePreset->GetSlot(
+                    (EFaceAngleState)StateIdx, LayerTag).Textures.IsValid();
+                VecCur.emplace_back();
+                VecPrev.emplace_back();
+                VecBlend.push_back(0.0f);
+            }
+            PartAlpha.push_back((float)FPSchematic::FPSchematicLayerArtAlpha(
+                StateIdx, ResolvedTag.c_str(), bHasArt));
             const FFaceArtSlot& ArtSlot = ActivePreset->GetSlot(ActiveViewState, LayerTag);
             const FFaceArtTransform T = ArtSlot.GetEffectiveTransform(ActiveViewState);
             // Phase 2: rotate the front glyph to the current orientation
@@ -2465,6 +2601,9 @@ void UFaceParallaxEditorWidget::RefreshSchematic()
     SchematicLayer->SetParts(Parts);
     SchematicLayer->SetPartLayerTags(Tags);
     SchematicLayer->SetPartStatus(PartStatus);
+    SchematicLayer->SetPartAlpha(PartAlpha);
+    SchematicLayer->SetVectorCells(VecCur, VecPrev, VecBlend);
+    SchematicLayer->SetCurrentState(ResolvedState);
     SchematicLayer->SetEdgeMap(bSchematicEdgeMap, bEdgeMapHairEdges);
     std::vector<std::string> LayerFilter;
     LayerFilter.reserve(SchematicLayerFilter.Num());
@@ -3015,26 +3154,30 @@ void UFaceParallaxEditorWidget::BuildPanelSlotProps(const TSharedRef<SVerticalBo
                     })];
                 SaBox->AddSlot().AutoHeight()[DstHdr];
 
-                // Always-visible destination grid (2 rows x 5). The active
+                // Always-visible destination grid (2 rows x 7). The active
                 // view reads "This" and is never a destination.
-                struct { EFaceAngleState S; const TCHAR* T; } Dst[10] = {
+                struct { EFaceAngleState S; const TCHAR* T; } Dst[14] = {
                     {EFaceAngleState::Front, TEXT("Front")},
+                    {EFaceAngleState::NarrowRight, TEXT("NarR")},
                     {EFaceAngleState::ThreeQuarterRight, TEXT("3/4R")},
+                    {EFaceAngleState::SliverRight, TEXT("SlivR")},
                     {EFaceAngleState::RightProfile, TEXT("ProfR")},
                     {EFaceAngleState::BackRight, TEXT("BackR")},
                     {EFaceAngleState::Back, TEXT("Back")},
                     {EFaceAngleState::BackLeft, TEXT("BackL")},
-                    {EFaceAngleState::ThreeQuarterLeft, TEXT("3/4L")},
                     {EFaceAngleState::LeftProfile, TEXT("ProfL")},
+                    {EFaceAngleState::SliverLeft, TEXT("SlivL")},
+                    {EFaceAngleState::ThreeQuarterLeft, TEXT("3/4L")},
+                    {EFaceAngleState::NarrowLeft, TEXT("NarL")},
                     {EFaceAngleState::Top, TEXT("Top")},
                     {EFaceAngleState::Bottom, TEXT("Bot")},
                 };
                 for (int32 Row = 0; Row < 2; ++Row)
                 {
                     TSharedRef<SHorizontalBox> GridRow = SNew(SHorizontalBox);
-                    for (int32 Col = 0; Col < 5; ++Col)
+                    for (int32 Col = 0; Col < 7; ++Col)
                     {
-                        const int32 Idx = Row * 5 + Col;
+                        const int32 Idx = Row * 7 + Col;
                         const EFaceAngleState S = Dst[Idx].S;
                         const bool bSelf = (S == ActiveViewState);
                         GridRow->AddSlot().AutoWidth().Padding(FMargin(0,1))
@@ -3053,7 +3196,7 @@ void UFaceParallaxEditorWidget::BuildPanelSlotProps(const TSharedRef<SVerticalBo
                                     if (SyncViewCheckBoxes.IsValidIndex((int32)S) && SyncViewCheckBoxes[(int32)S].IsValid())
                                         SyncViewCheckBoxes[(int32)S]->SetIsChecked(NewState == ECheckBoxState::Checked);
                                 })];
-                        SyncDestLabels.SetNum(10);
+                        SyncDestLabels.SetNum(14);
                         TSharedRef<STextBlock> DestLblRef = MakeLbl(bSelf ? TEXT("This") : Dst[Idx].T, 8,
                             bSelf ? FLinearColor(0.9f, 0.8f, 0.5f) : FLinearColor(0.8f, 0.8f, 0.8f));
                         SyncDestLabels[Idx] = DestLblRef;
@@ -3073,7 +3216,7 @@ void UFaceParallaxEditorWidget::BuildPanelSlotProps(const TSharedRef<SVerticalBo
                     {
                         if (!SelectedLayerName.IsValid()) return;
                         TArray<EFaceAngleState> Dests;
-                        for (int32 i = 0; i < SyncViewCheckBoxes.Num() && i < 10; ++i)
+                        for (int32 i = 0; i < SyncViewCheckBoxes.Num() && i < 14; ++i)
                         {
                             if (SyncViewCheckBoxes[i].IsValid() && SyncViewCheckBoxes[i]->IsChecked())
                                 Dests.Add((EFaceAngleState)i);
@@ -3463,19 +3606,23 @@ void UFaceParallaxEditorWidget::BuildPanelStateStrip(const TSharedRef<SVerticalB
         TSharedRef<SHorizontalBox> StateBar = SNew(SHorizontalBox);
         struct { EFaceAngleState S; const TCHAR* T; FLinearColor C; } States[] = {
             {EFaceAngleState::Front, TEXT("Front"), FLinearColor(0.6f,0.8f,1.0f)},
+            {EFaceAngleState::NarrowRight, TEXT("NarR"), FLinearColor(0.55f,0.75f,1.0f)},
             {EFaceAngleState::ThreeQuarterRight, TEXT("3/4R"), FLinearColor(0.5f,0.7f,1.0f)},
+            {EFaceAngleState::SliverRight, TEXT("SlivR"), FLinearColor(0.45f,0.65f,1.0f)},
             {EFaceAngleState::RightProfile, TEXT("ProfR"), FLinearColor(0.4f,0.6f,1.0f)},
             {EFaceAngleState::BackRight, TEXT("BackR"), FLinearColor(0.5f,0.5f,0.7f)},
             {EFaceAngleState::Back, TEXT("Back"), FLinearColor(0.4f,0.4f,0.6f)},
             {EFaceAngleState::BackLeft, TEXT("BackL"), FLinearColor(0.5f,0.5f,0.7f)},
             {EFaceAngleState::LeftProfile, TEXT("ProfL"), FLinearColor(0.4f,0.6f,1.0f)},
+            {EFaceAngleState::SliverLeft, TEXT("SlivL"), FLinearColor(0.45f,0.65f,1.0f)},
             {EFaceAngleState::ThreeQuarterLeft, TEXT("3/4L"), FLinearColor(0.5f,0.7f,1.0f)},
+            {EFaceAngleState::NarrowLeft, TEXT("NarL"), FLinearColor(0.55f,0.75f,1.0f)},
             {EFaceAngleState::Top, TEXT("Top"), FLinearColor(0.6f,1.0f,0.6f)},
             {EFaceAngleState::Bottom, TEXT("Bot"), FLinearColor(1.0f,0.6f,0.6f)},
         };
         ViewTabDots.Reset();
         SyncViewCheckBoxes.Reset();
-        for (int32 Si = 0; Si < 10; ++Si)
+        for (int32 Si = 0; Si < 14; ++Si)
         {
             SyncViewCheckBoxes.Add(SNew(SCheckBox).IsChecked(ECheckBoxState::Unchecked));
         }
@@ -3553,8 +3700,11 @@ void UFaceParallaxEditorWidget::BuildPanelStateStrip(const TSharedRef<SVerticalB
 
 }
 
-void UFaceParallaxEditorWidget::BuildPanelZoneDiagram(const TSharedRef<SVerticalBox>& Root)
+void UFaceParallaxEditorWidget::BuildPanelZoneDiagram(const TSharedRef<SVerticalBox>& Container)
 {
+    // Req 4: the 360 rotation control (yaw label + zone strip + boundary-drag
+    // overlay) is mounted into the center column ABOVE the schematic canvas
+    // (BuildPanelCanvas calls this between the filter row and the canvas).
     {
         TSharedRef<SVerticalBox> ZoneCol = SNew(SVerticalBox);
         ZoneYawLabel = SNew(STextBlock)
@@ -3572,25 +3722,7 @@ void UFaceParallaxEditorWidget::BuildPanelZoneDiagram(const TSharedRef<SVertical
         ZoneCol->AddSlot().AutoHeight().Padding(FMargin(2,1))
             [ZoneDiagramWidget.ToSharedRef()];
 
-        // Phase C: dedicated up/down view slider — a vertical pitch strip
-        // UNDER the 360 deg yaw diagram. Drag up lifts the head toward the
-        // Top view, down toward Bottom; releases snap to the canonical state
-        // center (the pure FPZoneScrubPitchAfterDrag contract, no wrap).
-        PitchDragOverlay = SNew(SFacePitchStrip);
-        PitchDragOverlay->Owner = this;
-        TSharedRef<SHorizontalBox> PitchViewRow = SNew(SHorizontalBox);
-        PitchViewRow->AddSlot().Padding(FMargin(0,2)).AutoWidth().VAlign(VAlign_Center)
-            [MakeLbl(TEXT("Pitch view"), 9, FLinearColor(0.6f,0.8f,1.0f))];
-        PitchViewRow->AddSlot().Padding(FMargin(4,2)).AutoWidth()
-            [SNew(SBox).WidthOverride(18).HeightOverride(108)
-                [PitchDragOverlay.ToSharedRef()]];
-        PitchViewRow->AddSlot().Padding(FMargin(4,2)).FillWidth(1.0f).VAlign(VAlign_Center)
-            [MakeLbl(TEXT("Drag up = Top view, down = Bottom view"),
-                8, FLinearColor(0.5f,0.5f,0.5f))];
-        ZoneCol->AddSlot().AutoHeight().Padding(FMargin(2,1))
-            [PitchViewRow];
-
-        Root->AddSlot().AutoHeight()
+        Container->AddSlot().AutoHeight()
             [SNew(SBorder).BorderImage(FCoreStyle::Get().GetBrush("NoBorder"))
                 .BorderBackgroundColor(FLinearColor(0.08f,0.08f,0.08f))
                 .Padding(FMargin(4,2))
@@ -3981,7 +4113,7 @@ void UFaceParallaxEditorWidget::BuildPanelAssignSections()
                 };
                 MakeScopeCheck(TEXT("F"), TEXT("Front only"), 0, FLinearColor(0.6f,0.9f,0.7f));
                 MakeScopeCheck(TEXT("8h"), TEXT("8 horizontal states"), 1, FLinearColor(0.6f,0.8f,1.0f));
-                MakeScopeCheck(TEXT("All"), TEXT("All 10 states"), 2, FLinearColor(0.9f,0.8f,0.6f));
+                MakeScopeCheck(TEXT("All"), TEXT("All 14 states"), 2, FLinearColor(0.9f,0.8f,0.6f));
                 ScopeRow->AddSlot().Padding(FMargin(4,2)).FillWidth(1.0f);
                 OdBox->AddSlot().AutoHeight()[ScopeRow];
 
@@ -3989,26 +4121,30 @@ void UFaceParallaxEditorWidget::BuildPanelAssignSections()
                 OdBox->AddSlot().AutoHeight().Padding(FMargin(2,1))
                     [TextOutlineStats.ToSharedRef()];
 
-                // P22: the per-state silhouette picker is 10 checks in two
-                // 5-wide rows (checks only, tooltips carry the state names);
+                // P22: the per-state silhouette picker is 14 checks in two
+                // 7-wide rows (checks only, tooltips carry the state names);
                 // All/None sit on their own row below. All rows fit 168px.
                 TSharedRef<SHorizontalBox> OvRow0 = SNew(SHorizontalBox);
                 TSharedRef<SHorizontalBox> OvRow1 = SNew(SHorizontalBox);
                 struct { EFaceAngleState S; const TCHAR* T; } OvPickStates[] = {
                     {EFaceAngleState::Front, TEXT("F")},
+                    {EFaceAngleState::NarrowRight, TEXT("NR")},
                     {EFaceAngleState::ThreeQuarterRight, TEXT("3R")},
+                    {EFaceAngleState::SliverRight, TEXT("SR")},
                     {EFaceAngleState::RightProfile, TEXT("PR")},
                     {EFaceAngleState::BackRight, TEXT("BR")},
                     {EFaceAngleState::Back, TEXT("B")},
                     {EFaceAngleState::BackLeft, TEXT("BL")},
                     {EFaceAngleState::LeftProfile, TEXT("PL")},
+                    {EFaceAngleState::SliverLeft, TEXT("SL")},
                     {EFaceAngleState::ThreeQuarterLeft, TEXT("3L")},
+                    {EFaceAngleState::NarrowLeft, TEXT("NL")},
                     {EFaceAngleState::Top, TEXT("TP")},
                     {EFaceAngleState::Bottom, TEXT("BT")},
                 };
                 UFaceParallaxComponent* OvComp = GetParallaxComponent();
                 OutlineViewChecks.Reset();
-                for (int32 Oi = 0; Oi < 10; ++Oi)
+                for (int32 Oi = 0; Oi < 14; ++Oi)
                 {
                     auto& PS = OvPickStates[Oi];
                     const bool bOn = OvComp && OvComp->IsOutlineViewState(PS.S);
@@ -4026,7 +4162,7 @@ void UFaceParallaxEditorWidget::BuildPanelAssignSections()
                         *StaticEnum<EFaceAngleState>()->GetNameStringByValue((int64)PS.S))));
                     TSharedPtr<SCheckBox> Chk = ChkRef;
                     OutlineViewChecks.Add(Chk);
-                    (Oi < 5 ? OvRow0 : OvRow1)->AddSlot().Padding(FMargin(2,2)).AutoWidth()
+                    (Oi < 7 ? OvRow0 : OvRow1)->AddSlot().Padding(FMargin(2,2)).AutoWidth()
                         [Chk.ToSharedRef()];
                 }
                 OdBox->AddSlot().AutoHeight()[OvRow0];
@@ -4035,7 +4171,7 @@ void UFaceParallaxEditorWidget::BuildPanelAssignSections()
                 OvAllRow->AddSlot().Padding(FMargin(0,2)).AutoWidth()
                     [MakeBtn(TEXT("All"), [this]()
                     {
-                        for (int32 i = 0; i < 10; ++i)
+                        for (int32 i = 0; i < 14; ++i)
                         {
                             if (UFaceParallaxComponent* C = GetParallaxComponent()) C->SetOutlineViewEnabled((EFaceAngleState)i, true);
                         }
@@ -4058,19 +4194,24 @@ void UFaceParallaxEditorWidget::BuildPanelAssignSections()
         }
 
         // Bulk Assign + Assign Ops (moved from the old Assign rail)
-    // Bulk Assign grid: 10 state columns x 3 layer rows, plus row labels and
-    // the coverage summary. Cells mirror FPLayout::AssignCellState (2 full,
-    // 1 partial, 0 empty); the coverage label mirrors AssignCoverageText.
+        // Bulk Assign grid: 14 state columns x 3 layer rows, plus row labels
+        // and the coverage summary. Cells mirror FPLayout::AssignCellState (2
+        // full, 1 partial, 0 empty); the coverage label mirrors
+        // AssignCoverageText.
     {
         struct { EFaceAngleState S; const TCHAR* T; } States[] = {
             {EFaceAngleState::Front, TEXT("Front")},
+            {EFaceAngleState::NarrowRight, TEXT("NarR")},
             {EFaceAngleState::ThreeQuarterRight, TEXT("3/4R")},
+            {EFaceAngleState::SliverRight, TEXT("SlivR")},
             {EFaceAngleState::RightProfile, TEXT("ProfR")},
             {EFaceAngleState::BackRight, TEXT("BackR")},
             {EFaceAngleState::Back, TEXT("Back")},
             {EFaceAngleState::BackLeft, TEXT("BackL")},
             {EFaceAngleState::LeftProfile, TEXT("ProfL")},
+            {EFaceAngleState::SliverLeft, TEXT("SlivL")},
             {EFaceAngleState::ThreeQuarterLeft, TEXT("3/4L")},
+            {EFaceAngleState::NarrowLeft, TEXT("NarL")},
             {EFaceAngleState::Top, TEXT("Top")},
             {EFaceAngleState::Bottom, TEXT("Bot")},
         };
@@ -4097,7 +4238,7 @@ void UFaceParallaxEditorWidget::BuildPanelAssignSections()
         {
             const FName Tag = LayerNames.IsValidIndex(Ri) ? LayerNames[Ri] : FName();
             TSharedRef<SHorizontalBox> Row = SNew(SHorizontalBox);
-            for (int32 Ci = 0; Ci < 10; ++Ci)
+            for (int32 Ci = 0; Ci < 14; ++Ci)
             {
                 const EFaceAngleState S = (EFaceAngleState)Ci;
                 TSharedRef<SImage> Cell = SNew(SImage)
@@ -4160,7 +4301,7 @@ void UFaceParallaxEditorWidget::BuildPanelAssignSections()
         // P22: the coverage summary sits on its own row so the label row
         // above stays at 132px inside the 168px rail budget.
         TSharedRef<SHorizontalBox> CovRow = SNew(SHorizontalBox);
-        TextAssignCoverage = MakeLbl(TEXT("Filled 0/30"), 8, FLinearColor(0.7f, 0.9f, 0.7f));
+        TextAssignCoverage = MakeLbl(TEXT("Filled 0/42"), 8, FLinearColor(0.7f, 0.9f, 0.7f));
         CovRow->AddSlot().Padding(FMargin(0, 2)).AutoWidth()[TextAssignCoverage.ToSharedRef()];
         CovRow->AddSlot().Padding(FMargin(4, 2)).FillWidth(1.0f);
         GB->AddSlot().AutoHeight()[CovRow];
@@ -4440,7 +4581,7 @@ void UFaceParallaxEditorWidget::BuildPanelPreviewPage()
                                 if (!Comp->ZoneBoundaryMultipliers.IsValidIndex(Zi))
                                 {
                                     Comp->ZoneBoundaryMultipliers.SetNum(4);
-                                    static const float DefaultZoneMults[4] = {1.0f, 3.0f, 5.0f, 7.0f};
+                                    static const float DefaultZoneMults[4] = {1.0f, 2.0f, 3.0f, 4.0f};
                                     for (int32 i = 0; i < 4; ++i)
                                         if (Comp->ZoneBoundaryMultipliers[i] == 0.0f)
                                             Comp->ZoneBoundaryMultipliers[i] = DefaultZoneMults[i];
@@ -4475,6 +4616,57 @@ void UFaceParallaxEditorWidget::BuildPanelPreviewPage()
                 FOVRow->AddSlot().Padding(FMargin(2,2)).AutoWidth()
                     [FOVLabel];
                 Cam->AddSlot().AutoHeight()[FOVRow];
+
+                // Phase 4: vector-art viewer toggle — when the preset has the
+                // generated Art/<Part> SVG library loaded, the schematic
+                // canvas paints the resolved rotation-driven cell pair instead
+                // of the ring glyphs (RefreshSchematic gate bUseVectorArtViewer).
+                TSharedRef<SHorizontalBox> VecRow = SNew(SHorizontalBox);
+                VecRow->AddSlot().Padding(FMargin(0,2)).AutoWidth()
+                    [SNew(SCheckBox)
+                        .IsChecked(ValidatePreset() && ActivePreset->bUseVectorArtViewer
+                            ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
+                        .ToolTipText(FText::FromString(TEXT("Paint the generated vector art cells on the schematic canvas (rings when off)")))
+                        .OnCheckStateChanged_Lambda([this](ECheckBoxState S)
+                        {
+                            if (ValidatePreset())
+                            {
+                                ActivePreset->bUseVectorArtViewer = (S == ECheckBoxState::Checked);
+                                RefreshUI();
+                            }
+                        })];
+                VecRow->AddSlot().Padding(FMargin(4,2)).AutoWidth()
+                    [MakeLbl(TEXT("Vector art"), 9, FLinearColor(0.7f,0.9f,1.0f))];
+                VecRow->AddSlot().Padding(FMargin(4,2)).FillWidth(1.0f);
+                Cam->AddSlot().AutoHeight()[VecRow];
+
+                // Phase 5: vector-albedo toggle — the runtime quads render the
+                // baked per-tag composite of the vector cells for the current
+                // view state instead of the raster slot textures (bakes are
+                // transient, produced on demand through the pure rasterizer).
+                TSharedRef<SHorizontalBox> AlbRow = SNew(SHorizontalBox);
+                AlbRow->AddSlot().Padding(FMargin(0,2)).AutoWidth()
+                    [SNew(SCheckBox)
+                        .IsChecked(ValidatePreset() && ActivePreset->bUseVectorArtAlbedo
+                            ? ECheckBoxState::Checked : ECheckBoxState::Unchecked)
+                        .ToolTipText(FText::FromString(TEXT("Render the 3D preview quads with the per-tag vector-art albedo bakes for the current view (raster slot textures when off)")))
+                        .OnCheckStateChanged_Lambda([this](ECheckBoxState S)
+                        {
+                            if (ValidatePreset())
+                            {
+                                ActivePreset->bUseVectorArtAlbedo = (S == ECheckBoxState::Checked);
+                                RefreshUI();
+                                if (PreviewActor.IsValid() && PreviewActor->FaceParallax)
+                                {
+                                    PreviewActor->FaceParallax->ApplyCurrentStateTextures();
+                                    PreviewActor->FaceParallax->SetPreviousStateTextures();
+                                }
+                            }
+                        })];
+                AlbRow->AddSlot().Padding(FMargin(4,2)).AutoWidth()
+                    [MakeLbl(TEXT("Vector albedo"), 9, FLinearColor(0.7f,0.9f,1.0f))];
+                AlbRow->AddSlot().Padding(FMargin(4,2)).FillWidth(1.0f);
+                Cam->AddSlot().AutoHeight()[AlbRow];
 
                 TSharedRef<SWidget> CamSection = MakeSectionBox(TEXT("Camera"), Cam);
                 T2->AddSlot().AutoHeight()
@@ -5558,9 +5750,9 @@ void UFaceParallaxEditorWidget::RefreshAssignGrid()
     for (int32 Ri = 0; Ri < NumRows; ++Ri)
     {
         const FName Tag = LayerNames.IsValidIndex(Ri) ? LayerNames[Ri] : FName();
-        for (int32 Ci = 0; Ci < 10; ++Ci)
+        for (int32 Ci = 0; Ci < 14; ++Ci)
         {
-            const int32 CellIdx = Ri * 10 + Ci;
+            const int32 CellIdx = Ri * 14 + Ci;
             if (CellIdx >= AssignCells.Num()) return;
             const EFaceAngleState S = (EFaceAngleState)Ci;
             int32 State = 0;
@@ -5575,7 +5767,7 @@ void UFaceParallaxEditorWidget::RefreshAssignGrid()
     }
     if (TextAssignCoverage.IsValid())
     {
-        const FString C = UTF8_TO_TCHAR(FPLayout::AssignCoverageText(Filled, NumRows * 10).c_str());
+        const FString C = UTF8_TO_TCHAR(FPLayout::AssignCoverageText(Filled, NumRows * 14).c_str());
         TextAssignCoverage->SetText(FText::FromString(FString::Printf(TEXT("Filled %s"), *C)));
     }
 }

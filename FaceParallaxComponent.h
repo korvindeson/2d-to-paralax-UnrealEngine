@@ -117,17 +117,17 @@ public:
 
     // --- VIEW ANGLE SETTINGS ---
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|View Angles")
-    float TopViewPitchThreshold = 60.0f;
+    float TopViewPitchThreshold = 45.0f;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|View Angles")
-    float BottomViewPitchThreshold = -60.0f;
+    float BottomViewPitchThreshold = -45.0f;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|View Angles")
-    float HalfZoneWidth = 22.5f;
+    float HalfZoneWidth = 45.0f;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|View Angles",
         meta = (DisplayName="Zone Boundary Multipliers",
-            ToolTip="4 multipliers [Front, ThreeQuarter, Profile, Back] applied to HalfZoneWidth to set zone boundaries. Default {1,3,5,7}"))
+            ToolTip="4 multipliers [Narrow, ThreeQuarter, Profile, Back] applied to HalfZoneWidth to set the PRIMARY zone boundaries. Default {1,2,3,4} — the swap thresholds sit at 45/90/135/180. The WI1 sub-threshold zones are derived from the first boundary: Narrow = BM0*HZW/2 (22.5) and Sliver = 1.5*BM0*HZW (67.5), so the full 14-state swap set is 22.5/45/67.5/90/135/180."))
     TArray<float> ZoneBoundaryMultipliers;
 
     UFUNCTION(BlueprintCallable, Category = "Face Parallax|View Angles")
@@ -150,7 +150,7 @@ public:
 
     static float GetBoundaryOrDefault(const TArray<float>& Multipliers, int32 Index)
     {
-        static const float Defaults[4] = {1.0f, 3.0f, 5.0f, 7.0f};
+        static const float Defaults[4] = {1.0f, 2.0f, 3.0f, 4.0f};
         return Multipliers.IsValidIndex(Index) ? Multipliers[Index] : Defaults[Index];
     }
 
@@ -160,19 +160,45 @@ public:
     UFUNCTION(BlueprintCallable, Category = "Face Parallax|View Angles")
     float GetZoneCenterPitch(EFaceAngleState State) const;
 
+    // The pose key (swap boundary) the state's authored art is EXACT at:
+    // 0 / BM[0]*HZW / BM[1]*HZW / BM[2]*HZW / 180 (left states use the same
+    // positive keys; |yaw| resolves them, sign(Yaw) carries the direction).
+    // The parallax slide is re-baselined here (0 at the key, peak at the next
+    // boundary) so the incoming view never backslides through a swap.
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|View Angles")
+    float GetYawKeyForState(EFaceAngleState State) const;
+
+    // The angular distance from the state's pose key to the NEXT state's key
+    // along the turn (the parallax slide reaches its peak exactly there): the
+    // WI1 sub-threshold zones (Front/Narrow/3/4/Sliver) space BM[0]*HZW/2
+    // (22.5 at defaults), the 90/135/180 key spans space a full boundary gap.
+    // Top/Bottom return 0 (no yaw slide on the pitch states).
+    UFUNCTION(BlueprintCallable, Category = "Face Parallax|View Angles")
+    float GetYawKeySpacingForState(EFaceAngleState State) const;
+
     // --- TRANSITION SETTINGS ---
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Transitions")
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Transitions",
+        meta = (ToolTip="Retained for backward compatibility only. The state-change crossfade is now a parameter-space window (art_guide III.6) — a pure function of the rotation parameter, never a frame count — so CrossfadeSpeed no longer drives the blend. Blueprints may still read/write it, but it has no effect."))
     float CrossfadeSpeed = 15.0f;
 
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Transitions",
-        meta = (ClampMin = "1", ClampMax = "30"))
+        meta = (ClampMin = "1", ClampMax = "30",
+            ToolTip="Same-frame jitter backstop (art_guide IV.0): a raw state flip must be observed for this many consecutive frames before the directional Schmitt trigger can commit it. The commit itself is parameter-space (art_guide B.3: the flip fires only once the rotation parameter passes the swap boundary by the Schmitt margin, +-1.5 deg, in the direction of travel) — the frame count never delays a definitive crossing, it only blocks sub-frame oscillation."))
     int32 HysteresisFrames = 3;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Transitions")
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Transitions",
+        meta = (ToolTip="Master gate for the state-change crossfade. On (default): the incoming card fades in over the BlendWindowWidth parameter-space window centered on the hysteresis-adjusted trigger. Off: the art hard-swaps instantly at the state flip."))
     bool bUseContinuousBlending = true;
 
-    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Transitions")
-    float BlendWindowWidth = 5.0f;
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Transitions",
+        meta = (ClampMin = "0.0", ClampMax = "10.0",
+            ToolTip="Parameter-Space Crossfade half-width, in rotation-parameter degrees (art_guide III.6): the fade spans +-this around the hysteresis-adjusted trigger, always the same angular sweep regardless of interaction speed. Default 0.75 deg."))
+    float BlendWindowWidth = 0.75f;
+
+    UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Face Parallax|Transitions",
+        meta = (ClampMin = "0.0", ClampMax = "10.0",
+            ToolTip="Angle hysteresis buffer (degrees, art_guide IV.0): the state machine holds the current view while the camera is still within this many degrees of the swap boundary, so a slow hover at a threshold never flickers. The commit (B.3) is the directional Schmitt at the same +-1.5 deg margin in the direction of travel."))
+    float AngleHysteresisBuffer = 1.5f;
 
     UFUNCTION(BlueprintCallable, Category = "Face Parallax|Transitions")
     void SetCrossfadeSpeed(float Speed) { CrossfadeSpeed = FMath::Max(0.1f, Speed); }
@@ -416,23 +442,22 @@ public:
         const TArray<FVector2D>& Bottom, FVector2D LocalPoint,
         float YawDegrees, float PitchDegrees);
 
-    // Pin view-angle rotation: maps yaw deviation from a state's zone center
-    // to a rotation angle. Deviation is wrapped to [-180,180], normalized by
-    // the half-zone width (clamped to [-1,1]), then lerped Min->Max across
-    // the range and scaled by sensitivity. Pure math (unit-tested).
+    // Pin view-angle rotation. MASTER BLUEPRINT: real 2D art cards never rotate
+    // per-frame — the turn is parallax translation + pre-created view swaps, so
+    // this is translation-only and always returns 0 (the pin still translates
+    // via ProjectPinToUV*). Signature preserved for compatibility.
     static float PinRotationFromYawDev(float YawDev, float HalfZoneWidth,
         float MinRotation, float MaxRotation, float RotationSensitivity);
 
-    // Phase 5: 2D pitch-aware pin view-angle rotation. Pitch deviation
-    // attenuates the yaw driver (Driver = NormYaw * (1 - |NormPitch|));
-    // at PitchDev = 0 the result is byte-identical to PinRotationFromYawDev.
-    // Pure math (unit-tested by TestPrimaryLayerPin).
+    // Phase 5: pitch-aware pin view-angle rotation. MASTER BLUEPRINT: 2D art
+    // never rotates per-frame, so this is translation-only and always returns 0.
+    // Signature preserved for compatibility.
     static float PinRotationFromViewAngles(float YawDev, float PitchDev, float HalfZoneWidth,
         float MinRotation, float MaxRotation, float RotationSensitivity);
 
-    // Phase 5: view-angle pin scale. Weight 1 - |Cos(YawDev)*Cos(PitchDev)|:
-    // scale 1.0 at the zone center, easing to MinScale at 90 degrees of
-    // deviation in either axis. Pure math (unit-tested).
+    // Phase 5: view-angle pin scale. MASTER BLUEPRINT: 2D art never scales
+    // per-frame, so this is translation-only and always returns 1.0. Signature
+    // preserved for compatibility.
     static float PinScaleFromView(float YawDev, float PitchDev, float MinScale);
 
     mutable TMap<EFaceAngleState, TArray<FVector2D>> OutlinePointCache;
@@ -1055,6 +1080,10 @@ private:
     UPROPERTY(Transient)
     TArray<TObjectPtr<UStaticMeshComponent>> SpawnedLayerQuads;
 
+    // Per-quad cache of the last applied layer order (FPSchematicLayerOrderInTag),
+    // so ApplyLayerDepthOrderForState only re-attaches when the order changed.
+    TArray<int32> CachedQuadOrder;
+
     bool bFoundTaggedPrimitives = false;
 
     UStaticMeshComponent* SpawnQuadForTag(FName Tag, FVector2D QuadSize, float RotationDegrees);
@@ -1063,6 +1092,23 @@ private:
 
     int32 HysteresisFramesRemaining = 0;
     EFaceAngleState HysteresisPendingState;
+
+    // The shared swap boundary between two adjacent states (yaw boundary in
+    // degrees, or the signed pitch threshold for vertical pairs); -1 when the
+    // states are not adjacent. bOutIsPitchBoundary selects the axis.
+    float GetBoundaryBetweenStates(EFaceAngleState A, EFaceAngleState B, bool& bOutIsPitchBoundary) const;
+
+    // Direction of travel across a shared boundary, in the rotation parameter:
+    // +1 when crossing toward INCREASING parameter (zone centers on the raw
+    // signed axis), -1 when decreasing. The +-180 Back<->BackLeft wrap pair is
+    // disambiguated from the pair itself (ending in BackLeft = crossing up
+    // through the -180 wrap). Feeds both the B.2 crossfade trigger center and
+    // the B.3 directional Schmitt commit for the pair (From, To).
+    float GetTransitionDirectionSign(EFaceAngleState From, EFaceAngleState To, bool bPitchBoundary) const;
+
+    // II.2 dynamic depth reordering: re-attaches the spawned quads in the
+    // current state's layer order (painter's order) when the order changed.
+    void ApplyLayerDepthOrderForState(int32 StateIdx);
 
     UPROPERTY()
     TMap<FName, FFaceTextureSet> PreviousTextureSets;
@@ -1198,6 +1244,26 @@ public:
     TMap<FName, FFaceAppliedTextures> LastAppliedTextures;
     UPROPERTY()
     TMap<FName, FFaceAppliedTextures> LastAppliedNestedTextures;
+
+    // --- Runtime vector-art albedo bakes (Phase 5) ---
+    // One transient albedo per (base-preset tag, view state), composited from
+    // the preset's per-feature vector cells through the pure
+    // FPSvg::RasterizeDocument contract. Baked lazily on first push and
+    // pre-warmed by TickComponent in small batches (no per-frame cost).
+    static constexpr int32 VectorAlbedoSize = 128;
+    static constexpr int32 VectorAlbedoSS = 2;
+    static constexpr int32 VectorAlbedoBatchPerTick = 4;
+    UPROPERTY(Transient)
+    TMap<FString, TObjectPtr<UTexture2D>> VectorAlbedoCache;
+    TArray<TPair<FName, int32>> VectorBakeQueue;
+    bool bVectorBakeStarted = false;
+    TObjectPtr<UFaceParallaxPreset> BakePresetWhenStarted;
+
+private:
+    bool UsesVectorAlbedo() const;
+    void EnsureVectorBakesStarted();
+    void TickVectorBakes();
+    UTexture2D* GetOrCreateVectorAlbedo(FName Tag, int32 StateIdx);
 
     // --- Precomputed nested art FName keys ---
     TMap<FName, TMap<FName, FName>> NestedArtStateKeyCache;          // [LayerTag][ElementName] -> StateKey

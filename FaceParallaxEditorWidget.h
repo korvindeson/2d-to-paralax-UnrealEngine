@@ -1428,7 +1428,7 @@ TSharedPtr<SFaceAccordion> LayersPinsAccordion;  // P7-C: Assign page Layers Pin
     TSharedPtr<STextBlock> TextHistogramStats;
     TSharedPtr<SCheckBox> CheckEdgeOverlay;
     TSharedPtr<SCheckBox> CheckHistogram;
-    TSharedPtr<SVerticalBox> HullThumbBox;          // 10 state thumbnails
+    TSharedPtr<SVerticalBox> HullThumbBox;          // 14 state thumbnails
     TArray<FSlateBrush> HullThumbBrushes;           // per-state albedo brushes
     TArray<FSlateBrush> LayerRowBrushes;            // Phase E: per-layer-row albedo thumbs in the layer list
     int32 NestedPaneMode = 0;                       // Phase E: 0 = element controls, 1 = pin manager

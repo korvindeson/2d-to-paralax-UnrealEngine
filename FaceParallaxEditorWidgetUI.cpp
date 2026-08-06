@@ -142,7 +142,6 @@ TSharedRef<SWidget> UFaceParallaxEditorWidget::RebuildWidget()
 
     BuildPanelToolbar(Root);
     BuildPanelStateStrip(Root);
-    BuildPanelZoneDiagram(Root);
     BuildPanelContextPages(Root);
     BuildPanelLayers(Root);
     TSharedRef<SVerticalBox> CenterCol = BuildPanelCanvas(Root);
